@@ -9672,6 +9672,33 @@
         "tags" : [ "Processor Tasks" ]
       }
     },
+    "/processorTask/v1/claimStatus/{nodeName}" : {
+      "get" : {
+        "operationId" : "getProcessorClaimStatus",
+        "parameters" : [ {
+          "in" : "path",
+          "name" : "nodeName",
+          "required" : true,
+          "schema" : {
+            "type" : "string"
+          }
+        } ],
+        "responses" : {
+          "default" : {
+            "content" : {
+              "application/json" : {
+                "schema" : {
+                  "$ref" : "#/components/schemas/ProcessorClaimStatus"
+                }
+              }
+            },
+            "description" : "default response"
+          }
+        },
+        "summary" : "Get what a node is doing about claiming its own processor tasks",
+        "tags" : [ "Processor Tasks" ]
+      }
+    },
     "/processorTask/v1/find" : {
       "post" : {
         "operationId" : "findProcessorTasks",
@@ -14854,7 +14881,8 @@
             "enum" : [ "STROOM_QL_VERSION_0_1", "SIGMA" ]
           },
           "level" : {
-            "type" : "string"
+            "type" : "string",
+            "enum" : [ "LOW", "MEDIUM", "HIGH", "CRITICAL" ]
           },
           "name" : {
             "type" : "string"
@@ -14881,7 +14909,8 @@
             "type" : "boolean"
           },
           "status" : {
-            "type" : "string"
+            "type" : "string",
+            "enum" : [ "EXPERIMENTAL", "TESTING", "STABLE", "DEPRECATED" ]
           },
           "suppressDuplicateNotifications" : {
             "type" : "boolean"
@@ -23473,6 +23502,60 @@
           }
         }
       },
+      "ProcessorClaimStatus" : {
+        "type" : "object",
+        "properties" : {
+          "backedOffFilterCount" : {
+            "type" : "integer",
+            "format" : "int32"
+          },
+          "claimAttempts" : {
+            "type" : "integer",
+            "format" : "int64"
+          },
+          "claimTasksOnWorker" : {
+            "type" : "boolean"
+          },
+          "eligibleFilterCount" : {
+            "type" : "integer",
+            "format" : "int32"
+          },
+          "emptyClaims" : {
+            "type" : "integer",
+            "format" : "int64"
+          },
+          "error" : {
+            "type" : "string"
+          },
+          "filtersWithWorkCount" : {
+            "type" : "integer",
+            "format" : "int32"
+          },
+          "lastHeartbeatAgeMs" : {
+            "type" : "integer",
+            "format" : "int64"
+          },
+          "lockedMetaReleases" : {
+            "type" : "integer",
+            "format" : "int64"
+          },
+          "nodeName" : {
+            "type" : "string"
+          },
+          "summaryAgeMs" : {
+            "type" : "integer",
+            "format" : "int64"
+          },
+          "tasksClaimed" : {
+            "type" : "integer",
+            "format" : "int64"
+          },
+          "tasksInFlight" : {
+            "type" : "integer",
+            "format" : "int32"
+          }
+        }
+      },
       "ProcessorFilter" : {
         "type" : "object",
         "properties" : {
@@ -23510,6 +23593,10 @@
           "minMetaCreateTimeMs" : {
             "type" : "integer",
             "format" : "int64"
+          },
+          "parentFilterId" : {
+            "type" : "integer",
+            "format" : "int32"
           },
           "pipelineName" : {
             "type" : "string"
@@ -24797,9 +24884,6 @@
             "type" : "string",
             "enum" : [ "STROOM_QL_VERSION_0_1", "SIGMA" ]
           },
-          "level" : {
-            "type" : "string"
-          },
           "name" : {
             "type" : "string"
           },
@@ -24826,9 +24910,6 @@
           },
           "reportSettings" : {
             "$ref" : "#/components/schemas/ReportSettings"
-          },
-          "status" : {
-            "type" : "string"
           },
           "suppressDuplicateNotifications" : {
             "type" : "boolean"
@@ -24857,6 +24938,15 @@
       "ReportSettings" : {
         "type" : "object",
         "properties" : {
+          "aiSummaryEnabled" : {
+            "type" : "boolean"
+          },
+          "aiSummaryModel" : {
+            "$ref" : "#/components/schemas/DocRef"
+          },
+          "aiSummaryPrompt" : {
+            "type" : "string"
+          },
           "fileType" : {
             "type" : "string",
             "enum" : [ "EXCEL", "CSV", "TSV", "MARKDOWN" ]

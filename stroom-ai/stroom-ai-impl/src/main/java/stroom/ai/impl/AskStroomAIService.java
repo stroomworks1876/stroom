@@ -18,6 +18,9 @@ package stroom.ai.impl;
 
 import stroom.ai.api.AiService;
 import stroom.ai.api.OpenAIModelStore;
+import stroom.ai.api.TableSource;
+import stroom.ai.api.TableSummaryProgressListener;
+import stroom.ai.api.TableSummaryRequest;
 import stroom.ai.shared.AiAttachmentDataPage;
 import stroom.ai.shared.AiAttachmentStatus;
 import stroom.ai.shared.AiAttachmentType;
@@ -55,6 +58,7 @@ import stroom.resource.api.ResourceStore;
 import stroom.task.api.ExecutorProvider;
 import stroom.task.api.TaskContext;
 import stroom.task.api.TaskContextFactory;
+import stroom.task.api.TaskTerminatedException;
 import stroom.util.json.JsonUtil;
 import stroom.util.logging.LambdaLogger;
 import stroom.util.logging.LambdaLoggerFactory;
@@ -91,14 +95,9 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
-import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.ExecutionException;
-import java.util.concurrent.Executor;
-import java.util.concurrent.Semaphore;
-import java.util.concurrent.TimeUnit;
-import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.function.BooleanSupplier;
 import java.util.function.Supplier;
 import java.util.stream.Collectors;
 
@@ -113,24 +112,10 @@ public class AskStroomAIService {
 
     private static final LambdaLogger LOGGER = LambdaLoggerFactory.getLogger(AskStroomAIService.class);
 
-
-    /**
-     * Sentinel model ID that activates the stub ChatModel for offline testing.
-     * Create an OpenAIModel document with this as the modelId — no API key or base URL needed.
-     */
-    static final String STUB_MODEL_ID = "__stub__";
-
     /**
      * Polling interval (ms) when waiting for attachments.
      */
     private static final long ATTACHMENT_POLL_INTERVAL_MS = 1_000;
-
-    /**
-     * How long a cancelled run waits for batches that are already in flight before giving up on them.
-     * The user is not blocked while this happens, so a batch that is nearly done is worth having, but a
-     * stop still has to mean something when the model has stopped responding.
-     */
-    private static final long CANCELLED_HARVEST_GRACE_MS = 30_000;
 
     private final AiService aiService;
     private final AiAttachmentFileStore attachmentFileStore;
@@ -144,6 +129,7 @@ public class AskStroomAIService {
     private final Provider<TableAnalysisConfig> tableAnalysisConfigProvider;
     private final ConcurrentHashMap<Integer, AtomicBoolean> cancellationFlags = new ConcurrentHashMap<>();
     private final TaskContextFactory taskContextFactory;
+    private final TableSummariserImpl tableSummariser;
 
     @Inject
     public AskStroomAIService(final AiService aiService,
@@ -156,7 +142,8 @@ public class AskStroomAIService {
                               final Provider<AskStroomAiConfig> defaultConfigProvider,
                               final Provider<GlobalConfig> globalConfigProvider,
                               final Provider<TableAnalysisConfig> tableAnalysisConfigProvider,
-                              final TaskContextFactory taskContextFactory) {
+                              final TaskContextFactory taskContextFactory,
+                              final TableSummariserImpl tableSummariser) {
         this.aiService = aiService;
         this.attachmentFileStore = attachmentFileStore;
         this.dashboardService = dashboardService;
@@ -168,6 +155,7 @@ public class AskStroomAIService {
         this.globalConfigProvider = globalConfigProvider;
         this.tableAnalysisConfigProvider = tableAnalysisConfigProvider;
         this.taskContextFactory = taskContextFactory;
+        this.tableSummariser = tableSummariser;
     }
 
     /**
@@ -675,6 +663,15 @@ public class AskStroomAIService {
                     return finalResponseText;
 
                 } catch (final Exception e) {
+                    // A terminated task, or a stop flipped mid-call, is a deliberate stop rather
+                    // than a failure. processUnified throws TaskTerminatedException when the task
+                    // is terminated before the model call; treat both the same friendly way as a
+                    // stop caught between attempts, rather than surfacing a raw error to the user.
+                    if (e instanceof TaskTerminatedException || cancelled.get()) {
+                        LOGGER.info(() -> "processQuestion: terminated/cancelled for chatId=" + chatId);
+                        return "Analysis was cancelled before a response was produced.";
+                    }
+
                     if (!isContextOverflowError(e)) {
                         throw e;
                     }
@@ -851,17 +848,27 @@ public class AskStroomAIService {
                                         final int chatId,
                                         final List<ChatMessage> messages,
                                         final int attempt) {
-        LOGGER.debug(() -> "processUnified: sending " + messages.size()
-                           + " messages to LLM for chatId=" + chatId
-                           + " (attempt " + attempt + ")");
+        return taskContextFactory.contextResult(
+                "AI data analysis",
+                taskContext -> {
+                    taskContext.info(() -> "Chat Id: " + chatId);
 
-        final ChatResponse response = LOGGER.logDurationIfDebugEnabled(
-                () -> chatModel.chat(messages),
-                r -> "processUnified chatId=" + chatId
-                     + " attempt=" + attempt
-                     + " responseLength=" + r.aiMessage().text().length());
-        LOGGER.trace(() -> "processUnified response:\n" + response.aiMessage().text());
-        return response;
+                    if (taskContext.isTerminated()) {
+                        throw new TaskTerminatedException();
+                    }
+
+                    LOGGER.debug(() -> "processUnified: sending " + messages.size()
+                                       + " messages to LLM for chatId=" + chatId
+                                       + " (attempt " + attempt + ")");
+
+                    final ChatResponse response = LOGGER.logDurationIfDebugEnabled(
+                            () -> chatModel.chat(messages),
+                            r -> "processUnified chatId=" + chatId
+                                 + " attempt=" + attempt
+                                 + " responseLength=" + r.aiMessage().text().length());
+                    LOGGER.trace(() -> "processUnified response:\n" + response.aiMessage().text());
+                    return response;
+                }).get();
     }
 
     /**
@@ -935,291 +942,87 @@ public class AskStroomAIService {
                                           final int chatId,
                                           final int workingMessageId,
                                           final StringBuilder debugLog) {
+        return taskContextFactory.contextResult(
+                "Batched AI data analysis",
+                taskContext -> analyseWithAttachments(taskContext,
+                        request, chatModel, attachments, chatId, workingMessageId, debugLog)).get();
+    }
+
+    private String analyseWithAttachments(final TaskContext taskContext,
+                                          final AskStroomAiRequest request,
+                                          final ChatModel chatModel,
+                                          final List<AiChatAttachment> attachments,
+                                          final int chatId,
+                                          final int workingMessageId,
+                                          final StringBuilder debugLog) {
         // Shares the flag registered for the whole question, so a stop issued before batch analysis
         // started is not lost.
         final AtomicBoolean cancelled = cancellationFlags.computeIfAbsent(
                 chatId, k -> new AtomicBoolean(false));
 
-        final TableAnalysisConfig tableAnalysisConfig = getTableAnalysisConfig(request.getConfig());
-        final String conversationContext = buildConversationSummary(chatId);
+        // Either signal means stop: the explicit user stop, or the task being terminated.
+        final BooleanSupplier stopRequested = () -> cancelled.get() || taskContext.isTerminated();
 
-        LOGGER.debug(() -> "analyseWithAttachments: chatId=" + chatId
-                           + " attachments=" + attachments.size()
-                           + " maxParallel=" + tableAnalysisConfig.getMaxParallelBatches());
+        info(taskContext, () -> "Reading attachments");
 
-        // Build batches from markdown files on disk.
-        final List<String> batches = new ArrayList<>();
-        boolean anyTruncated = false;
-        int unreadableAttachments = 0;
-        for (final AiChatAttachment attachment : attachments) {
-            final Path mdFile = attachmentFileStore.getAttachmentFile(attachment.getId());
-            try {
-                if (!Files.exists(mdFile)) {
-                    throw new RuntimeException("Attachment data file not found. "
-                                               + "Data may have been cleaned up.");
-                }
-                batches.addAll(buildBatchesFromMarkdown(mdFile, tableAnalysisConfig));
-                if (attachment.isTruncated()) {
-                    anyTruncated = true;
-                }
-            } catch (final RuntimeException e) {
-                // One attachment we cannot read should not cost the user the analysis of the rest.
-                unreadableAttachments++;
-                LOGGER.warn(() -> "Skipping unreadable attachment " + attachment.getId()
-                                  + " for chatId=" + chatId, e);
-            }
-        }
+        final List<TableSource> sources = attachments
+                .stream()
+                .map(attachment -> new TableSource(
+                        "attachment " + attachment.getId() + " for chatId=" + chatId,
+                        attachmentFileStore.getAttachmentFile(attachment.getId()),
+                        attachment.isTruncated()))
+                .toList();
 
-        if (batches.isEmpty()) {
-            return unreadableAttachments > 0
-                    ? "The attached data could not be read. It may have been cleaned up."
-                    : "No data available for analysis.";
-        }
-
-        final boolean truncatedData = anyTruncated;
-        LOGGER.debug(() -> "analyseWithAttachments: chatId=" + chatId
-                           + " batches=" + batches.size() + " anyTruncated=" + truncatedData);
-
-        // Include truncation note in the user query if applicable.
-        final String userQuery = anyTruncated
-                ? request.getMessage() + "\n\nNote: this data is truncated to the first "
-                  + tableAnalysisConfig.getMaxTotalRows()
-                  + " rows of a larger result set."
-                : request.getMessage();
-
-        final int totalBatches = batches.size();
-        aiService.updateMessageText(workingMessageId,
-                "Analysing " + totalBatches + " batch(es) across "
-                + attachments.size() + " attachment(s)...");
-
-        // Process batches in parallel with bounded concurrency.
-        final Executor executor = executorProvider.get();
-        final int maxParallel = tableAnalysisConfig.getMaxParallelBatches();
-        final Semaphore semaphore = new Semaphore(maxParallel);
-
-        final String systemPrompt = tableAnalysisConfig.getTableQuerySystemPrompt() != null
-                ? tableAnalysisConfig.getTableQuerySystemPrompt()
-                : TableAnalysisConfig.DEFAULT_TABLE_QUERY_SYSTEM_PROMPT;
-        final String userPromptTemplate = tableAnalysisConfig.getTableQueryUserPrompt() != null
-                ? tableAnalysisConfig.getTableQueryUserPrompt()
-                : TableAnalysisConfig.DEFAULT_TABLE_QUERY_USER_PROMPT;
-
-        if (debugLog != null) {
-            debugLog
-                    .append("### Batch Fallback (")
-                    .append(totalBatches)
-                    .append(" batches)\n\n");
-        }
-
-        final List<CompletableFuture<String>> futures = new ArrayList<>();
-        for (int i = 0; i < totalBatches; i++) {
-            if (cancelled.get()) {
-                final int batchIdx = i;
-                LOGGER.debug(() -> "analyseWithAttachments: cancelled for chatId=" + chatId
-                                   + " at batch " + batchIdx + "/" + totalBatches);
-                break;
-            }
-            final String batch = batches.get(i);
-            final int batchNum = i + 1;
-            futures.add(CompletableFuture.supplyAsync(() -> {
-                try {
-                    semaphore.acquire();
-                } catch (final InterruptedException e) {
-                    Thread.currentThread().interrupt();
-                    throw new RuntimeException("Interrupted waiting for batch slot", e);
-                }
-                try {
-                    if (cancelled.get()) {
-                        return null;
-                    }
-                    aiService.updateMessageText(workingMessageId,
-                            "Analysing batch " + batchNum + " of " + totalBatches + "...");
-
-                    final String userPrompt = userPromptTemplate
-                            .replace("{{query}}", userQuery)
-                            .replace("{{table}}", batch)
-                            .replace("{{context}}", conversationContext);
-
-                    LOGGER.trace(() -> "Batch " + batchNum + "/" + totalBatches
-                                       + " prompt (chatId=" + chatId + "):\n" + userPrompt);
-
-                    final List<ChatMessage> messages = List.of(
-                            new SystemMessage(systemPrompt),
-                            new UserMessage(userPrompt));
-
-                    final ChatResponse response = LOGGER.logDurationIfDebugEnabled(
-                            () -> chatModel.chat(messages),
-                            r -> "Batch " + batchNum + "/" + totalBatches
-                                 + " chatId=" + chatId
-                                 + " responseLength=" + r.aiMessage().text().length());
-                    LOGGER.trace(() -> "Batch " + batchNum + "/" + totalBatches
-                                       + " response:\n" + response.aiMessage().text());
-
-                    final String responseText = response.aiMessage().text();
-
-                    // Capture batch debug detail (synchronized on debugLog).
-                    if (debugLog != null) {
-                        synchronized (debugLog) {
-                            debugLog
-                                    .append("#### Batch ")
-                                    .append(batchNum)
-                                    .append("/")
-                                    .append(totalBatches)
-                                    .append("\n\n")
-                                    .append(formatMessagesAsDebugDetail(messages, responseText));
-                        }
+        final TableSummaryRequest summaryRequest = TableSummaryRequest
+                .builder()
+                .sources(sources)
+                .chatModel(chatModel)
+                .config(getTableAnalysisConfig(request.getConfig()))
+                .query(request.getMessage())
+                .context(buildConversationSummary(chatId))
+                .cancelled(stopRequested)
+                .progressListener(new TableSummaryProgressListener() {
+                    @Override
+                    public void onBatchesBuilt(final int batchCount, final int sourceCount) {
+                        final String message = "Analysing " + batchCount + " batch(es) across "
+                                               + sourceCount + " attachment(s)...";
+                        info(taskContext, () -> message);
+                        aiService.updateMessageText(workingMessageId, message);
                     }
 
-                    return responseText;
-                } finally {
-                    semaphore.release();
-                }
-            }, executor));
-        }
+                    @Override
+                    public void onBatchStarted(final int batchNumber, final int batchCount) {
+                        final String message = "Analysing batch " + batchNumber + " of " + batchCount + "...";
+                        info(taskContext, () -> message);
+                        aiService.updateMessageText(workingMessageId, message);
+                    }
 
-        // Once cancelled, give the batches already in flight a short while to land before taking
-        // stock. What the user stopped is the work still queued behind them.
-        if (cancelled.get() && futures.stream().anyMatch(future -> !future.isDone())) {
-            aiService.updateMessageText(workingMessageId,
-                    "Cancelled - waiting briefly for batches already in progress...");
-            awaitInFlightBatches(futures, chatId);
-        }
+                    @Override
+                    public void onCancelledAwaitingBatches() {
+                        aiService.updateMessageText(workingMessageId,
+                                "Cancelled - waiting briefly for batches already in progress...");
+                    }
 
-        // Collect results, handling per-batch failures gracefully. Anything still unfinished after
-        // the grace period above is left behind rather than waited on.
-        final List<String> summaries = new ArrayList<>();
-        int failedBatches = 0;
-        for (final CompletableFuture<String> future : futures) {
-            if (cancelled.get() && !future.isDone()) {
-                continue;
-            }
-            try {
-                final String result = future.join();
-                if (result != null && !result.isEmpty()) {
-                    summaries.add(result);
-                } else if (result != null) {
-                    // Answered, but with nothing. That is a batch that did not contribute.
-                    failedBatches++;
-                }
-            } catch (final Exception e) {
-                failedBatches++;
-                LOGGER.debug(() -> "Batch processing failed", e);
-                // Continue collecting results from other batches.
-            }
-        }
+                    @Override
+                    public void onCancelledBeforeMerge(final int summaryCount) {
+                        aiService.updateMessageText(workingMessageId,
+                                "Cancelled - summarising the " + summaryCount
+                                + " batch(es) completed so far...");
+                    }
+                })
+                .build();
 
-        if (summaries.isEmpty()) {
-            if (cancelled.get()) {
-                return "Analysis was cancelled before any results were produced.";
-            }
-            return "No results could be extracted from the data.";
-        }
-
-        // Merge summaries.
-        LOGGER.debug(() -> "analyseWithAttachments: chatId=" + chatId
-                           + " summaries=" + summaries.size()
-                           + (summaries.size() > 1
-                ? " -> merging"
-                : " -> single result"));
-        // Everything the reader needs to know about this answer, said once at the end of it.
+        // Batching is this caller's fallback rather than its normal path, so only this caller has cause
+        // to explain it. Everything else the reader needs to know is added by the summariser.
         final AnswerNotes notes = new AnswerNotes()
                 .add("The attached data was too large to analyse in a single call, so it was "
                      + "processed in batches, which may not capture cross-row patterns or "
                      + "cross-table comparisons as well");
 
-        // A stop means "stop working through the data", not "hand me the fragments". Merging what
-        // was found is the answer the user is waiting for, and its cost is set by how much was
-        // produced before the stop, not by how much data is left. If a merge fails, SummaryMerger
-        // keeps the summaries rather than losing them.
-        final String merged;
-        if (summaries.size() == 1) {
-            merged = summaries.getFirst();
-        } else {
-            if (cancelled.get()) {
-                aiService.updateMessageText(workingMessageId,
-                        "Cancelled - summarising the " + summaries.size()
-                        + " batch(es) completed so far...");
-            }
-            merged = new SummaryMerger(chatModel, tableAnalysisConfig, debugLog,
-                    this::formatMessagesAsDebugDetail)
-                    .merge(summaries, notes);
-        }
-
-        notes.coverage(summaries.size(), totalBatches, failedBatches,
-                unreadableAttachments, cancelled.get());
-        return notes.appendTo(merged);
-    }
-
-    /**
-     * Reads a markdown table file and splits it into batches,
-     * each respecting the maximum batch size. The header and separator
-     * rows are preserved at the start of each batch.
-     */
-    List<String> buildBatchesFromMarkdown(final Path mdFile,
-                                          final TableAnalysisConfig config) {
-        return LOGGER.logDurationIfDebugEnabled(() -> {
-            final List<String> batches = new ArrayList<>();
-            final int maxRowsPerBatch = config.getMaxRowsPerBatch();
-
-            try (final BufferedReader reader = Files.newBufferedReader(mdFile)) {
-                final String headerLine = reader.readLine();
-                if (headerLine == null) {
-                    return batches;
-                }
-                final String separatorLine = reader.readLine();
-                if (separatorLine == null) {
-                    return batches;
-                }
-
-                final String mdHeader = headerLine + "\n" + separatorLine + "\n";
-                final StringBuilder batch = new StringBuilder(mdHeader);
-                int rowsInBatch = 0;
-
-                String line;
-                while ((line = reader.readLine()) != null) {
-                    if (line.isEmpty()) {
-                        continue;
-                    }
-                    if (rowsInBatch >= maxRowsPerBatch && rowsInBatch > 0) {
-                        batches.add(batch.toString());
-                        batch.setLength(0);
-                        batch.append(mdHeader);
-                        rowsInBatch = 0;
-                    }
-                    batch.append(line).append('\n');
-                    rowsInBatch++;
-                }
-
-                if (rowsInBatch > 0) {
-                    batches.add(batch.toString());
-                }
-            } catch (final IOException e) {
-                throw new UncheckedIOException("Failed to read markdown file: " + mdFile, e);
-            }
-            return batches;
-        }, batches -> "buildBatchesFromMarkdown: file=" + mdFile.getFileName()
-                      + ", maxRowsPerBatch=" + config.getMaxRowsPerBatch()
-                      + ", batch(es)=" + batches.size());
-    }
-
-    /**
-     * Waits a bounded time for batches that are already in flight, so that a cancelled run reports what
-     * they found rather than discarding work that was nearly done.
-     */
-    private void awaitInFlightBatches(final List<CompletableFuture<String>> futures, final int chatId) {
-        try {
-            CompletableFuture
-                    .allOf(futures.toArray(new CompletableFuture[0]))
-                    .get(CANCELLED_HARVEST_GRACE_MS, TimeUnit.MILLISECONDS);
-        } catch (final InterruptedException e) {
-            Thread.currentThread().interrupt();
-        } catch (final TimeoutException e) {
-            LOGGER.debug(() -> "awaitInFlightBatches: batches still running after the grace period "
-                               + "for chatId=" + chatId + ", continuing without them");
-        } catch (final ExecutionException e) {
-            // A batch that failed is accounted for when the results are collected.
-            LOGGER.debug(() -> "awaitInFlightBatches: a batch failed for chatId=" + chatId, e);
-        }
+        // The chat shows whatever came back, summary or not, as that is the answer to the question.
+        return tableSummariser
+                .summarise(summaryRequest, notes, debugLog, this::formatMessagesAsDebugDetail)
+                .text();
     }
 
     /**
@@ -1521,12 +1324,7 @@ public class AskStroomAIService {
     }
 
     private ChatModel getChatModel(final OpenAIModelDoc openAIModelDoc) {
-        // Stub mode: return a test ChatModel that requires no API key or network.
-        if (STUB_MODEL_ID.equals(openAIModelDoc.getModelId())) {
-            LOGGER.info(() -> "Using stub ChatModel for testing (modelId='" + STUB_MODEL_ID + "')");
-            return new StubChatModel();
-        }
-
+        // Note that the stub ChatModel for offline testing is applied by AiService.getChatModel().
         LOGGER.debug(() -> "getChatModel: modelId='" + openAIModelDoc.getModelId()
                            + "' docRef=" + openAIModelDoc.getUuid());
         return aiService.getChatModel(openAIModelDoc);
