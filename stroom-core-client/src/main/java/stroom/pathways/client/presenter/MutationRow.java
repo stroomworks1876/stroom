@@ -39,6 +39,7 @@ class MutationRow implements TreeRow {
     private final String traceId;
     private final String group;
     private final NanoTime time;
+    private final NanoTime ranAt;
     private final long sequence;
     private final Expander expander;
 
@@ -46,12 +47,14 @@ class MutationRow implements TreeRow {
                         final String traceId,
                         final String group,
                         final NanoTime time,
+                        final NanoTime ranAt,
                         final long sequence,
                         final Expander expander) {
         this.mutation = mutation;
         this.traceId = traceId;
         this.group = group;
         this.time = time;
+        this.ranAt = ranAt;
         this.sequence = sequence;
         this.expander = expander;
     }
@@ -63,13 +66,13 @@ class MutationRow implements TreeRow {
     static MutationRow trace(final PathwayMutation last,
                              final NanoTime time,
                              final boolean expanded) {
-        return new MutationRow(null, last.getTraceId(), groupOf(last), time, last.getSequence(),
-                new Expander(0, expanded, false));
+        return new MutationRow(null, last.getTraceId(), groupOf(last), time, last.getTraceTime(),
+                last.getSequence(), new Expander(0, expanded, false));
     }
 
     static MutationRow change(final PathwayMutation mutation) {
         return new MutationRow(mutation, mutation.getTraceId(), groupOf(mutation), mutation.getTime(),
-                mutation.getSequence(), new Expander(1, false, true));
+                mutation.getTraceTime(), mutation.getSequence(), new Expander(1, false, true));
     }
 
     /**
@@ -106,8 +109,20 @@ class MutationRow implements TreeRow {
         return group;
     }
 
+    /**
+     * When Stroom learnt this change. What the row is placed by, because the plot above the list runs
+     * on that clock and so does the order the list is in.
+     */
     NanoTime getTime() {
         return time;
+    }
+
+    /**
+     * When the work this change came from ran, which is what the list shows. A trace can be loaded
+     * long after it ran, so the two differ, and it is the first a reader is asking about.
+     */
+    NanoTime getRanAt() {
+        return ranAt;
     }
 
     /**

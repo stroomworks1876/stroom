@@ -698,10 +698,16 @@ public class PathwayMutationListPresenter extends MyPresenterWidget<PagerView> {
     private void addColumns() {
         addExpanderColumn();
 
-        // When the change was made. Not sortable: every change a trace made shares one timestamp, so
-        // ordering on the times alone would shuffle changes that happened in a definite order.
+        // When the work ran, which is what a reader is asking about. Everything else here runs on
+        // when Stroom learnt the change - the order of the list, the plot above it, which rows a range
+        // selects - because that is the only order the model can be wound back along. So a trace
+        // loaded long after it ran sits at the top of the list showing an old time, which is correct
+        // and is the point.
+        //
+        // Not sortable: every change a trace made shares one timestamp, so ordering on the times alone
+        // would shuffle changes that happened in a definite order.
         timeColumn = DataGridUtil
-                .textColumnBuilder((MutationRow row) -> NullSafe.get(row.getTime(),
+                .textColumnBuilder((MutationRow row) -> NullSafe.get(row.getRanAt(),
                         value -> dateTimeFormatter.format(value.toEpochMillis())))
                 .build();
         dataGrid.addResizableColumn(timeColumn, PathwayMutation.FIELD_TIME,
