@@ -175,6 +175,11 @@ public class PathwayMutationListPresenter extends MyPresenterWidget<PagerView> {
     //
     // Worked out here rather than asked for, because the whole history is already held for the model
     // to be wound back through it.
+    // The span the rows were asked for, resolved by the server because a range is picked as
+    // expressions and only it can read those. Null where an end was left open.
+    private Long windowFrom;
+    private Long windowTo;
+
     private TraceHistogram bars() {
         long from = Long.MAX_VALUE;
         long to = Long.MIN_VALUE;
@@ -191,15 +196,25 @@ public class PathwayMutationListPresenter extends MyPresenterWidget<PagerView> {
             return new TraceHistogram(false, 0, 0, 0, 0, Collections.emptyList(), false);
         }
 
-        // Up to now rather than up to the last change, so a model nothing has taught for an hour reads
-        // as an hour of quiet rather than as one that was busy right to the edge of the panel. How long
-        // ago a model last moved is the thing worth seeing here, and ending at its last change is the
-        // one way of drawing it that cannot show that at all.
-        //
-        // Still the later of the two, because a change made on another node can carry a clock a little
-        // ahead of this one and a panel that ended before its own last bar would be worse than one that
-        // ends a moment early.
-        to = Math.max(to, System.currentTimeMillis());
+        // The span picked is the span plotted. Taken from the rows instead, a range ending an hour ago
+        // would still be drawn out to now, with its bars squeezed into whatever part of the panel the
+        // range happened to occupy.
+        if (windowFrom != null) {
+            from = windowFrom;
+        }
+        if (windowTo != null) {
+            to = windowTo;
+        } else {
+            // Nothing picked, so up to now rather than up to the last change: a model nothing has
+            // taught for an hour reads as an hour of quiet rather than as one busy to the edge of the
+            // panel. How long ago a model last moved is the thing worth seeing, and ending at its last
+            // change is the one way of drawing it that cannot show that at all.
+            //
+            // Still the later of the two, because a change made on another node can carry a clock a
+            // little ahead of this one, and a panel ending before its own last bar would be worse than
+            // one ending a moment early.
+            to = Math.max(to, System.currentTimeMillis());
+        }
 
         // Always the same number of slices, however little time the history covers. Fitting the
         // slices to the history instead would leave a model taught by a single trace with one slice,
@@ -469,6 +484,18 @@ public class PathwayMutationListPresenter extends MyPresenterWidget<PagerView> {
      * copy means the grid and the model on show cannot disagree.
      */
     public void setData(final List<PathwayMutation> mutations) {
+        setData(mutations, null, null);
+    }
+
+    /**
+     * The same, with the span these rows were asked for, resolved. The plot over them is drawn across
+     * that span rather than out to now, so it covers what was picked.
+     */
+    public void setData(final List<PathwayMutation> mutations,
+                        final Long windowFrom,
+                        final Long windowTo) {
+        this.windowFrom = windowFrom;
+        this.windowTo = windowTo;
         // Whatever was selected belonged to the list being replaced, and the view around this one asks
         // what is selected to decide which model to show.
         selectionModel.clear();

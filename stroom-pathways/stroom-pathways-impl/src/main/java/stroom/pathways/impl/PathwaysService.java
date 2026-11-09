@@ -116,7 +116,7 @@ public class PathwaysService {
             throw new DocumentNotFoundException(request.getPathwaysDocRef());
         }
         return shardedPathwayReader
-                .fetchPathwayAsAt(pathwaysDoc, request.getName(), request.getAsAtMs(),
+                .fetchPathwayAsAt(pathwaysDoc, request.getName(), request.getTimeRange(),
                         request.getToSequence())
                 .orElse(null);
     }

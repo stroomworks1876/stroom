@@ -36,6 +36,8 @@ import stroom.pathways.shared.pathway.PathwayUsage;
 import stroom.planb.impl.dao.ShardKeyRouter;
 import stroom.planb.impl.dao.trace.PathwaysDb;
 import stroom.planb.shared.SharedFileStoreSettings;
+import stroom.query.api.TimeFilter;
+import stroom.query.api.TimeRange;
 import stroom.util.logging.LambdaLogger;
 import stroom.util.logging.LambdaLoggerFactory;
 import stroom.util.shared.CriteriaFieldSort;
@@ -232,6 +234,13 @@ public class ShardedPathwayReader {
             return null;
         });
 
+        // The range the reader picked, on the same clock everything else here runs on: when the
+        // learner took the change in, not when its work ran.
+        final TimeFilter window = TraceHistograms.resolveTimeFilter(criteria.getTimeRange());
+        if (window != null) {
+            mutations.removeIf(mutation -> outside(mutation, window));
+        }
+
         mutations.sort(mutationComparator(criteria.getSortList()));
 
         final PageRequest pageRequest = criteria.getPageRequest();
@@ -246,7 +255,11 @@ public class ShardedPathwayReader {
                 .total((long) mutations.size())
                 .exact(true)
                 .build();
-        return new PathwayMutationResultPage(page, pageResponse);
+        // The span asked for, resolved, so the plot over these rows covers what was picked rather
+        // than running on to now. Null where an end was left open.
+        return new PathwayMutationResultPage(page, pageResponse,
+                bound(window, TimeFilter::getFrom, 0L),
+                bound(window, TimeFilter::getTo, Long.MAX_VALUE));
     }
 
     // Ordered the way the view orders it, so the two cannot drift apart. Newest first where nothing
@@ -302,7 +315,7 @@ public class ShardedPathwayReader {
      */
     public Optional<PathwayAsAt> fetchPathwayAsAt(final PathwaysDoc doc,
                                                   final String name,
-                                                  final Long asAtMs,
+                                                  final TimeRange timeRange,
                                                   final Long toSequence) {
         final SharedFileStoreSettings settings = doc.getSharedFileStore();
         if (settings == null || NullSafe.isBlankString(settings.getSharedPath())
@@ -330,7 +343,17 @@ public class ShardedPathwayReader {
         });
 
         return Optional.ofNullable(found[0])
-                .map(pathway -> asAt(pathway, mutations, usage, asAtMs, toSequence));
+                .map(pathway -> asAt(pathway, mutations, usage, latestIn(timeRange), toSequence));
+    }
+
+    // The latest time the range covers, or null where it has no end - which is the model as it
+    // stands. The range is resolved here rather than in the browser because that is where the parser
+    // for expressions like day() and now()-24h lives.
+    static Long latestIn(final TimeRange timeRange) {
+        final TimeFilter filter = TraceHistograms.resolveTimeFilter(timeRange);
+        return filter == null || filter.getTo() == Long.MAX_VALUE
+                ? null
+                : filter.getTo();
     }
 
     /**
@@ -367,7 +390,7 @@ public class ShardedPathwayReader {
         // A particular change, picked rather than searched for: stepping through the history asks
         // for them one at a time and every change one trace made carries the same timestamp.
         if (toSequence != null) {
-            final Pathway shown = wound(pathway, mutations, toSequence);
+            final Pathway shown = wound(pathway, after(mutations, toSequence));
             return new PathwayAsAt(
                     shown,
                     changesByUuid(shown, MutationCounts.of(mutations, toSequence)),
@@ -401,7 +424,25 @@ public class ShardedPathwayReader {
                     usageCeiling);
         }
 
-        final Pathway shown = wound(pathway, mutations, cut);
+        // Nothing to undo means the time asked for is now, however the range was written - so the
+        // model as it stands is the answer, and each node's own count of how busy it is goes with it.
+        //
+        // The readings below must not be used for it. A reading says how busy each node was when it
+        // was taken, and one is only taken when the model learns something; a node gets busier every
+        // time a trace passes through it. So a reading is usually behind, and using one here would
+        // draw thinner lines for a time that is not past at all.
+        final List<PathwayMutation> later = after(mutations, cut);
+        if (later.isEmpty()) {
+            return new PathwayAsAt(
+                    pathway,
+                    changesByUuid(pathway, MutationCounts.of(mutations, cut)),
+                    Map.of(),
+                    asAt,
+                    changeCeiling,
+                    usageCeiling);
+        }
+
+        final Pathway shown = wound(pathway, later);
         return new PathwayAsAt(
                 shown,
                 changesByUuid(shown, MutationCounts.of(mutations, cut)),
@@ -421,15 +462,40 @@ public class ShardedPathwayReader {
         return null;
     }
 
-    private static Pathway wound(final Pathway pathway,
-                                 final List<PathwayMutation> mutations,
-                                 final long cut) {
+    // One end of a resolved window, or null where it was left open - which the parser gives back as
+    // the extremes rather than as nothing.
+    private static Long bound(final TimeFilter window,
+                              final java.util.function.ToLongFunction<TimeFilter> end,
+                              final long unbounded) {
+        if (window == null) {
+            return null;
+        }
+        final long at = end.applyAsLong(window);
+        return at == unbounded
+                ? null
+                : at;
+    }
+
+    private static boolean outside(final PathwayMutation mutation, final TimeFilter window) {
+        final NanoTime time = mutation.getTime();
+        if (time == null) {
+            return false;
+        }
+        final long at = time.toEpochMillis();
+        return at < window.getFrom() || at > window.getTo();
+    }
+
+    private static List<PathwayMutation> after(final List<PathwayMutation> mutations, final long cut) {
         final List<PathwayMutation> later = new ArrayList<>();
         for (final PathwayMutation mutation : mutations) {
             if (mutation.getSequence() > cut) {
                 later.add(mutation);
             }
         }
+        return later;
+    }
+
+    private static Pathway wound(final Pathway pathway, final List<PathwayMutation> later) {
         final PathNode root = PathwayReplay.rewind(pathway.getRoot(), later);
         return root == null
                 ? pathway.copy().root(null).build()

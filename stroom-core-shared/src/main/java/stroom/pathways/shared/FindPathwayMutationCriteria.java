@@ -17,6 +17,7 @@
 package stroom.pathways.shared;
 
 import stroom.docref.DocRef;
+import stroom.query.api.TimeRange;
 import stroom.util.shared.BaseCriteria;
 import stroom.util.shared.CriteriaFieldSort;
 import stroom.util.shared.PageRequest;
@@ -39,15 +40,33 @@ public class FindPathwayMutationCriteria extends BaseCriteria {
     private final DocRef pathwaysDocRef;
     @JsonProperty
     private final String pathwayName;
+    /**
+     * Which span of time to list, or null for all of it.
+     *
+     * <p>Held as it was picked rather than as a pair of times. A range is written as expressions -
+     * {@code day()}, {@code now()-24h} - and turning those into times is done where the parser for
+     * them lives, which is not the browser.
+     */
+    @JsonProperty
+    private final TimeRange timeRange;
 
     @JsonCreator
     public FindPathwayMutationCriteria(@JsonProperty("pageRequest") final PageRequest pageRequest,
                                        @JsonProperty("sortList") final List<CriteriaFieldSort> sortList,
                                        @JsonProperty("pathwaysDocRef") final DocRef pathwaysDocRef,
-                                       @JsonProperty("pathwayName") final String pathwayName) {
+                                       @JsonProperty("pathwayName") final String pathwayName,
+                                       @JsonProperty("timeRange") final TimeRange timeRange) {
         super(pageRequest, sortList);
         this.pathwaysDocRef = pathwaysDocRef;
         this.pathwayName = pathwayName;
+        this.timeRange = timeRange;
+    }
+
+    public FindPathwayMutationCriteria(final PageRequest pageRequest,
+                                       final List<CriteriaFieldSort> sortList,
+                                       final DocRef pathwaysDocRef,
+                                       final String pathwayName) {
+        this(pageRequest, sortList, pathwaysDocRef, pathwayName, null);
     }
 
     public DocRef getPathwaysDocRef() {
@@ -56,6 +75,10 @@ public class FindPathwayMutationCriteria extends BaseCriteria {
 
     public String getPathwayName() {
         return pathwayName;
+    }
+
+    public TimeRange getTimeRange() {
+        return timeRange;
     }
 
     @Override
@@ -68,17 +91,18 @@ public class FindPathwayMutationCriteria extends BaseCriteria {
         }
         final FindPathwayMutationCriteria that = (FindPathwayMutationCriteria) o;
         return Objects.equals(pathwaysDocRef, that.pathwaysDocRef)
-               && Objects.equals(pathwayName, that.pathwayName);
+               && Objects.equals(pathwayName, that.pathwayName)
+               && Objects.equals(timeRange, that.timeRange);
     }
 
     @Override
     public int hashCode() {
-        return Objects.hash(super.hashCode(), pathwaysDocRef, pathwayName);
+        return Objects.hash(super.hashCode(), pathwaysDocRef, pathwayName, timeRange);
     }
 
     @Override
     public String toString() {
         return "FindPathwayMutationCriteria{pathwaysDocRef=" + pathwaysDocRef
-               + ", pathwayName='" + pathwayName + "'}";
+               + ", pathwayName='" + pathwayName + "', timeRange=" + timeRange + "}";
     }
 }

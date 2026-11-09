@@ -17,6 +17,7 @@
 package stroom.pathways.shared;
 
 import stroom.docref.DocRef;
+import stroom.query.api.TimeRange;
 
 import com.fasterxml.jackson.annotation.JsonCreator;
 import com.fasterxml.jackson.annotation.JsonInclude;
@@ -37,15 +38,20 @@ public class FetchPathwayRequest {
     @JsonProperty
     private final String name;
     /**
-     * The moment to show the pathway at, or null for as it stands now.
+     * The span being looked at, or null for the model as it stands now. The pathway is answered for
+     * the latest time in it, because a drawing is one instant rather than a span.
      *
-     * <p>Read against when the learner took each trace in, not when the work ran. Those differ, and
+     * <p>Held as it was picked rather than as a time. A range is written as expressions -
+     * {@code day()}, {@code now()-24h} - and turning those into times is done where the parser for
+     * them lives, which is not the browser.
+     *
+     * <p>Read against when the learner took each change in, not when the work ran. Those differ, and
      * it is the first that can be used: showing an earlier model means taking changes off it newest
      * first, which only works on an unbroken run, and changes picked by when their work ran are
      * scattered through the order they were learnt in.
      */
     @JsonProperty
-    private final Long asAtMs;
+    private final TimeRange timeRange;
     /**
      * One particular change to show the model just after, or null to ask by moment instead.
      *
@@ -59,11 +65,11 @@ public class FetchPathwayRequest {
     @JsonCreator
     public FetchPathwayRequest(@JsonProperty("pathwaysDocRef") final DocRef pathwaysDocRef,
                                @JsonProperty("name") final String name,
-                               @JsonProperty("asAtMs") final Long asAtMs,
+                               @JsonProperty("timeRange") final TimeRange timeRange,
                                @JsonProperty("toSequence") final Long toSequence) {
         this.pathwaysDocRef = pathwaysDocRef;
         this.name = name;
-        this.asAtMs = asAtMs;
+        this.timeRange = timeRange;
         this.toSequence = toSequence;
     }
 
@@ -71,10 +77,10 @@ public class FetchPathwayRequest {
         this(pathwaysDocRef, name, null, null);
     }
 
-    public static FetchPathwayRequest asAt(final DocRef pathwaysDocRef,
+    public static FetchPathwayRequest over(final DocRef pathwaysDocRef,
                                            final String name,
-                                           final Long asAtMs) {
-        return new FetchPathwayRequest(pathwaysDocRef, name, asAtMs, null);
+                                           final TimeRange timeRange) {
+        return new FetchPathwayRequest(pathwaysDocRef, name, timeRange, null);
     }
 
     public static FetchPathwayRequest atChange(final DocRef pathwaysDocRef,
@@ -91,8 +97,8 @@ public class FetchPathwayRequest {
         return name;
     }
 
-    public Long getAsAtMs() {
-        return asAtMs;
+    public TimeRange getTimeRange() {
+        return timeRange;
     }
 
     public Long getToSequence() {
@@ -102,6 +108,6 @@ public class FetchPathwayRequest {
     @Override
     public String toString() {
         return "FetchPathwayRequest{pathwaysDocRef=" + pathwaysDocRef + ", name='" + name
-               + "', asAtMs=" + asAtMs + ", toSequence=" + toSequence + "}";
+               + "', timeRange=" + timeRange + ", toSequence=" + toSequence + "}";
     }
 }

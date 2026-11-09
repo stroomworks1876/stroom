@@ -27,9 +27,38 @@ import java.util.List;
 
 public class PathwayMutationResultPage extends ResultPage<PathwayMutation> {
 
+    /**
+     * The span these rows were asked for, resolved, or null where none was asked for.
+     *
+     * <p>Sent back because a range is picked as expressions - {@code day()}, {@code now()-24h} - and
+     * only the server can turn those into times. The plot over these rows is drawn across this span,
+     * so it covers what was asked for rather than running on to now.
+     */
+    @JsonProperty
+    private final Long windowFrom;
+    @JsonProperty
+    private final Long windowTo;
+
     @JsonCreator
     public PathwayMutationResultPage(@JsonProperty("values") final List<PathwayMutation> values,
-                                     @JsonProperty("pageResponse") final PageResponse pageResponse) {
+                                     @JsonProperty("pageResponse") final PageResponse pageResponse,
+                                     @JsonProperty("windowFrom") final Long windowFrom,
+                                     @JsonProperty("windowTo") final Long windowTo) {
         super(values, pageResponse);
+        this.windowFrom = windowFrom;
+        this.windowTo = windowTo;
+    }
+
+    public PathwayMutationResultPage(final List<PathwayMutation> values,
+                                     final PageResponse pageResponse) {
+        this(values, pageResponse, null, null);
+    }
+
+    public Long getWindowFrom() {
+        return windowFrom;
+    }
+
+    public Long getWindowTo() {
+        return windowTo;
     }
 }

@@ -50,7 +50,6 @@ import stroom.util.shared.NullSafe;
 import stroom.util.shared.PageRequest;
 import stroom.util.shared.PageResponse;
 import stroom.widget.button.client.ButtonView;
-import stroom.widget.customdatebox.client.ClientDateUtil;
 import stroom.widget.menu.client.presenter.IconMenuItem;
 import stroom.widget.menu.client.presenter.Item;
 import stroom.widget.menu.client.presenter.ShowMenuEvent;
@@ -123,10 +122,11 @@ public class PathwayEditPresenter
     // reading something else and coming back does not undo wherever the reader dragged it to.
     private boolean split;
     private List<PathwayMutation> history = Collections.emptyList();
-    // The moment the tab is showing, or null for as the model stands now, and what the server sent
-    // back for it. One field rather than one per reader, so the toolbar, the tables and the drawing
-    // cannot disagree about what is on screen.
-    private Long asAtMs;
+    // The span the tab is showing, and what the server sent back for it. One field rather than one
+    // per reader, so the toolbar, the tables and the drawing cannot disagree about what is on screen.
+    // Held as it was picked: a range is written as expressions, and resolving them happens where the
+    // parser for them lives, which is not here.
+    private TimeRange timeRange;
     private PathwayAsAt asAt;
     // What came back for the range with no change picked out. Kept so that letting go of a row does
     // not ask the server for something already in hand.
@@ -213,8 +213,7 @@ public class PathwayEditPresenter
         // The end of the range picked is the moment the tab answers for. Asked of the server rather
         // than worked out here: the changes it is counted from are filed by the day their work ran,
         // so a date never promises an unbroken run of them.
-        registerHandler(timeRangeSelector.addValueChangeHandler(e ->
-                showAsAt(endOf(e.getValue()))));
+        registerHandler(timeRangeSelector.addValueChangeHandler(e -> showOver(e.getValue())));
         // Constraints are the only thing on this screen that writes, and they are written straight
         // into the model the moment the constraint dialog is accepted. This is how the tab learns
         // there is something to save.
@@ -454,11 +453,14 @@ public class PathwayEditPresenter
     // The whole history at once, so winding the model back is done here rather than asked for a step
     // at a time. It is bounded by what the model has learnt, not by how many traces went through it.
     private void fetchHistory(final DocRef docRef, final String name) {
+        // The same span the drawing answers for, so the table beside it lists the changes it was
+        // made from rather than every change there has ever been.
         final FindPathwayMutationCriteria criteria = new FindPathwayMutationCriteria(
                 new PageRequest(0, MAX_HISTORY),
                 List.of(new CriteriaFieldSort(PathwayMutation.FIELD_TIME, false, false)),
                 docRef,
-                name);
+                name,
+                timeRange);
 
         restFactory
                 .create(PATHWAYS_RESOURCE)
@@ -470,7 +472,8 @@ public class PathwayEditPresenter
                         return;
                     }
                     history = result.getValues();
-                    mutationListPresenter.setData(history);
+                    mutationListPresenter.setData(history,
+                            result.getWindowFrom(), result.getWindowTo());
                     historyArrived = true;
                     drawWhenReady();
                 })
@@ -731,24 +734,14 @@ public class PathwayEditPresenter
         // Opened on the model as it stands. Nothing older is read until a range is picked that
         // reaches further back.
         timeRangeSelector.setValue(TimeRanges.ALL_TIME);
-        showAsAt(null);
-    }
-
-    // The end of the range picked, which is the moment the tab answers for. An open end means now,
-    // and now is asked for by sending nothing rather than by sending this instant: a model is read
-    // from a shard that is still being written to, so "now" has to be whatever it holds when it is
-    // read rather than a time chosen a moment earlier.
-    private static Long endOf(final TimeRange range) {
-        return range == null
-                ? null
-                : ClientDateUtil.fromISOString(range.getTo());
+        showOver(TimeRanges.ALL_TIME);
     }
 
     // A different range is a different set of rows, so both tables are rebuilt and the histogram
-    // with them.
-    private void showAsAt(final Long wanted) {
-        asAtMs = wanted;
-        fetch(FetchPathwayRequest.asAt(docRef, name, wanted), this::show);
+    // with them. The drawing answers for the latest time in it, which the server works out.
+    private void showOver(final TimeRange wanted) {
+        timeRange = wanted;
+        fetch(FetchPathwayRequest.over(docRef, name, wanted), this::show);
     }
 
     // A change picked out of the table, or null to go back to the model as it stands. Only the

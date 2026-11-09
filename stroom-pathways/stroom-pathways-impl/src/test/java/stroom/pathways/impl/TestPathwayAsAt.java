@@ -26,6 +26,7 @@ import stroom.pathways.shared.pathway.NamePathKey;
 import stroom.pathways.shared.pathway.PathNode;
 import stroom.pathways.shared.pathway.Pathway;
 import stroom.pathways.shared.pathway.PathwayMutation;
+import stroom.query.api.TimeRange;
 
 import org.junit.jupiter.api.Test;
 
@@ -98,6 +99,54 @@ class TestPathwayAsAt {
     }
 
     @Test
+    void everyNodeOnShowHasItsFiguresWithIt() {
+        // A node the drawing has no figures for is drawn at its smallest in the colour of never
+        // having changed, so a map that misses nodes shows as a picture that has mostly gone grey.
+        final PathwayAsAt asAt = ShardedPathwayReader.asAt(pathway(5), changes(), List.of(),
+                NOON + 1_500, null);
+
+        assertThat(asAt.getChanges())
+                .containsKey(asAt.getPathway().getRoot().getUuid());
+        assertThat(asAt.getChanges().get(asAt.getPathway().getRoot().getUuid()).getLastUpdated())
+                .as("the newest change at or before the moment, not the newest there has ever been")
+                .isEqualTo(NanoTime.ofMillis(NOON + 1_000));
+    }
+
+    @Test
+    void aMomentAfterEveryChangeIsTheModelAsItStands() {
+        // "All time" and "Today" both end now, so they must answer identically. A moment that takes
+        // nothing off is now, whatever the range said - and in particular it must not be given usage
+        // readings, which lag a node's own tally and would draw the lines differently.
+        final PathwayAsAt allTime = ShardedPathwayReader.asAt(pathway(5), changes(), List.of(),
+                null, null);
+        final PathwayAsAt today = ShardedPathwayReader.asAt(pathway(5), changes(), List.of(),
+                NOON + 60_000, null);
+
+        assertThat(today.getUsage())
+                .as("nothing was wound back, so each node's own tally is what the drawing reads")
+                .isEmpty();
+        assertThat(today.getPathway().getRoot().getConstraints().get("size").getValue())
+                .isEqualTo(allTime.getPathway().getRoot().getConstraints().get("size").getValue());
+        assertThat(today.getChanges().keySet()).isEqualTo(allTime.getChanges().keySet());
+        assertThat(today.getChangeCeiling()).isEqualTo(allTime.getChangeCeiling());
+    }
+
+    @Test
+    void aRangeIsReadAsItsLatestTime() {
+        // A range is picked, a drawing is one instant. The expressions are resolved here because the
+        // browser has no parser for them.
+        assertThat(ShardedPathwayReader.latestIn(new TimeRange("Test", null, null)))
+                .as("an open end is the model as it stands")
+                .isNull();
+        assertThat(ShardedPathwayReader.latestIn(null))
+                .as("no range at all is the same thing")
+                .isNull();
+        assertThat(ShardedPathwayReader.latestIn(
+                new TimeRange("Test", null, ClientDateUtilStub.iso(NOON + 1_500))))
+                .isEqualTo(NOON + 1_500);
+    }
+
+    @Test
     void aChangeCanBePickedByNumberRatherThanByTime() {
         // Stepping asks for them one at a time. Every change one trace made carries the same
         // timestamp, so a time could not tell two of them apart.
@@ -154,6 +203,15 @@ class TestPathwayAsAt {
                 .pathKey(new NamePathKey(NAME))
                 .root(root)
                 .build();
+    }
+
+    // An absolute time in the form a range carries one, which is what the expression parser reads
+    // when the range was not written as an expression.
+    private static final class ClientDateUtilStub {
+
+        private static String iso(final long ms) {
+            return java.time.Instant.ofEpochMilli(ms).toString();
+        }
     }
 
     private static List<PathwayMutation> changes() {
