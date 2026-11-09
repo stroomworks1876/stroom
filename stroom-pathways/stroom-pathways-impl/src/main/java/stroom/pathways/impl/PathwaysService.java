@@ -24,6 +24,7 @@ import stroom.pathways.shared.DeletePathway;
 import stroom.pathways.shared.FetchPathwayRequest;
 import stroom.pathways.shared.FindPathwayCriteria;
 import stroom.pathways.shared.FindPathwayMutationCriteria;
+import stroom.pathways.shared.PathwayAsAt;
 import stroom.pathways.shared.PathwayMutationResultPage;
 import stroom.pathways.shared.PathwayResultPage;
 import stroom.pathways.shared.PathwaysDoc;
@@ -109,12 +110,15 @@ public class PathwaysService {
      * One learnt pathway in full, for the tree. The list is served summaries instead, because a
      * pathway carries the whole model it has learnt and a page of them will not fit in memory.
      */
-    public Pathway fetchPathway(final FetchPathwayRequest request) {
+    public PathwayAsAt fetchPathway(final FetchPathwayRequest request) {
         final PathwaysDoc pathwaysDoc = pathwaysStore.readDocument(request.getPathwaysDocRef());
         if (pathwaysDoc == null) {
             throw new DocumentNotFoundException(request.getPathwaysDocRef());
         }
-        return shardedPathwayReader.fetchPathway(pathwaysDoc, request.getName()).orElse(null);
+        return shardedPathwayReader
+                .fetchPathwayAsAt(pathwaysDoc, request.getName(), request.getAsAtMs(),
+                        request.getToSequence())
+                .orElse(null);
     }
 
     public Boolean addPathway(final AddPathway addPathway) {

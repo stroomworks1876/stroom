@@ -199,6 +199,7 @@ public class PathwaySerde {
                 .children(readList(input, this::readPathNode))
                 .constraints(readConstraints(input))
                 .timesUsed(input.readLong())
+                .timesChanged(input.readLong())
                 .lastUsedTime(readNullableNanoTime(input))
                 .retiredTime(readNullableNanoTime(input))
                 .build();
@@ -573,6 +574,7 @@ public class PathwaySerde {
         writeList(pathNode.getChildren(), output, this::writePathNode);
         writeConstraints(pathNode.getConstraints(), output);
         output.writeLong(pathNode.getTimesUsed());
+        output.writeLong(pathNode.getTimesChanged());
         writeNullableNanoTime(pathNode.getLastUsedTime(), output);
         writeNullableNanoTime(pathNode.getRetiredTime(), output);
     }

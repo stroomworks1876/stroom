@@ -24,6 +24,7 @@ import stroom.pathways.shared.DeletePathway;
 import stroom.pathways.shared.FetchPathwayRequest;
 import stroom.pathways.shared.FindPathwayCriteria;
 import stroom.pathways.shared.FindPathwayMutationCriteria;
+import stroom.pathways.shared.PathwayAsAt;
 import stroom.pathways.shared.PathwayMutationResultPage;
 import stroom.pathways.shared.PathwayResultPage;
 import stroom.pathways.shared.PathwaysDoc;
@@ -108,7 +109,7 @@ class PathwaysResourceImpl implements PathwaysResource {
 
     @AutoLogged(OperationType.UNLOGGED)
     @Override
-    public Pathway fetchPathway(final FetchPathwayRequest request) {
+    public PathwayAsAt fetchPathway(final FetchPathwayRequest request) {
         return pathwaysServiceProvider.get().fetchPathway(request);
     }
 

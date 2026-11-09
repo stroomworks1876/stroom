@@ -6,6 +6,7 @@
     <g:FlowPanel styleName="max form form-padding dock-container-vertical">
         <g:FlowPanel styleName="pager dock-container-horizontal dock-min align-center">
             <g:FlowPanel ui:field="toolbarWidgets" addStyleNames="pager-toolbar"/>
+            <g:FlowPanel ui:field="toolbarRight" addStyleNames="pathway-toolbar-right"/>
         </g:FlowPanel>
         <g:MySplitLayoutPanel ui:field="mainSplit" styleName="dock-max">
             <g:south size="280">

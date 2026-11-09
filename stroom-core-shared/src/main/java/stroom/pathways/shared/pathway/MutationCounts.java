@@ -14,11 +14,9 @@
  * limitations under the License.
  */
 
-package stroom.pathways.client.presenter;
+package stroom.pathways.shared.pathway;
 
 import stroom.pathways.shared.otel.trace.NanoTime;
-import stroom.pathways.shared.pathway.MutationType;
-import stroom.pathways.shared.pathway.PathwayMutation;
 import stroom.util.shared.NullSafe;
 
 import java.util.HashMap;
@@ -48,7 +46,7 @@ import java.util.Set;
  *     changes it had not yet been through says something that was never true.</li>
  * </ul>
  */
-class MutationCounts {
+public class MutationCounts {
 
     // Paths are lists and maps are keyed by strings, so the parts are joined by something a span name
     // cannot hold.
@@ -65,7 +63,7 @@ class MutationCounts {
     /**
      * @param upTo the change being looked at, or zero to count the whole history.
      */
-    static MutationCounts of(final List<PathwayMutation> history, final long upTo) {
+    public static MutationCounts of(final List<PathwayMutation> history, final long upTo) {
         final String creatingTrace = creatingTrace(history);
         final Counter nodes = new Counter();
         for (final PathwayMutation mutation : NullSafe.list(history)) {
@@ -92,14 +90,14 @@ class MutationCounts {
     /**
      * What a node had changed by the point counted to, or null where it had not changed at all.
      */
-    NodeChange node(final List<String> path) {
+    public NodeChange node(final List<String> path) {
         return nodes.get(key(path));
     }
 
     /**
      * The most any one node had changed, which is what node sizes are measured against.
      */
-    long getMostChangedNode() {
+    public long getMostChangedNode() {
         return mostChangedNode;
     }
 
@@ -114,7 +112,7 @@ class MutationCounts {
      * the constraint or moved one it had just added. Shared so that what is drawn as a change and
      * what is counted as one cannot come apart.
      */
-    static String creatingTrace(final List<PathwayMutation> history) {
+    public static String creatingTrace(final List<PathwayMutation> history) {
         for (final PathwayMutation mutation : NullSafe.list(history)) {
             if (MutationType.PATHWAY_ADDED.equals(mutation.getType())) {
                 return mutation.getTraceId();

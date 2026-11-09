@@ -16,6 +16,7 @@
 
 package stroom.pathways.client.presenter;
 
+import stroom.pathways.shared.pathway.NodeChange;
 import stroom.pathways.shared.pathway.NodeUsage;
 import stroom.pathways.shared.pathway.PathNode;
 import stroom.pathways.shared.pathway.Pathway;

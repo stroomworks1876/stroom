@@ -27,6 +27,7 @@ import stroom.pathways.shared.TraceHistogram;
 import stroom.pathways.shared.otel.trace.NanoTime;
 import stroom.pathways.shared.pathway.AbstractRange;
 import stroom.pathways.shared.pathway.ConstraintValue;
+import stroom.pathways.shared.pathway.MutationCounts;
 import stroom.pathways.shared.pathway.MutationType;
 import stroom.pathways.shared.pathway.PathNode;
 import stroom.pathways.shared.pathway.PathwayMutation;

@@ -106,6 +106,11 @@ public class NodeMutatorImpl {
     // long it waited is anyone's guess. Taken off the root span, which is the one span of a trace that
     // stands for the whole of it.
     private NanoTime traceTime;
+    // The nodes this trace changed, so each one's count rises once however many of its constraints
+    // moved. Left empty where this trace is bringing the pathway into being: it taught the model
+    // everything it knows, and counting that would leave every node reading as changed at least once.
+    private final Set<List<String>> changedNodes = new LinkedHashSet<>();
+    private boolean creating;
     private String traceId;
     private String spanId;
     // Whether what is being recorded is a node this trace did not carry.
@@ -168,6 +173,49 @@ public class NodeMutatorImpl {
         // history nor where the trace came from is known here.
         mutations.add(new PathwayMutation(0L, time, traceTime, -1, traceId, spanId,
                 node.getNodePath(), node.getUuid(), constraint, type, optional, oldValue, newValue));
+        if (!creating && countsAsChange(type)) {
+            changedNodes.add(node.getNodePath());
+        }
+    }
+
+    // What the drawing counts, so a node's own tally and the figure counted from the changes agree.
+    // Something arriving is not the node changing the way a widening is, and a node the trace did not
+    // carry has not changed at all.
+    private static boolean countsAsChange(final MutationType type) {
+        return !MutationType.PATHWAY_ADDED.equals(type)
+               && !MutationType.NODE_ADDED.equals(type)
+               && !MutationType.CONSTRAINT_ADDED.equals(type)
+               && !MutationType.NODE_ABSENT.equals(type);
+    }
+
+    // Raises the tally on every node this trace changed, leaving the rest of the tree as it stands.
+    // Rebuilt branch by branch rather than whole, because the walk above only rebuilds what the trace
+    // reached and a second pass over everything would undo that.
+    private PathNode counted(final PathNode node) {
+        final boolean changed = changedNodes.contains(node.getNodePath());
+        final List<PathNode> children = NullSafe.list(node.getChildren());
+        List<PathNode> rebuilt = null;
+        for (int i = 0; i < children.size(); i++) {
+            final PathNode was = children.get(i);
+            final PathNode now = counted(was);
+            if (now != was) {
+                if (rebuilt == null) {
+                    rebuilt = new ArrayList<>(children);
+                }
+                rebuilt.set(i, now);
+            }
+        }
+        if (!changed && rebuilt == null) {
+            return node;
+        }
+        final PathNode.Builder builder = node.copy();
+        if (rebuilt != null) {
+            builder.children(rebuilt);
+        }
+        if (changed) {
+            builder.timesChanged(node.getTimesChanged() + 1);
+        }
+        return builder.build();
     }
 
     // A change to the node rather than to one of its constraints, so there is no flag to carry.
@@ -196,6 +244,7 @@ public class NodeMutatorImpl {
 
         final PathNode node;
         if (pathNode == null) {
+            creating = true;
             messages.log(Severity.INFO, () -> "Adding new root path: " + root.getName());
             node = new PathNode(root.getName());
             // Named like any other node, so a replay running forwards can put the root back as it was.
@@ -207,7 +256,10 @@ public class NodeMutatorImpl {
         }
 
         // The root has nothing above it to be measured against, so it starts with no parent time.
-        return walk(trace, root, node, null, messageReceiver, pathwaysDoc);
+        final PathNode built = walk(trace, root, node, null, messageReceiver, pathwaysDoc);
+        return built == null
+                ? null
+                : counted(built);
     }
 
     // parentStartTime is the start of the span enclosing parentSpan, not of parentSpan itself — the

@@ -43,6 +43,8 @@ public class PathwayEditViewImpl extends ViewImpl implements PathwayEditView {
     @UiField
     FlowPanel toolbarWidgets;
     @UiField
+    FlowPanel toolbarRight;
+    @UiField
     MySplitLayoutPanel mainSplit;
     @UiField
     FlowPanel lowerPanel;
@@ -78,6 +80,11 @@ public class PathwayEditViewImpl extends ViewImpl implements PathwayEditView {
             toolbarWidgets.add(buttonPanel);
         }
         return buttonPanel.addButton(preset);
+    }
+
+    @Override
+    public void addToolbarWidget(final Widget widget) {
+        toolbarRight.add(widget);
     }
 
     @Override

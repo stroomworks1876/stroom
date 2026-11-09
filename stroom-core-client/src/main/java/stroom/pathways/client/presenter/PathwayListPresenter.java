@@ -31,6 +31,7 @@ import stroom.pathways.shared.AddPathway;
 import stroom.pathways.shared.DeletePathway;
 import stroom.pathways.shared.FetchPathwayRequest;
 import stroom.pathways.shared.FindPathwayCriteria;
+import stroom.pathways.shared.PathwayAsAt;
 import stroom.pathways.shared.PathwaySummary;
 import stroom.pathways.shared.PathwaysDoc;
 import stroom.pathways.shared.PathwaysResource;
@@ -84,7 +85,7 @@ public class PathwayListPresenter
     private String wantedSelection;
     private boolean fetching;
     private long requests;
-    private final List<Consumer<Pathway>> waiting = new ArrayList<>();
+    private final List<Consumer<PathwayAsAt>> waiting = new ArrayList<>();
 
     private String filter;
     private DocRef docRef;
@@ -346,7 +347,7 @@ public class PathwayListPresenter
      * {@link PathwaySummary} — so everything around it wants the model, and they share one request
      * rather than making one each.
      */
-    public void withSelectedPathway(final Consumer<Pathway> consumer) {
+    public void withSelectedPathway(final Consumer<PathwayAsAt> consumer) {
         final String name = NullSafe.get(selectionModel.getSelected(), PathwaySummary::getName);
 
         if (name == null) {
@@ -374,10 +375,10 @@ public class PathwayListPresenter
         restFactory
                 .create(PATHWAYS_RESOURCE)
                 .method(res -> res.fetchPathway(new FetchPathwayRequest(docRef, name)))
-                .onSuccess(pathway -> {
+                .onSuccess(result -> {
                     if (request == requests) {
                         fetching = false;
-                        tell(pathway);
+                        tell(result);
                     }
                 })
                 .onFailure(new DefaultErrorHandler(this, () -> {
@@ -391,14 +392,14 @@ public class PathwayListPresenter
                 .exec();
     }
 
-    private void tell(final Pathway pathway) {
-        final List<Consumer<Pathway>> toTell = new ArrayList<>(waiting);
+    private void tell(final PathwayAsAt pathway) {
+        final List<Consumer<PathwayAsAt>> toTell = new ArrayList<>(waiting);
         waiting.clear();
         toTell.forEach(consumer -> consumer.accept(pathway));
     }
 
     private void failed() {
-        final List<Consumer<Pathway>> toTell = new ArrayList<>(waiting);
+        final List<Consumer<PathwayAsAt>> toTell = new ArrayList<>(waiting);
         forget();
         toTell.forEach(consumer -> consumer.accept(null));
     }

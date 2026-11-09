@@ -14,9 +14,14 @@
  * limitations under the License.
  */
 
-package stroom.pathways.client.presenter;
+package stroom.pathways.shared.pathway;
 
 import stroom.pathways.shared.otel.trace.NanoTime;
+
+import com.fasterxml.jackson.annotation.JsonCreator;
+import com.fasterxml.jackson.annotation.JsonInclude;
+import com.fasterxml.jackson.annotation.JsonInclude.Include;
+import com.fasterxml.jackson.annotation.JsonProperty;
 
 /**
  * How many traces have changed one node, and when it last changed, worked out from the stored changes.
@@ -25,14 +30,20 @@ import stroom.pathways.shared.otel.trace.NanoTime;
  * thing on one occasion, the same as a trace that widened one.
  *
  * <p>Neither is held on the node. The changes already say both, and holding them twice would let the
- * two differ.
+ * two differ. The node's own tally of changes is a different figure, kept only to scale the drawing
+ * against and never counted down to a past moment.
  */
-class NodeChange {
+@JsonInclude(Include.NON_NULL)
+public class NodeChange {
 
+    @JsonProperty
     private final long count;
+    @JsonProperty
     private final NanoTime lastUpdated;
 
-    NodeChange(final long count, final NanoTime lastUpdated) {
+    @JsonCreator
+    public NodeChange(@JsonProperty("count") final long count,
+                      @JsonProperty("lastUpdated") final NanoTime lastUpdated) {
         this.count = count;
         this.lastUpdated = lastUpdated;
     }
@@ -40,11 +51,11 @@ class NodeChange {
     /**
      * How many traces have changed this node since it was learnt.
      */
-    long getCount() {
+    public long getCount() {
         return count;
     }
 
-    NanoTime getLastUpdated() {
+    public NanoTime getLastUpdated() {
         return lastUpdated;
     }
 }

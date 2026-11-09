@@ -76,9 +76,9 @@ public interface PathwaysResource extends RestResource, DirectRestService, Fetch
     @POST
     @Path(FETCH_PATHWAY_SUB_PATH)
     @Operation(
-            summary = "Fetch one learnt pathway in full",
+            summary = "Fetch one learnt pathway as it stood at a moment, with what a drawing needs",
             operationId = "fetchPathway")
-    Pathway fetchPathway(
+    PathwayAsAt fetchPathway(
             @Parameter(description = "request", required = true) FetchPathwayRequest request);
 
     @POST

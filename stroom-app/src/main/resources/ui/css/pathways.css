@@ -635,6 +635,15 @@
 
 /* Wrapper contributed to the doc tab's save-toolbar row (via HasToolbar); flex-grow fills the
    width right of the save buttons and pushes the TimeRangeSelector to the right edge. */
+/* The far end of the pathway tab's toolbar, level with Save, for the date being shown. */
+.pathway-toolbar-right {
+    display: flex;
+    flex-grow: 1;
+    justify-content: flex-end;
+    align-items: center;
+    padding: 0 5px;
+}
+
 .traces-toolbar {
     display: flex;
     flex-grow: 1;

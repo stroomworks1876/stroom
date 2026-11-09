@@ -19,6 +19,7 @@ package stroom.pathways.client.presenter;
 import stroom.docref.DocRef;
 import stroom.entity.client.presenter.DocPresenter;
 import stroom.pathways.client.presenter.PathwaysSplitPresenter.PathwaysSplitView;
+import stroom.pathways.shared.PathwayAsAt;
 import stroom.pathways.shared.PathwaysDoc;
 import stroom.pathways.shared.pathway.PathNode;
 import stroom.util.shared.NullSafe;
@@ -63,9 +64,13 @@ public class PathwaysSplitPresenter extends DocPresenter<PathwaysSplitView, Path
     @Override
     protected void onBind() {
         super.onBind();
+        // The figures come back with the model, so the drawing beside the list is made the same way
+        // as the one in the tab: given rather than counted, and asking for no history of its own.
         registerHandler(pathwayListPresenter.getSelectionModel().addSelectionHandler(e ->
-                pathwayListPresenter.withSelectedPathway(pathway ->
-                        pathwayTreePresenter.read(pathway))));
+                pathwayListPresenter.withSelectedPathway(asAt -> {
+                    pathwayTreePresenter.setFigures(asAt);
+                    pathwayTreePresenter.read(NullSafe.get(asAt, PathwayAsAt::getPathway));
+                })));
         // Which node is picked out on the drawing is what the panel beside it is about.
         registerHandler(pathwayTreePresenter.getSelectionModel()
                 .addSelectionChangeHandler(e -> showNode()));
@@ -93,14 +98,13 @@ public class PathwaysSplitPresenter extends DocPresenter<PathwaysSplitView, Path
     private void showSettledNode() {
         final PathNode node = pathwayTreePresenter.getSelectionModel().getSelectedObject();
         nodeInfoPresenter.setData(node,
-                pathwayTreePresenter.getChange(NullSafe.get(node, PathNode::getNodePath)));
+                pathwayTreePresenter.getChange(node));
     }
 
     @Override
     protected void onRead(final DocRef docRef, final PathwaysDoc document, final boolean readOnly) {
         // Nothing here holds the changes behind a model, so the tree is told where to ask for them.
         // It only does so for the graph, which is the one drawing that needs them.
-        pathwayTreePresenter.setDocRef(docRef);
         pathwayListPresenter.onRead(docRef, document, readOnly);
     }
 

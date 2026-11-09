@@ -29,6 +29,7 @@ import stroom.docref.DocRef;
 import stroom.pathways.client.presenter.PathwayEditPresenter.PathwayEditView;
 import stroom.pathways.shared.FetchPathwayRequest;
 import stroom.pathways.shared.FindPathwayMutationCriteria;
+import stroom.pathways.shared.PathwayAsAt;
 import stroom.pathways.shared.PathwaysDoc;
 import stroom.pathways.shared.PathwaysResource;
 import stroom.pathways.shared.UpdatePathway;
@@ -38,7 +39,9 @@ import stroom.pathways.shared.pathway.PathUse;
 import stroom.pathways.shared.pathway.Paths;
 import stroom.pathways.shared.pathway.Pathway;
 import stroom.pathways.shared.pathway.PathwayMutation;
-import stroom.pathways.shared.pathway.PathwayReplay;
+import stroom.query.api.TimeRange;
+import stroom.query.api.TimeRanges;
+import stroom.query.client.view.TimeRangeSelector;
 import stroom.svg.client.Preset;
 import stroom.svg.client.SvgPresets;
 import stroom.svg.shared.SvgImage;
@@ -47,6 +50,7 @@ import stroom.util.shared.NullSafe;
 import stroom.util.shared.PageRequest;
 import stroom.util.shared.PageResponse;
 import stroom.widget.button.client.ButtonView;
+import stroom.widget.customdatebox.client.ClientDateUtil;
 import stroom.widget.menu.client.presenter.IconMenuItem;
 import stroom.widget.menu.client.presenter.Item;
 import stroom.widget.menu.client.presenter.ShowMenuEvent;
@@ -58,6 +62,7 @@ import stroom.widget.tab.client.view.LinkTabBar;
 import com.google.gwt.core.client.GWT;
 import com.google.gwt.core.client.Scheduler;
 import com.google.gwt.user.client.Timer;
+import com.google.gwt.user.client.ui.Widget;
 import com.google.inject.Inject;
 import com.google.web.bindery.event.shared.EventBus;
 import com.gwtplatform.mvp.client.LayerContainer;
@@ -67,6 +72,7 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.Objects;
+import java.util.function.Consumer;
 
 /**
  * One pathway open as a tab of its own. A tab rather than a dialog because reading a model is not a
@@ -80,10 +86,11 @@ public class PathwayEditPresenter
     private static final PathwaysResource PATHWAYS_RESOURCE = GWT.create(PathwaysResource.class);
 
     /**
-     * How much of a pathway's history is held for winding the model back. A pathway's history is
-     * bounded by what is novel rather than by traffic, so this is not expected to be reached — but
-     * winding back part of a history would show a model that never existed, so past this the view
-     * stays on the current one and says nothing false.
+     * How much of a pathway's history is listed in the Changes table. A pathway's history is bounded
+     * by what is novel rather than by traffic, so this is not expected to be reached.
+     *
+     * <p>It no longer bounds what can be drawn: the model for a moment is wound back by the server,
+     * which reads the changes it needs there rather than being handed them.
      */
     private static final int MAX_HISTORY = 20000;
     private static final int STEP_MILLIS = 1500;
@@ -116,11 +123,18 @@ public class PathwayEditPresenter
     // reading something else and coming back does not undo wherever the reader dragged it to.
     private boolean split;
     private List<PathwayMutation> history = Collections.emptyList();
-    private boolean historyComplete;
+    // The moment the tab is showing, or null for as the model stands now, and what the server sent
+    // back for it. One field rather than one per reader, so the toolbar, the tables and the drawing
+    // cannot disagree about what is on screen.
+    private Long asAtMs;
+    private PathwayAsAt asAt;
+    // What came back for the range with no change picked out. Kept so that letting go of a row does
+    // not ask the server for something already in hand.
+    private PathwayAsAt rangeAsAt;
+    private final TimeRangeSelector timeRangeSelector = new TimeRangeSelector();
     // Whether each of the two things the drawing is made from has arrived. Both are asked for at once
     // and neither waits on the other, so which lands first is not known.
     private boolean historyArrived;
-    private boolean usageArrived;
     private final PathwayTreePresenter pathwayTreePresenter;
     private final ConstraintListPresenter constraintListPresenter;
     private final NodeInfoPresenter nodeInfoPresenter;
@@ -179,6 +193,9 @@ public class PathwayEditPresenter
         // On the tab's own toolbar rather than on any one panel's, because it is the pathway that is
         // saved rather than anything on show.
         saveButton = view.addButton(SvgPresets.SAVE);
+        // At the far end of the same row as Save: what the tab does on the left, what it is showing
+        // on the right.
+        view.addToolbarWidget(timeRangeSelector);
         saveButton.setEnabled(false);
 
         // On the Changes toolbar, beside the buttons that open and close it. What they step through
@@ -193,6 +210,11 @@ public class PathwayEditPresenter
     protected void onBind() {
         super.onBind();
         registerHandler(saveButton.addClickHandler(e -> save()));
+        // The end of the range picked is the moment the tab answers for. Asked of the server rather
+        // than worked out here: the changes it is counted from are filed by the day their work ran,
+        // so a date never promises an unbroken run of them.
+        registerHandler(timeRangeSelector.addValueChangeHandler(e ->
+                showAsAt(endOf(e.getValue()))));
         // Constraints are the only thing on this screen that writes, and they are written straight
         // into the model the moment the constraint dialog is accepted. This is how the tab learns
         // there is something to save.
@@ -224,7 +246,7 @@ public class PathwayEditPresenter
         // changed — so the whole drawing would come back older without anything having been learnt.
         registerHandler(mutationListPresenter.getSelectionModel().addSelectionHandler(e -> {
             if (!Objects.equals(drawnChange, mutationListPresenter.getSelectedSequence())) {
-                showModel();
+                showAtChange(mutationListPresenter.getSelectedSequence());
             }
         }));
         registerHandler(pathListPresenter.getSelectionModel().addSelectionHandler(e -> {
@@ -448,9 +470,6 @@ public class PathwayEditPresenter
                         return;
                     }
                     history = result.getValues();
-                    pathwayTreePresenter.setHistory(history);
-                    historyComplete = history.size() >= NullSafe.getOrElse(
-                            result.getPageResponse(), PageResponse::getTotal, 0L);
                     mutationListPresenter.setData(history);
                     historyArrived = true;
                     drawWhenReady();
@@ -458,7 +477,6 @@ public class PathwayEditPresenter
                 .onFailure(new DefaultErrorHandler(this, () -> {
                     // Asked and not answered. The drawing waits for these, so it has to be told that
                     // none are coming or it waits for ever.
-                    pathwayTreePresenter.setHistory(Collections.emptyList());
                     historyArrived = true;
                     drawWhenReady();
                 }))
@@ -469,36 +487,13 @@ public class PathwayEditPresenter
     // How much each node had been used at each point the model can be wound back to. Fetched apart
     // from the changes because there is one reading per trace that changed the model rather than one
     // per change, and the drawing needs all of them rather than a page.
-    private void fetchUsage(final DocRef docRef, final String name) {
-        final FindPathwayMutationCriteria criteria = new FindPathwayMutationCriteria(
-                new PageRequest(0, MAX_HISTORY),
-                List.of(new CriteriaFieldSort(PathwayMutation.FIELD_TIME, false, false)),
-                docRef,
-                name);
-        restFactory
-                .create(PATHWAYS_RESOURCE)
-                .method(res -> res.findUsage(criteria))
-                .onSuccess(usage -> {
-                    if (pathway != null && name.equals(pathway.getName())) {
-                        pathwayTreePresenter.setUsage(usage);
-                        usageArrived = true;
-                        drawWhenReady();
-                    }
-                })
-                .onFailure(new DefaultErrorHandler(this, () -> {
-                    usageArrived = true;
-                    drawWhenReady();
-                }))
-                .taskMonitorFactory(this)
-                .exec();
-    }
 
     // Once, when everything the drawing is made from is in. The changes say how much each node has
     // moved and the readings say how much has gone through it, and a drawing made with one but not
     // the other is drawn at the wrong sizes and then drawn again — on a large model that is two slow
     // redraws and a jump, for a picture that was never right the first time.
     private void drawWhenReady() {
-        if (historyArrived && usageArrived) {
+        if (historyArrived) {
             showModel();
         }
     }
@@ -580,31 +575,17 @@ public class PathwayEditPresenter
         // everything the reader was looking at.
         pathwayTreePresenter.setLayout(pathway.getRoot());
 
-        // The history itself is handed over once, when it arrives. Only where the replay stands moves
-        // from here, and saying so is a walk of the history rather than three.
-        final Long selected = mutationListPresenter.getSelectedSequence();
-        if (selected == null || !historyComplete) {
-            pathwayTreePresenter.setAsAt(null, null);
-            pathwayTreePresenter.read(pathway);
-        } else {
-            final List<PathwayMutation> later = new ArrayList<>();
-            for (final PathwayMutation mutation : history) {
-                if (mutation.getSequence() > selected) {
-                    later.add(mutation);
-                }
-            }
-
-            // What each node had changed by this point is counted from the whole history held there,
-            // while what the sizes are measured against stays the most any node has ever changed.
-            // Handed only the part up to here, winding back would rescale the picture rather than
-            // shrink it.
-            pathwayTreePresenter.setAsAt(mutationListPresenter.getSelectedTime(), selected);
-
-            final PathNode root = PathwayReplay.rewind(pathway.getRoot(), later);
-            pathwayTreePresenter.read(root == null
-                    ? null
-                    : pathway.copy().root(root).build());
-        }
+        // The model on show is whatever came back for the moment asked for, and the figures with it.
+        // Neither is worked out here: winding back needs an unbroken run of changes from the newest,
+        // and the rows it needs are filed by the day their work ran rather than by when they were
+        // learnt, so a date never promises one.
+        final Pathway shown = NullSafe.getOrElse(asAt, PathwayAsAt::getPathway, pathway);
+        pathwayTreePresenter.setFigures(asAt);
+        pathwayTreePresenter.setAsAt(NullSafe.get(asAt, PathwayAsAt::getAsAt),
+                mutationListPresenter.getSelectedSequence());
+        pathwayTreePresenter.read(NullSafe.get(shown, Pathway::getRoot) == null
+                ? null
+                : shown);
 
         // Which of a node's constraints the change being looked at moved is marked in the table beside
         // the drawing, and there may no longer be a change being looked at. Whichever way this went,
@@ -722,7 +703,7 @@ public class PathwayEditPresenter
         // changes say it. Asked of the drawing, which has already worked it out to size the node by,
         // so the two cannot disagree about it.
         nodeInfoPresenter.setData(node,
-                pathwayTreePresenter.getChange(NullSafe.get(node, PathNode::getNodePath)));
+                pathwayTreePresenter.getChange(node));
     }
 
     // Only the selected one is built into the panel, so the other stops drawing rather than being
@@ -747,17 +728,71 @@ public class PathwayEditPresenter
         this.docRef = pathwaysDoc.asDocRef();
         this.name = name;
         setDirty(false);
+        // Opened on the model as it stands. Nothing older is read until a range is picked that
+        // reaches further back.
+        timeRangeSelector.setValue(TimeRanges.ALL_TIME);
+        showAsAt(null);
+    }
+
+    // The end of the range picked, which is the moment the tab answers for. An open end means now,
+    // and now is asked for by sending nothing rather than by sending this instant: a model is read
+    // from a shard that is still being written to, so "now" has to be whatever it holds when it is
+    // read rather than a time chosen a moment earlier.
+    private static Long endOf(final TimeRange range) {
+        return range == null
+                ? null
+                : ClientDateUtil.fromISOString(range.getTo());
+    }
+
+    // A different range is a different set of rows, so both tables are rebuilt and the histogram
+    // with them.
+    private void showAsAt(final Long wanted) {
+        asAtMs = wanted;
+        fetch(FetchPathwayRequest.asAt(docRef, name, wanted), this::show);
+    }
+
+    // A change picked out of the table, or null to go back to the model as it stands. Only the
+    // drawing moves: the row picked is still a row of the same table, so rebuilding it would take
+    // the selection away and send the histogram back to where it started.
+    private void showAtChange(final Long sequence) {
+        if (sequence == null) {
+            // Nothing picked out, which is the range's own model - already fetched and still here.
+            showPosition(rangeAsAt);
+            return;
+        }
+        fetch(FetchPathwayRequest.atChange(docRef, name, sequence), this::showPosition);
+    }
+
+    private void fetch(final FetchPathwayRequest request, final Consumer<PathwayAsAt> onSuccess) {
+        if (docRef == null || name == null) {
+            return;
+        }
         restFactory
                 .create(PATHWAYS_RESOURCE)
-                .method(res -> res.fetchPathway(new FetchPathwayRequest(docRef, name)))
-                .onSuccess(this::show)
+                .method(res -> res.fetchPathway(request))
+                .onSuccess(onSuccess)
                 .onFailure(new DefaultErrorHandler(this, null))
                 .taskMonitorFactory(this)
                 .exec();
     }
 
-    private void show(final Pathway pathway) {
-        this.pathway = pathway;
+    // What came back for a position, which is the drawing and nothing else.
+    private void showPosition(final PathwayAsAt asAt) {
+        this.asAt = asAt;
+        showModel();
+    }
+
+    private void show(final PathwayAsAt asAt) {
+        this.asAt = asAt;
+        this.rangeAsAt = asAt;
+        final Pathway fetched = NullSafe.get(asAt, PathwayAsAt::getPathway);
+        // The model as it stands is what the drawing is laid out from, so a wound-back one is kept
+        // beside it rather than over it: placing what is left where it already was keeps every node
+        // still, rather than closing the gaps and moving everything the reader was looking at.
+        if (asAt != null && asAt.getAsAt() == null && fetched != null) {
+            this.pathway = fetched;
+        }
+        final Pathway pathway = this.pathway;
         if (pathway == null) {
             return;
         }
@@ -777,19 +812,15 @@ public class PathwayEditPresenter
         // the end of this. Nothing is handed over until they arrive: an empty list would say this
         // pathway's changes had arrived and were none, and the drawing would be made with every node
         // at its smallest.
-        pathwayTreePresenter.setUsage(Collections.emptyList());
         pathwayTreePresenter.read(pathway);
         showConstraints();
         showPlayButtons();
         mutationListPresenter.setData(Collections.emptyList());
 
-        // Both at once rather than one after the other. The changes and the readings are answered by
-        // different queries and neither needs the other, so asking in turn only made the wait twice
-        // as long.
+        // Only the changes. How busy each node was comes back with the model now, so the readings
+        // are no longer asked for separately.
         historyArrived = false;
-        usageArrived = false;
         fetchHistory(docRef, pathway.getName());
-        fetchUsage(docRef, pathway.getName());
     }
 
     private Pathway write() {
@@ -913,6 +944,11 @@ public class PathwayEditPresenter
     public interface PathwayEditView extends View {
 
         ButtonView addButton(Preset preset);
+
+        /**
+         * Puts a widget in the toolbar beside the buttons, for the date the tab is showing.
+         */
+        void addToolbarWidget(Widget widget);
 
         void setLowerShare(double share);
 

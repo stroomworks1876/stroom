@@ -17,24 +17,15 @@
 package stroom.pathways.client.presenter;
 
 import stroom.data.grid.client.DefaultResources;
-import stroom.dispatch.client.DefaultErrorHandler;
-import stroom.dispatch.client.RestFactory;
-import stroom.docref.DocRef;
 import stroom.pathways.client.presenter.PathwayTreePresenter.PathwayTreeView;
-import stroom.pathways.shared.FindPathwayMutationCriteria;
-import stroom.pathways.shared.PathwaysResource;
+import stroom.pathways.shared.PathwayAsAt;
 import stroom.pathways.shared.otel.trace.NanoTime;
-import stroom.pathways.shared.pathway.NodeUsage;
+import stroom.pathways.shared.pathway.NodeChange;
 import stroom.pathways.shared.pathway.PathNode;
 import stroom.pathways.shared.pathway.Pathway;
-import stroom.pathways.shared.pathway.PathwayMutation;
-import stroom.pathways.shared.pathway.PathwayUsage;
 import stroom.svg.client.Preset;
 import stroom.svg.shared.SvgImage;
-import stroom.util.shared.CriteriaFieldSort;
 import stroom.util.shared.NullSafe;
-import stroom.util.shared.PageRequest;
-import stroom.util.shared.PageResponse;
 import stroom.widget.button.client.ButtonView;
 import stroom.widget.button.client.InlineSvgToggleButton;
 import stroom.widget.popup.client.presenter.PopupPosition;
@@ -42,7 +33,6 @@ import stroom.widget.tab.client.view.GlobalResizeObserver;
 import stroom.widget.util.client.ElementUtil;
 import stroom.widget.util.client.MySingleSelectionModel;
 
-import com.google.gwt.core.client.GWT;
 import com.google.gwt.dom.client.Element;
 import com.google.gwt.dom.client.Node;
 import com.google.gwt.dom.client.NodeList;
@@ -50,7 +40,6 @@ import com.google.gwt.dom.client.Style;
 import com.google.gwt.dom.client.Style.Position;
 import com.google.gwt.event.dom.client.ContextMenuEvent;
 import com.google.gwt.safehtml.shared.SafeHtmlUtils;
-import com.google.gwt.user.client.Timer;
 import com.google.gwt.user.client.ui.HTML;
 import com.google.gwt.user.client.ui.Widget;
 import com.google.inject.Inject;
@@ -99,31 +88,20 @@ public class PathwayTreePresenter
     private static final int PATH_STAGGER_MS = 400;
     private static final String GRAPH_TITLE = "Show as a graph";
     private static final String TREE_TITLE = "Show as a tree";
-    private static final int MAX_HISTORY = 20000;
-    private static final int HISTORY_DELAY_MILLIS = 400;
-    private static final PathwaysResource PATHWAYS_RESOURCE = GWT.create(PathwaysResource.class);
 
     private final InlineSvgToggleButton viewButton;
-    private final RestFactory restFactory;
     private final PathwayViewport viewport;
     private Runnable viewChangeHandler;
     // Told when a node is asked about on the drawing, so whoever knows what can be done with one can
     // offer it. Not decided here: this draws the model and says what was picked, and what a reader may
     // do with a node belongs with the things that would do it.
     private BiConsumer<PathNode, PopupPosition> nodeMenuHandler;
-    private boolean historyPending;
     private boolean blanked;
     private String wantedSelection;
     // Whether the drawing was last made against a panel with no size. Put right when the panel has
     // one, rather than on every showing, so a reader who zoomed in and looked at something else keeps
     // the drawing where they left it.
     private boolean drewWhileHidden;
-    private final Timer historyRequest = new Timer() {
-        @Override
-        public void run() {
-            fetchHistoryNow();
-        }
-    };
     private boolean stepping;
 
     private final HTML html;
@@ -137,7 +115,6 @@ public class PathwayTreePresenter
     // How much each node has changed and when it last did, by uuid. Worked out from the stored changes
     // rather than held on the node: the changes already say it, and holding it twice would let the two
     // differ.
-    private MutationCounts counts = MutationCounts.of(Collections.emptyList(), 0);
     // The moment being looked at. Zero while the model on show is the current one, in which case it
     // is the time now.
     private long asAt;
@@ -145,13 +122,13 @@ public class PathwayTreePresenter
     // not move the ones around it. Null where the model on show is the current one and is its own
     // answer.
     private PathNode layout;
-    private List<PathwayUsage> usage = Collections.emptyList();
     // The change being wound back to, which says which reading applies.
     private long upTo;
-    private List<PathwayMutation> history = Collections.emptyList();
-    private long changeCeiling;
+    // What the server worked out for the moment on show, or null where nothing has been figures and the
+    // figures are still counted here.
+    private PathwayAsAt figures;
     // Nodes to draw attention to, each path key against every place it takes in the order they were
-    // given in — every place, because a walk can reach one node more than once. Held rather than
+    // figures in — every place, because a walk can reach one node more than once. Held rather than
     // applied once, because the drawing is rebuilt whenever the model is and the elements it was put
     // on go with it.
     private Map<String, List<Integer>> highlighted = Collections.emptyMap();
@@ -165,8 +142,6 @@ public class PathwayTreePresenter
     private boolean showKey;
     // Where to ask for the changes if nothing hands them over. The view around this one may already
     // hold them, in which case it gives them and nothing is fetched.
-    private DocRef docRef;
-    private String historyFor;
 
     private Pathway pathway;
     private Element selectedElement;
@@ -176,10 +151,8 @@ public class PathwayTreePresenter
     @Inject
     public PathwayTreePresenter(final EventBus eventBus,
                                 final PathwayTreeView view,
-                                final RestFactory restFactory,
                                 final DefaultResources resources) {
         super(eventBus, view);
-        this.restFactory = restFactory;
         // Which way the model is drawn, not what is drawn, so it sits with the tree rather than with
         // the buttons that change the model. It holds which drawing is on show, so nothing else has to.
         //
@@ -378,7 +351,6 @@ public class PathwayTreePresenter
                 ? TREE_TITLE
                 : GRAPH_TITLE);
 
-        fetchHistory();
         // Where the drawing arriving was last left, rather than the middle. Only the first sight of a
         // model opens in the middle; after that the reader put it where they wanted it.
         viewport.swapDrawing();
@@ -386,59 +358,6 @@ public class PathwayTreePresenter
         if (viewChangeHandler != null) {
             viewChangeHandler.run();
         }
-    }
-
-    // Only the graph needs the changes, and only for colour, so they are asked for when it is first
-    // shown rather than with every pathway opened. A page of them is large enough that the pathway
-    // list was unopenable while it read them.
-    // Asked for a moment after the reader stops moving, not as they move. Running down a list of
-    // pathways with the arrow keys would otherwise ask for the whole history of every one passed
-    // over, and every answer but the last would be thrown away.
-    private void fetchHistory() {
-        historyRequest.cancel();
-        if (renderer.usesHistory() && docRef != null) {
-            historyRequest.schedule(HISTORY_DELAY_MILLIS);
-        }
-    }
-
-    private void fetchHistoryNow() {
-        final String name = NullSafe.get(pathway, Pathway::getName);
-        if (!renderer.usesHistory() || docRef == null || name == null || name.equals(historyFor)) {
-            return;
-        }
-
-        historyFor = name;
-        final FindPathwayMutationCriteria criteria = new FindPathwayMutationCriteria(
-                new PageRequest(0, MAX_HISTORY),
-                List.of(new CriteriaFieldSort(PathwayMutation.FIELD_TIME, false, false)),
-                docRef,
-                name);
-        restFactory
-                .create(PATHWAYS_RESOURCE)
-                .method(res -> res.findMutations(criteria))
-                .onSuccess(result -> {
-                    // Another pathway may have been picked while this was in flight, and colouring one
-                    // model by another model's changes would be worse than not colouring it at all.
-                    if (name.equals(NullSafe.get(pathway, Pathway::getName))) {
-                        // A page of them rather than all of them says nothing dependable about how
-                        // much a node has changed or when it last did. Better to colour nothing than
-                        // to colour it from part of the story with no way of saying so.
-                        final long total = NullSafe.getOrElse(
-                                result.getPageResponse(), PageResponse::getTotal, 0L);
-                        setHistory(result.getValues().size() >= total
-                                ? result.getValues()
-                                : Collections.emptyList());
-                        refresh(true);
-                    }
-                })
-                .onFailure(new DefaultErrorHandler(this, () -> {
-                    // Asked and not answered. Drawn with nothing known rather than left blank, which
-                    // would look like a model with no nodes in it.
-                    setHistory(Collections.emptyList());
-                    refresh(true);
-                }))
-                .taskMonitorFactory(this)
-                .exec();
     }
 
     // @return whether the click was on one of the drawing's own controls rather than on the drawing.
@@ -527,10 +446,6 @@ public class PathwayTreePresenter
         final boolean nothingSelected = selectedNode == null && wantedSelection == null;
 
         this.pathway = pathway;
-        // Held changes belong to whichever pathway they were fetched for. Where that is not this one,
-        // a drawing that needs them waits: either the fetch below answers, or whoever opened this
-        // hands them over.
-        historyPending = !Objects.equals(NullSafe.get(pathway, Pathway::getName), historyFor);
         selectionModel.clear();
         refresh(samePathway);
         if (!samePathway || nothingSelected) {
@@ -538,8 +453,6 @@ public class PathwayTreePresenter
             // a model just opened has it picked out rather than nothing.
             selectRoot();
         }
-        // A different pathway was picked, so the changes behind the one on show are not the ones held.
-        fetchHistory();
     }
 
     /**
@@ -582,71 +495,26 @@ public class PathwayTreePresenter
     }
 
     /**
-     * Which pathways document the model on show belongs to, so the changes behind it can be asked for
-     * where nothing hands them over.
-     */
-    public void setDocRef(final DocRef docRef) {
-        this.docRef = docRef;
-    }
-
-    /**
      * How often the model has been taught something about one node, and when it last was, as at the
-     * point the drawing is showing. Taken from here rather than worked out again so that anything
-     * else saying it cannot disagree with the picture.
+     * point the drawing is showing. Taken from the same figures the picture is made from, so the two
+     * cannot disagree.
      */
-    public NodeChange getChange(final List<String> nodePath) {
-        return nodePath == null
+    public NodeChange getChange(final PathNode node) {
+        return node == null || figures == null
                 ? null
-                : counts.node(nodePath);
+                : figures.getChanges().get(node.getUuid());
     }
 
     /**
-     * Every change made to this pathway, which is where the graph gets the colour of a node from.
-     * Handing them over stops them being asked for. Takes effect on the next read.
+     * How large and how old each node is drawn, as the server worked them out for the moment being
+     * shown.
+     *
+     * <p>Not counted here. The changes they come from are filed by the day their work ran, so a date
+     * never promises an unbroken run of them, and counting down to a moment would mean reading every
+     * change at or below it.
      */
-    public void setHistory(final List<PathwayMutation> history) {
-        historyFor = NullSafe.get(pathway, Pathway::getName);
-        historyPending = false;
-        this.history = NullSafe.list(history);
-        counts = MutationCounts.of(this.history, upTo);
-
-        // What the sizes are measured against, taken over the whole history rather than the part
-        // being shown. Measured against the part being shown, the largest node of the moment would
-        // always be drawn at full size, so winding back would rescale the picture rather than shrink
-        // it. Worked out once here, because the history is what it depends on and that does not
-        // change as the reader moves through it.
-        changeCeiling = MutationCounts.of(this.history, 0).getMostChangedNode();
-    }
-
-    /**
-     * Readings of how much each node had been used, one per trace that changed the model. Given
-     * rather than fetched, like the changes themselves.
-     */
-    public void setUsage(final List<PathwayUsage> usage) {
-        this.usage = NullSafe.list(usage);
-    }
-
-    // The reading taken for the trace the change being looked at belongs to, which is the first at or
-    // after it: a reading is written once the trace is done, numbered with the last change it made.
-    // Taking the one before instead would report the model as it stood a whole trace earlier, so a
-    // node could read as changed more often than it had been used.
-    private Map<String, NodeUsage> usageAsAt() {
-        final Map<String, NodeUsage> byUuid = new HashMap<>();
-        if (asAt <= 0 || upTo <= 0) {
-            return byUuid;
-        }
-
-        PathwayUsage reading = null;
-        for (final PathwayUsage candidate : usage) {
-            if (candidate.getSequence() >= upTo
-                && (reading == null || candidate.getSequence() < reading.getSequence())) {
-                reading = candidate;
-            }
-        }
-        if (reading != null) {
-            NullSafe.list(reading.getNodes()).forEach(node -> byUuid.put(node.getNodeUuid(), node));
-        }
-        return byUuid;
+    public void setFigures(final PathwayAsAt asAt) {
+        figures = asAt;
     }
 
     /**
@@ -669,7 +537,6 @@ public class PathwayTreePresenter
         this.upTo = upTo == null
                 ? 0L
                 : upTo;
-        counts = MutationCounts.of(history, this.upTo);
     }
 
     private static String key(final List<String> path) {
@@ -688,9 +555,10 @@ public class PathwayTreePresenter
         }
     }
 
-    // Whether the drawing on show is made from the model's changes and has not been given them.
+    // Whether the figures the drawing is made from have arrived. Drawn without them, every node
+    // would appear at its smallest in the colour of never having changed, and then jump.
     private boolean waiting() {
-        return renderer.usesHistory() && historyPending;
+        return figures == null && renderer.usesHistory();
     }
 
     private void reselect(final String uuid) {
@@ -759,14 +627,14 @@ public class PathwayTreePresenter
         // around the nodes a path ran, and then they are marked on it.
         final Map<String, List<Integer>> wanted = wanted();
 
-        final RenderRequest request = new RenderRequest(pathway, layout, byUuid(), usageAsAt(),
+        final RenderRequest request = new RenderRequest(pathway, layout,
+                figures.getChanges(),
+                figures.getUsage(),
                 asAt > 0
                         ? asAt
                         : System.currentTimeMillis(),
-                changeCeiling,
-                mostUsed(layout == null
-                        ? NullSafe.get(pathway, Pathway::getRoot)
-                        : layout),
+                figures.getChangeCeiling(),
+                figures.getUsageCeiling(),
                 showKey,
                 // Only a path says which nodes did not run. A change touched the nodes it touched
                 // and says nothing about the rest, so nothing is faded for one.
@@ -844,19 +712,6 @@ public class PathwayTreePresenter
         }
         return ElementUtil.findChild(html.getElement(), element ->
                 root.getUuid().equals(element.getAttribute("uuid")));
-    }
-
-    // The changes against the nodes the model actually holds, worked out once the model has been read
-    // and its nodes are known.
-    private Map<String, NodeChange> byUuid() {
-        final Map<String, NodeChange> byUuid = new HashMap<>();
-        nodeMap.values().forEach(node -> {
-            final NodeChange change = counts.node(node.getNodePath());
-            if (change != null) {
-                byUuid.put(node.getUuid(), change);
-            }
-        });
-        return byUuid;
     }
 
     // The nodes being picked out, by uuid and where each comes in the order. Looked up this way round
@@ -1057,7 +912,7 @@ public class PathwayTreePresenter
         // One value stands for the whole list, and every run of a drawing is followed by a run of a
         // clearing, so these two alternate however many arrivals there are.
         style.setProperty("animationTimingFunction", "linear, ease-in");
-        // Both ends held. Before its turn the line is off the end of itself by the offset it was given
+        // Both ends held. Before its turn the line is off the end of itself by the offset it was figures
         // as it was placed, and afterwards it is left cleared.
         style.setProperty("animationFillMode", "forwards");
     }

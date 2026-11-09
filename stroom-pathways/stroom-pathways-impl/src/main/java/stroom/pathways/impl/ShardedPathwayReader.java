@@ -19,13 +19,19 @@ package stroom.pathways.impl;
 import stroom.bytebuffer.ByteBufferUtils;
 import stroom.pathways.shared.FindPathwayCriteria;
 import stroom.pathways.shared.FindPathwayMutationCriteria;
+import stroom.pathways.shared.PathwayAsAt;
 import stroom.pathways.shared.PathwayMutationResultPage;
 import stroom.pathways.shared.PathwayResultPage;
 import stroom.pathways.shared.PathwaySummary;
 import stroom.pathways.shared.PathwaysDoc;
 import stroom.pathways.shared.otel.trace.NanoTime;
+import stroom.pathways.shared.pathway.MutationCounts;
+import stroom.pathways.shared.pathway.NodeChange;
+import stroom.pathways.shared.pathway.NodeUsage;
+import stroom.pathways.shared.pathway.PathNode;
 import stroom.pathways.shared.pathway.Pathway;
 import stroom.pathways.shared.pathway.PathwayMutation;
+import stroom.pathways.shared.pathway.PathwayReplay;
 import stroom.pathways.shared.pathway.PathwayUsage;
 import stroom.planb.impl.dao.ShardKeyRouter;
 import stroom.planb.impl.dao.trace.PathwaysDb;
@@ -45,7 +51,9 @@ import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.function.Consumer;
 import java.util.function.Function;
@@ -281,6 +289,213 @@ public class ShardedPathwayReader {
             return null;
         });
         return Optional.ofNullable(found[0]);
+    }
+
+    /**
+     * One learnt pathway as it stood at one moment, with the figures a drawing of it needs.
+     *
+     * <p>One shard is opened and the model, its changes and its usage readings all come out of that
+     * one open.
+     *
+     * @param asAtMs when to show it as it stood, read against when the learner took each trace in,
+     *               or null for as it stands now.
+     */
+    public Optional<PathwayAsAt> fetchPathwayAsAt(final PathwaysDoc doc,
+                                                  final String name,
+                                                  final Long asAtMs,
+                                                  final Long toSequence) {
+        final SharedFileStoreSettings settings = doc.getSharedFileStore();
+        if (settings == null || NullSafe.isBlankString(settings.getSharedPath())
+            || NullSafe.isBlankString(name)) {
+            return Optional.empty();
+        }
+
+        final int shard = ShardKeyRouter.computeShardIndex(name, shardCountOf(settings));
+        final byte[] keyBytes = name.getBytes(StandardCharsets.UTF_8);
+        final Pathway[] found = {null};
+        final List<PathwayMutation> mutations = new ArrayList<>();
+        final List<PathwayUsage> usage = new ArrayList<>();
+        readShard(doc, shard, db -> {
+            withKey(name, keyBuffer -> db.getPathways().get(keyBuffer, valueBuffer -> {
+                if (valueBuffer != null) {
+                    found[0] = pathwaySerde.readPathway(valueBuffer);
+                }
+                return null;
+            }));
+            if (found[0] != null) {
+                mutations.addAll(mutationLog.read(db.getMutations(), keyBytes));
+                usage.addAll(mutationLog.readUsage(db.getMutations(), keyBytes));
+            }
+            return null;
+        });
+
+        return Optional.ofNullable(found[0])
+                .map(pathway -> asAt(pathway, mutations, usage, asAtMs, toSequence));
+    }
+
+    /**
+     * The highest numbered change the learner had taken in by this moment, or null where it had taken
+     * none in by then.
+     *
+     * <p>Null is not the same as none being asked for. Nothing at or before the moment means the
+     * change history does not reach it, which is a different answer from showing the model as it
+     * stands.
+     */
+    static Long cutAt(final List<PathwayMutation> mutations, final long asAtMs) {
+        Long cut = null;
+        for (final PathwayMutation mutation : mutations) {
+            final NanoTime time = mutation.getTime();
+            if (time != null
+                && time.toEpochMillis() <= asAtMs
+                && (cut == null || mutation.getSequence() > cut)) {
+                cut = mutation.getSequence();
+            }
+        }
+        return cut;
+    }
+
+    static PathwayAsAt asAt(final Pathway pathway,
+                            final List<PathwayMutation> mutations,
+                            final List<PathwayUsage> usage,
+                            final Long asAtMs,
+                            final Long toSequence) {
+        // Taken before anything is wound back, because the scale is what the pathway has ever done
+        // rather than what it had done by the moment being shown.
+        final long changeCeiling = mostChanged(pathway.getRoot());
+        final long usageCeiling = mostUsed(pathway.getRoot());
+
+        // A particular change, picked rather than searched for: stepping through the history asks
+        // for them one at a time and every change one trace made carries the same timestamp.
+        if (toSequence != null) {
+            final Pathway shown = wound(pathway, mutations, toSequence);
+            return new PathwayAsAt(
+                    shown,
+                    changesByUuid(shown, MutationCounts.of(mutations, toSequence)),
+                    usageByUuid(usage, toSequence),
+                    timeOf(mutations, toSequence),
+                    changeCeiling,
+                    usageCeiling);
+        }
+
+        if (asAtMs == null) {
+            return new PathwayAsAt(
+                    pathway,
+                    changesByUuid(pathway, MutationCounts.of(mutations, 0L)),
+                    Map.of(),
+                    null,
+                    changeCeiling,
+                    usageCeiling);
+        }
+
+        final NanoTime asAt = NanoTime.ofMillis(asAtMs);
+        final Long cut = cutAt(mutations, asAtMs);
+        if (cut == null) {
+            // The learner had taken nothing in by then, so there is nothing to wind back through and
+            // no model to show. Folding the day records is the other answer and is not built yet.
+            return new PathwayAsAt(
+                    pathway.copy().root(null).build(),
+                    Map.of(),
+                    Map.of(),
+                    asAt,
+                    changeCeiling,
+                    usageCeiling);
+        }
+
+        final Pathway shown = wound(pathway, mutations, cut);
+        return new PathwayAsAt(
+                shown,
+                changesByUuid(shown, MutationCounts.of(mutations, cut)),
+                usageByUuid(usage, cut),
+                asAt,
+                changeCeiling,
+                usageCeiling);
+    }
+
+    // When the change picked was taken in, so the drawing can say what moment it is showing.
+    private static NanoTime timeOf(final List<PathwayMutation> mutations, final long sequence) {
+        for (final PathwayMutation mutation : mutations) {
+            if (mutation.getSequence() == sequence) {
+                return mutation.getTime();
+            }
+        }
+        return null;
+    }
+
+    private static Pathway wound(final Pathway pathway,
+                                 final List<PathwayMutation> mutations,
+                                 final long cut) {
+        final List<PathwayMutation> later = new ArrayList<>();
+        for (final PathwayMutation mutation : mutations) {
+            if (mutation.getSequence() > cut) {
+                later.add(mutation);
+            }
+        }
+        final PathNode root = PathwayReplay.rewind(pathway.getRoot(), later);
+        return root == null
+                ? pathway.copy().root(null).build()
+                : pathway.copy().root(root).build();
+    }
+
+    // Keyed by uuid because that is how a drawing asks for them, and only for nodes the model being
+    // shown actually holds.
+    private static Map<String, NodeChange> changesByUuid(final Pathway shown,
+                                                         final MutationCounts counts) {
+        final Map<String, NodeChange> byUuid = new HashMap<>();
+        collectChanges(shown.getRoot(), counts, byUuid);
+        return byUuid;
+    }
+
+    private static void collectChanges(final PathNode node,
+                                       final MutationCounts counts,
+                                       final Map<String, NodeChange> byUuid) {
+        if (node == null) {
+            return;
+        }
+        final NodeChange change = counts.node(node.getNodePath());
+        if (change != null) {
+            byUuid.put(node.getUuid(), change);
+        }
+        NullSafe.list(node.getChildren()).forEach(child -> collectChanges(child, counts, byUuid));
+    }
+
+    // The reading kept at the moment being shown, which is the earliest taken at or after the change
+    // picked. Empty for the model as it stands, where each node's own tally is what the drawing reads.
+    private static Map<String, NodeUsage> usageByUuid(final List<PathwayUsage> usage, final long cut) {
+        final Map<String, NodeUsage> byUuid = new HashMap<>();
+        PathwayUsage reading = null;
+        for (final PathwayUsage candidate : usage) {
+            if (candidate.getSequence() >= cut
+                && (reading == null || candidate.getSequence() < reading.getSequence())) {
+                reading = candidate;
+            }
+        }
+        if (reading != null) {
+            NullSafe.list(reading.getNodes())
+                    .forEach(node -> byUuid.put(node.getNodeUuid(), node));
+        }
+        return byUuid;
+    }
+
+    private static long mostChanged(final PathNode node) {
+        if (node == null) {
+            return 0L;
+        }
+        long most = node.getTimesChanged();
+        for (final PathNode child : NullSafe.list(node.getChildren())) {
+            most = Math.max(most, mostChanged(child));
+        }
+        return most;
+    }
+
+    private static long mostUsed(final PathNode node) {
+        if (node == null) {
+            return 0L;
+        }
+        long most = node.getTimesUsed();
+        for (final PathNode child : NullSafe.list(node.getChildren())) {
+            most = Math.max(most, mostUsed(child));
+        }
+        return most;
     }
 
     private static void withKey(final String name, final Consumer<ByteBuffer> consumer) {

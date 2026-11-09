@@ -47,6 +47,8 @@ public class PathNode {
     @JsonProperty
     private final long timesUsed;
     @JsonProperty
+    private final long timesChanged;
+    @JsonProperty
     private final NanoTime lastUsedTime;
     /**
      * When this node stopped being part of the work, or null while it is still part of it.
@@ -67,6 +69,7 @@ public class PathNode {
                     @JsonProperty("children") final List<PathNode> children,
                     @JsonProperty("constraints") final Map<String, Constraint> constraints,
                     @JsonProperty("timesUsed") final long timesUsed,
+                    @JsonProperty("timesChanged") final long timesChanged,
                     @JsonProperty("lastUsedTime") final NanoTime lastUsedTime,
                     @JsonProperty("retiredTime") final NanoTime retiredTime) {
         this.uuid = uuid;
@@ -77,6 +80,7 @@ public class PathNode {
                 : new ArrayList<>(children);
         this.constraints = constraints;
         this.timesUsed = timesUsed;
+        this.timesChanged = timesChanged;
         this.lastUsedTime = lastUsedTime;
         this.retiredTime = retiredTime;
     }
@@ -89,7 +93,7 @@ public class PathNode {
                     final List<String> nodePath,
                     final List<PathNode> children,
                     final Map<String, Constraint> constraints) {
-        this(uuid, name, nodePath, children, constraints, 0L, null, null);
+        this(uuid, name, nodePath, children, constraints, 0L, 0L, null, null);
     }
 
     public PathNode(final String name,
@@ -101,6 +105,7 @@ public class PathNode {
         this.constraints = null;
         this.retiredTime = null;
         this.timesUsed = 0L;
+        this.timesChanged = 0L;
         this.lastUsedTime = null;
     }
 
@@ -112,6 +117,7 @@ public class PathNode {
         this.constraints = null;
         this.retiredTime = null;
         this.timesUsed = 0L;
+        this.timesChanged = 0L;
         this.lastUsedTime = null;
     }
 
@@ -122,6 +128,21 @@ public class PathNode {
      */
     public long getTimesUsed() {
         return timesUsed;
+    }
+
+    /**
+     * How many distinct traces have changed this node, over the whole of its life. Counted the way
+     * the drawing counts, so the two agree: the trace that brought the pathway into being is left
+     * out, and so are the changes that say something was added or was absent.
+     *
+     * <p>Held here only so that the scale the drawing measures node sizes against is a walk of the
+     * model rather than a read of every change ever made. How much a node had changed <em>by some
+     * past moment</em> is not this, and is not held: that is counted from the changes being undone,
+     * because one trace can change a node many times and only the last of them coming off would
+     * lower this.
+     */
+    public long getTimesChanged() {
+        return timesChanged;
     }
 
     /**
@@ -226,6 +247,7 @@ public class PathNode {
         private List<PathNode> children;
         private Map<String, Constraint> constraints;
         private long timesUsed;
+        private long timesChanged;
         private NanoTime lastUsedTime;
         private NanoTime retiredTime;
 
@@ -239,6 +261,7 @@ public class PathNode {
             this.children = pathNode.children;
             this.constraints = pathNode.constraints;
             this.timesUsed = pathNode.timesUsed;
+            this.timesChanged = pathNode.timesChanged;
             this.lastUsedTime = pathNode.lastUsedTime;
             this.retiredTime = pathNode.retiredTime;
         }
@@ -273,6 +296,11 @@ public class PathNode {
             return self();
         }
 
+        public Builder timesChanged(final long timesChanged) {
+            this.timesChanged = timesChanged;
+            return self();
+        }
+
         public Builder lastUsedTime(final NanoTime lastUsedTime) {
             this.lastUsedTime = lastUsedTime;
             return self();
@@ -296,6 +324,7 @@ public class PathNode {
                     children,
                     constraints,
                     timesUsed,
+                    timesChanged,
                     lastUsedTime,
                     retiredTime);
         }

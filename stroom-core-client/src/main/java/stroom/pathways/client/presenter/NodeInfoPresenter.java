@@ -20,6 +20,7 @@ import stroom.data.client.presenter.ColumnSizeConstants;
 import stroom.data.grid.client.MyDataGrid;
 import stroom.data.grid.client.PagerView;
 import stroom.pathways.shared.otel.trace.NanoTime;
+import stroom.pathways.shared.pathway.NodeChange;
 import stroom.pathways.shared.pathway.PathNode;
 import stroom.preferences.client.DateTimeFormatter;
 import stroom.util.client.DataGridUtil;

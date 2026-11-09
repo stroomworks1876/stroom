@@ -24,9 +24,10 @@ import com.fasterxml.jackson.annotation.JsonInclude.Include;
 import com.fasterxml.jackson.annotation.JsonProperty;
 
 /**
- * Asks for one learnt pathway in full, by the operation name it is keyed on.
+ * Asks for one learnt pathway, by the operation name it is keyed on, as it stood at one moment.
  *
- * <p>The name is also what decides its shard, so this needs no more than the two fields to find it.
+ * <p>The name is also what decides its shard, so finding it needs no more than the name and the
+ * document.
  */
 @JsonInclude(Include.NON_NULL)
 public class FetchPathwayRequest {
@@ -35,12 +36,51 @@ public class FetchPathwayRequest {
     private final DocRef pathwaysDocRef;
     @JsonProperty
     private final String name;
+    /**
+     * The moment to show the pathway at, or null for as it stands now.
+     *
+     * <p>Read against when the learner took each trace in, not when the work ran. Those differ, and
+     * it is the first that can be used: showing an earlier model means taking changes off it newest
+     * first, which only works on an unbroken run, and changes picked by when their work ran are
+     * scattered through the order they were learnt in.
+     */
+    @JsonProperty
+    private final Long asAtMs;
+    /**
+     * One particular change to show the model just after, or null to ask by moment instead.
+     *
+     * <p>Asked for by number rather than by time because every change one trace made carries the same
+     * timestamp, so a time cannot tell them apart. Stepping through the history picks changes one at a
+     * time and needs each one exactly.
+     */
+    @JsonProperty
+    private final Long toSequence;
 
     @JsonCreator
     public FetchPathwayRequest(@JsonProperty("pathwaysDocRef") final DocRef pathwaysDocRef,
-                               @JsonProperty("name") final String name) {
+                               @JsonProperty("name") final String name,
+                               @JsonProperty("asAtMs") final Long asAtMs,
+                               @JsonProperty("toSequence") final Long toSequence) {
         this.pathwaysDocRef = pathwaysDocRef;
         this.name = name;
+        this.asAtMs = asAtMs;
+        this.toSequence = toSequence;
+    }
+
+    public FetchPathwayRequest(final DocRef pathwaysDocRef, final String name) {
+        this(pathwaysDocRef, name, null, null);
+    }
+
+    public static FetchPathwayRequest asAt(final DocRef pathwaysDocRef,
+                                           final String name,
+                                           final Long asAtMs) {
+        return new FetchPathwayRequest(pathwaysDocRef, name, asAtMs, null);
+    }
+
+    public static FetchPathwayRequest atChange(final DocRef pathwaysDocRef,
+                                               final String name,
+                                               final Long toSequence) {
+        return new FetchPathwayRequest(pathwaysDocRef, name, null, toSequence);
     }
 
     public DocRef getPathwaysDocRef() {
@@ -51,8 +91,17 @@ public class FetchPathwayRequest {
         return name;
     }
 
+    public Long getAsAtMs() {
+        return asAtMs;
+    }
+
+    public Long getToSequence() {
+        return toSequence;
+    }
+
     @Override
     public String toString() {
-        return "FetchPathwayRequest{pathwaysDocRef=" + pathwaysDocRef + ", name='" + name + "'}";
+        return "FetchPathwayRequest{pathwaysDocRef=" + pathwaysDocRef + ", name='" + name
+               + "', asAtMs=" + asAtMs + ", toSequence=" + toSequence + "}";
     }
 }
