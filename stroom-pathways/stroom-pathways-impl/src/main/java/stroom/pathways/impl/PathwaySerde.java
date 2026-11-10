@@ -381,40 +381,95 @@ public class PathwaySerde {
      * name. Written with the same constraint values the model holds, so the two can be compared
      * without either being converted.
      */
-    public void writeObservedValues(final Map<String, Map<String, ConstraintValue>> observed,
-                                    final Consumer<ByteBuffer> consumer) {
+    public void writeObservedValues(final DayRecord record, final Consumer<ByteBuffer> consumer) {
         try (final ByteBufferPoolOutput output =
                 new ByteBufferPoolOutput(byteBufferFactory, MIN_BUFFER_SIZE, -1)) {
             output.writeByte(OBSERVED_VALUES_VERSION);
-            output.writeVarInt(observed.size(), true);
-            observed.forEach((nodeUuid, constraints) -> {
-                writeString(nodeUuid, output);
-                output.writeVarInt(constraints.size(), true);
-                constraints.forEach((name, value) -> {
+            // The traces the bounds name, once each and in the order they are first met, so a
+            // thirty-two character id is not written out beside every value. Gathered from the
+            // record as it stands, so a trace nothing names any more is not written at all.
+            final Map<String, NanoTime> traces = new LinkedHashMap<>();
+            record.nodes().values().forEach(node -> node.constraints().values().forEach(seen -> {
+                if (seen.traceId() != null) {
+                    traces.putIfAbsent(seen.traceId(), seen.ranAt());
+                }
+            }));
+            final Map<String, Integer> positions = new HashMap<>();
+            output.writeVarInt(traces.size(), true);
+            traces.forEach((id, ranAt) -> {
+                positions.put(id, positions.size());
+                writeString(id, output);
+                writeNullableNanoTime(ranAt, output);
+            });
+            output.writeVarInt(record.nodes().size(), true);
+            record.nodes().forEach((path, node) -> {
+                // The path that reaches the node, a name at a time, so a record means something
+                // without the model that minted the uuids.
+                output.writeVarInt(path.size(), true);
+                path.forEach(name -> writeString(name, output));
+                writeString(node.nodeUuid(), output);
+                output.writeVarLong(node.timesUsed(), true);
+                output.writeVarInt(node.constraints().size(), true);
+                node.constraints().forEach((name, seen) -> {
                     writeString(name, output);
-                    writeConstraintValue(value, output);
+                    writeConstraintValue(seen.value(), output);
+                    output.writeBoolean(seen.optional());
+                    output.writeVarInt(seen.traceId() == null
+                            ? 0
+                            : positions.get(seen.traceId()) + 1, true);
+                    writeString(seen.spanId(), output);
                 });
             });
+            writePaths(record.paths(), output);
             consumer.accept(output.getByteBuffer().flip());
         }
     }
 
-    public Map<String, Map<String, ConstraintValue>> readObservedValues(final ByteBuffer byteBuffer) {
+    public DayRecord readObservedValues(final ByteBuffer byteBuffer) {
         final Input input = new UnsafeByteBufferInput(byteBuffer);
         checkVersion(input.readByte(), OBSERVED_VALUES_VERSION, "observed values", "observed-values");
 
-        final int nodes = input.readVarInt(true);
-        final Map<String, Map<String, ConstraintValue>> observed = new LinkedHashMap<>(nodes);
-        for (int i = 0; i < nodes; i++) {
-            final String nodeUuid = input.readString();
-            final int count = input.readVarInt(true);
-            final Map<String, ConstraintValue> constraints = new LinkedHashMap<>(count);
-            for (int j = 0; j < count; j++) {
-                constraints.put(input.readString(), readConstraintValue(input));
-            }
-            observed.put(nodeUuid, constraints);
+        final int traceCount = input.readVarInt(true);
+        final List<String> traceIds = new ArrayList<>(traceCount);
+        final List<NanoTime> traceTimes = new ArrayList<>(traceCount);
+        for (int i = 0; i < traceCount; i++) {
+            traceIds.add(input.readString());
+            traceTimes.add(readNullableNanoTime(input));
         }
-        return observed;
+
+        final int nodes = input.readVarInt(true);
+        // Insertion ordered, so a record names its nodes in the order the model first met them
+        // rather than in whatever order a hash gives back. A drawing is laid out by walking them.
+        final Map<List<String>, DayRecord.ObservedNode> observed = new LinkedHashMap<>(nodes);
+        for (int i = 0; i < nodes; i++) {
+            final int depth = input.readVarInt(true);
+            final List<String> path = new ArrayList<>(depth);
+            for (int step = 0; step < depth; step++) {
+                path.add(input.readString());
+            }
+            final String nodeUuid = input.readString();
+            final long timesUsed = input.readVarLong(true);
+            final int count = input.readVarInt(true);
+            final Map<String, DayRecord.ObservedConstraint> constraints = new LinkedHashMap<>(count);
+            for (int j = 0; j < count; j++) {
+                final String name = input.readString();
+                final ConstraintValue value = readConstraintValue(input);
+                final boolean optional = input.readBoolean();
+                final int trace = input.readVarInt(true) - 1;
+                final String spanId = input.readString();
+                constraints.put(name, new DayRecord.ObservedConstraint(value,
+                        optional,
+                        trace < 0
+                                ? null
+                                : traceIds.get(trace),
+                        trace < 0
+                                ? null
+                                : traceTimes.get(trace),
+                        spanId));
+            }
+            observed.put(path, new DayRecord.ObservedNode(nodeUuid, timesUsed, constraints));
+        }
+        return new DayRecord(observed, readPaths(input));
     }
 
     public StoredChange readMutation(final ByteBuffer byteBuffer) {

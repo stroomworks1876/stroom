@@ -43,6 +43,7 @@ import org.junit.jupiter.api.Test;
 import java.nio.ByteBuffer;
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -66,13 +67,20 @@ class TestPathwayMutations {
     private static final String TRACE_ID = "0a0b0c0d0e0f00010203040506070809";
     private static final long BASE = 1_700_000_000_000_000_000L;
 
+    // Just the values a node was given, which is what these are about. A day record also carries
+    // what is optional, how busy the node was and the trace behind each bound.
+    private static Map<String, ConstraintValue> valuesOf(final DayRecord.ObservedNode node) {
+        final Map<String, ConstraintValue> values = new LinkedHashMap<>();
+        node.constraints().forEach((name, seen) -> values.put(name, seen.value()));
+        return values;
+    }
+
     @Test
     void whatEachConstraintWasGivenIsKeptBesideTheChangeItCaused() {
         final NodeMutatorImpl mutator = mutator();
         mutator.process(childAt(0, 3), key(), null, quiet(), doc());
 
-        final Map<String, ConstraintValue> root = mutator.getObservations().values().iterator().next();
-        assertThat(root)
+        assertThat(valuesOf(mutator.getObservations().nodes().values().iterator().next()))
                 .as("the values this trace gave, not the envelope the model ended up with")
                 .containsEntry("duration", new NanoTimeValue(millis(20)))
                 .containsEntry("kind", new StringValue("SPAN_KIND_INTERNAL"));
@@ -91,8 +99,8 @@ class TestPathwayMutations {
         final NodeMutatorImpl mutator = mutator();
         final PathNode node = mutator.process(new Trace(TRACE_ID, byParent), key(), null, quiet(), doc());
 
-        final String childUuid = node.getChildren().getFirst().getUuid();
-        assertThat(mutator.getObservations().get(childUuid))
+        final List<String> child = node.getChildren().getFirst().getNodePath();
+        assertThat(valuesOf(mutator.getObservations().nodes().get(child)))
                 .containsEntry("sinceParentStart", new NanoTimeRange(millis(1), millis(4)));
     }
 

@@ -308,6 +308,12 @@ public class PathwaysProcessor implements MergeStrategy {
                             pathwaySerde,
                             new IgnoredAttributes(doc.getIgnoredAttributes()),
                             new IgnoredSpans(doc.getIgnoredSpanNames()));
+                    // What each model was given goes in with whatever commit lands, rather than at
+                    // points this loop chooses. A widening on disk without the day record behind it
+                    // is one the next narrowing takes straight back out, and the commits this loop
+                    // does not make - the one closing the writer after a trace has thrown, or one
+                    // taken while the histories are being written - are the ones that leave it.
+                    writer.beforeCommit(() -> traceProcessor.writeObservedValues(writer, pathwaysDb));
                     for (final Path item : queueDirs) {
                         if (Thread.currentThread().isInterrupted()) {
                             // The lock's heartbeat interrupts us when it cannot renew. Carrying on
@@ -337,9 +343,9 @@ public class PathwaysProcessor implements MergeStrategy {
                             failures.put(item, e);
                         }
                     }
-                    // Once the hold's traces are in, before the commit that ends it.
+                    // Once the hold's traces are in, before the commit that ends it. The day records
+                    // go in with that commit rather than here.
                     traceProcessor.writeHistories(writer, pathwaysDb);
-                    traceProcessor.writeObservedValues(writer, pathwaysDb);
                     writer.commit();
                 }
             });

@@ -327,7 +327,7 @@ public class PathwayNarrower {
                                                final int oldestDay,
                                                final Map<String, List<Row>> expired) {
         final SimpleDb db = pathwaysDb.getObservedValues();
-        final Map<String, Map<String, Map<String, ConstraintValue>>> byPathway = new LinkedHashMap<>();
+        final Map<String, Map<List<String>, Map<String, ConstraintValue>>> byPathway = new LinkedHashMap<>();
         final Map<String, Integer> droppedBy = new LinkedHashMap<>();
         db.iterate(writer.getWriteTxn(), (key, value) -> {
             final String owner = ownerOf(key);
@@ -340,12 +340,16 @@ public class PathwayNarrower {
                 droppedBy.merge(owner, 1, Integer::sum);
                 return;
             }
-            final Map<String, Map<String, ConstraintValue>> window =
+            final Map<List<String>, Map<String, ConstraintValue>> window =
                     byPathway.computeIfAbsent(owner, uuid -> new LinkedHashMap<>());
-            pathwaySerde.readObservedValues(value).forEach((nodeUuid, constraints) -> {
+            // Only the values are wanted here. What else a day record carries - what is optional,
+            // how busy a node was, the trace behind a bound - is for building a model from the
+            // records, which is not what holding one to its window does.
+            pathwaySerde.readObservedValues(value).nodes().forEach((path, seen) -> {
                 final Map<String, ConstraintValue> node =
-                        window.computeIfAbsent(nodeUuid, uuid -> new LinkedHashMap<>());
-                constraints.forEach((name, seen) -> node.merge(name, seen, ObservedValues::add));
+                        window.computeIfAbsent(path, reached -> new LinkedHashMap<>());
+                seen.constraints().forEach((name, observed) ->
+                        node.merge(name, observed.value(), ObservedValues::add));
             });
         });
 
@@ -416,7 +420,7 @@ public class PathwayNarrower {
     }
 
     // What the window still covers, and how many days were dropped on the way to working it out.
-    private record Window(Map<String, Map<String, ConstraintValue>> values, int dropped) {
+    private record Window(Map<List<String>, Map<String, ConstraintValue>> values, int dropped) {
 
         private static final Window NOTHING = new Window(Map.of(), 0);
     }
@@ -463,14 +467,14 @@ public class PathwayNarrower {
     // nothing about is left alone: no values were given to it lately, which is a node that has gone
     // quiet rather than a constraint that should stop allowing what it allows.
     private static PathNode narrowNode(final PathNode node,
-                                       final Map<String, Map<String, ConstraintValue>> window,
+                                       final Map<List<String>, Map<String, ConstraintValue>> window,
                                        final NanoTime time,
                                        final boolean parentRetired,
                                        final List<PathwayMutation> mutations) {
         if (node == null) {
             return null;
         }
-        final Map<String, ConstraintValue> seen = window.get(node.getUuid());
+        final Map<String, ConstraintValue> seen = window.get(node.getNodePath());
         final Map<String, Constraint> constraints = new LinkedHashMap<>(NullSafe.map(node.getConstraints()));
         if (seen != null) {
             constraints.replaceAll((name, constraint) -> {

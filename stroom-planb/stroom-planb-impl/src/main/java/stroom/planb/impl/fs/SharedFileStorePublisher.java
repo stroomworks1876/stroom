@@ -319,7 +319,6 @@ public class SharedFileStorePublisher {
      * cannot be done here because what a record means, and how two of them combine, belongs to
      * whoever owns the store.
      */
-    @WithSpan
     public void publishArchive(final Path localData, final Path bucketDir) throws IOException {
         final String version = Instant.now().toEpochMilli() + "_" + nodeInfo.getThisNodeName();
         final Path localCompressed = localData.resolveSibling(PlanBConstants.DATA_ZST_FILE_NAME);

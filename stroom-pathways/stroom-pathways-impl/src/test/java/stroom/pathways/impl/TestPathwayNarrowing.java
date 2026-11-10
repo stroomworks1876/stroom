@@ -16,6 +16,7 @@
 
 package stroom.pathways.impl;
 
+import stroom.bytebuffer.ByteBufferUtils;
 import stroom.bytebuffer.impl6.ByteBufferFactoryImpl;
 import stroom.bytebuffer.impl6.ByteBuffers;
 import stroom.pathways.shared.PathwaysDoc;
@@ -53,9 +54,12 @@ import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Consumer;
+import java.util.function.Function;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -140,13 +144,18 @@ class TestPathwayNarrowing {
     }
 
     @Test
-    void aHoldThatMovedNothingWritesNothing(@TempDir final Path tempDir) {
+    void aTraceInsideWhatTheDayCoversStillMovesItsCounts(@TempDir final Path tempDir) {
+        // This used to write nothing: a trace that widened no value left the day as it was, and
+        // writing it back would have serialised the whole day to say so. A day now counts how many
+        // traces took each walk and how busy each node was, so every applied trace moves it and the
+        // saving is gone. What is still true is that the values do not move.
         applied(tempDir, List.of(trace(0, 20), trace(0, 900)));
+        final Object covered = duration(tempDir);
 
-        assertThat(recordsWritten(tempDir, List.of(trace(0, 500))))
-                .as("a trace inside what the day already covers leaves it exactly as it was, and"
-                    + " writing it back would serialise the whole day to say so")
-                .isZero();
+        assertThat(recordsWritten(tempDir, List.of(trace(0, 500)))).isEqualTo(1);
+        assertThat(duration(tempDir))
+                .as("a trace inside what the day already covers widens nothing")
+                .isEqualTo(covered);
     }
 
     @Test
@@ -806,6 +815,131 @@ class TestPathwayNarrowing {
         return count[0];
     }
 
+    @Test
+    void aDayRecordSaysWhichWalksWereTakenThatDay(@TempDir final Path tempDir) {
+        // One trace per day here: the fixture names a trace after the day it ran, so a second on the
+        // same day is taken as one already applied.
+        applied(tempDir, List.of(withChildren(0, "Ping", "Commit")));
+
+        final DayRecord record = onlyDayRecord(tempDir);
+
+        assertThat(record.paths().getPaths())
+                .as("the walk that day, recorded against the day itself rather than only the model")
+                .hasSize(1);
+        assertThat(record.paths().getNodes())
+                .as("named the way the model names them, which the nodes below resolve")
+                .isNotEmpty();
+        assertThat(record.nodes().keySet())
+                .as("nodes named by the path that reaches them")
+                .contains(List.of(OPERATION), List.of(OPERATION, "Ping"));
+        assertThat(record.nodes().get(List.of(OPERATION)).nodeUuid())
+                .as("and by what the model called them, which is how the walks resolve")
+                .isNotBlank();
+    }
+
+    @Test
+    void twoTracesGivingADayTheSameThingLeaveEverythingButTheCountsAlone(@TempDir final Path tempDir) {
+        // Everything in a day record is a union except the counts, which is what lets old history be
+        // loaded without a marker per trace saying it already has been. Two traces rather than one
+        // applied twice, because the same trace twice never reaches the record - the marker stops it,
+        // and a test that went that way would be testing the marker.
+        applied(tempDir, List.of(withChildren(0, "Ping", "Commit")));
+        final DayRecord first = onlyDayRecord(tempDir);
+
+        applied(tempDir, List.of(withChildren(0, "Ping", "Commit")));
+        final DayRecord second = onlyDayRecord(tempDir);
+
+        assertThat(second.paths().getNodes()).isEqualTo(first.paths().getNodes());
+        assertThat(second.paths().getSteps())
+                .as("the same walk, numbered the same way, because it is numbered from what it holds")
+                .isEqualTo(first.paths().getSteps());
+        assertThat(second.nodes().keySet()).isEqualTo(first.nodes().keySet());
+        assertThat(second.nodes().get(List.of(OPERATION)).constraints())
+                .as("and the same values, from the same traces")
+                .isEqualTo(first.nodes().get(List.of(OPERATION)).constraints());
+
+        assertThat(second.paths().getPaths().getFirst().getTimesUsed())
+                .as("the counts are the exemption: two traces took that walk, not one")
+                .isEqualTo(2L);
+        assertThat(second.nodes().get(List.of(OPERATION)).timesUsed())
+                .as("and so is how busy the node was")
+                .isEqualTo(2L);
+    }
+
+    @Test
+    void onlyTheTracesStillBehindAValueAreStored(@TempDir final Path tempDir) {
+        // A day record must not become a list of the day's traffic. Every trace that widened a bound
+        // once is superseded by the next one to widen it further, and a trace nothing names any more
+        // has no claim on anything - so it must not be in the record at all.
+        final List<Trace> busyDay = new ArrayList<>();
+        for (int i = 0; i < 25; i++) {
+            busyDay.add(trace(0, 20 + i));
+        }
+        applied(tempDir, busyDay);
+
+        final long traces = onlyDayRecord(tempDir).nodes().values().stream()
+                .flatMap(node -> node.constraints().values().stream())
+                .map(DayRecord.ObservedConstraint::traceId)
+                .filter(Objects::nonNull)
+                .distinct()
+                .count();
+
+        assertThat(traces)
+                .as("twenty five traces, and only the few that still justify a bound are named")
+                .isLessThan(10L);
+    }
+
+    @Test
+    void aNodeThatRanButTaughtNothingIsStillInTheDay(@TempDir final Path tempDir) {
+        // A day record is where the nodes of a derived model come from, so one that ran has to be in
+        // it whether or not it gave the model anything. With constraint creation off nothing on a new
+        // node is learnt from, which is the simplest way to reach that state; an attribute the model
+        // does not learn from reaches it too.
+        final PathwaysDoc noLearning = PathwaysDoc.builder()
+                .uuid(UUID.randomUUID().toString())
+                .name("Test Pathways")
+                .allowPathwayCreation(true)
+                .allowPathwayMutation(true)
+                .allowConstraintCreation(false)
+                .allowConstraintMutation(true)
+                .build();
+        applied(tempDir, List.of(withChildren(0, "Ping")), noLearning);
+
+        final DayRecord record = onlyDayRecord(tempDir);
+
+        assertThat(record.nodes().keySet())
+                .as("both nodes ran, so both are in the day")
+                .contains(List.of(OPERATION), List.of(OPERATION, "Ping"));
+        final DayRecord.ObservedNode ping = record.nodes().get(List.of(OPERATION, "Ping"));
+        assertThat(ping.constraints())
+                .as("and it gave the model nothing")
+                .isEmpty();
+        assertThat(ping.timesUsed())
+                .as("but it still ran once, which is what sizes its line")
+                .isEqualTo(1L);
+        assertThat(ping.nodeUuid())
+                .as("and the walks taken that day name it by this")
+                .isNotBlank();
+    }
+
+    private static DayRecord onlyDayRecord(final Path dir) {
+        return readRecord(dayRecordBytes(dir));
+    }
+
+    private static DayRecord readRecord(final byte[] bytes) {
+        final Function<ByteBuffer, DayRecord> read = buffer -> serde().readObservedValues(buffer);
+        return BYTE_BUFFERS.useBytes(bytes, read);
+    }
+
+    private static byte[] dayRecordBytes(final Path dir) {
+        final List<byte[]> found = new ArrayList<>();
+        try (final PathwaysDb db = PathwaysDb.create(dir, BYTE_BUFFERS, true)) {
+            db.getObservedValues().iterate((key, value) -> found.add(ByteBufferUtils.toBytes(value)));
+        }
+        assertThat(found).hasSize(1);
+        return found.getFirst();
+    }
+
     private static int observedValueRecords(final Path dir) {
         final int[] count = {0};
         try (final PathwaysDb db = PathwaysDb.create(dir, BYTE_BUFFERS, false)) {
@@ -841,6 +975,15 @@ class TestPathwayNarrowing {
                 .build();
     }
 
+    // Every trace built here gets its own id. The key is the id's first sixteen bytes, so the day
+    // leads it to keep ids readable, but a counter follows: two traces on one day sharing an id are
+    // taken as one already applied, and a test that means to apply both silently applies the first.
+    private static final AtomicInteger NEXT = new AtomicInteger();
+
+    private static String nextId(final int dayIndex) {
+        return String.format("%02d%014d", dayIndex, NEXT.incrementAndGet()) + "0".repeat(16);
+    }
+
     private static byte[] idBytes(final Trace trace) {
         final byte[] bytes = new byte[16];
         final byte[] id = trace.getTraceId().getBytes(java.nio.charset.StandardCharsets.UTF_8);
@@ -860,7 +1003,7 @@ class TestPathwayNarrowing {
         final Map<String, List<Span>> byParent = new HashMap<>();
         byParent.put("", List.of(root));
         byParent.put("r" + dayIndex, children);
-        return new Trace(dayIndex + "0".repeat(31), byParent);
+        return new Trace(nextId(dayIndex), byParent);
     }
 
     // A root on the given day running one child, which runs one of its own.
@@ -872,7 +1015,7 @@ class TestPathwayNarrowing {
                 start + NanoDuration.ofMillis(1L).getNanos(), 5)));
         byParent.put("c" + dayIndex, List.of(span(grandchildName, "g" + dayIndex, "c" + dayIndex,
                 start + NanoDuration.ofMillis(2L).getNanos(), 1)));
-        return new Trace(dayIndex + "0".repeat(31), byParent);
+        return new Trace(nextId(dayIndex), byParent);
     }
 
     private static Span span(final String name,
@@ -907,8 +1050,6 @@ class TestPathwayNarrowing {
                 .build();
         final Map<String, List<Span>> byParent = new HashMap<>();
         byParent.put("", List.of(root));
-        // The day leads the id: the key is its first sixteen bytes, so a trailing digit would
-        // make every day the same trace and only the first would be applied.
-        return new Trace(dayIndex + "0".repeat(31), byParent);
+        return new Trace(nextId(dayIndex), byParent);
     }
 }

@@ -36,6 +36,9 @@ public class LmdbWriter implements AutoCloseable {
     private final ReentrantLock writeTxnLock;
     private Txn<ByteBuffer> writeTxn;
     private int changeCount = 0;
+    private boolean deferring;
+    private Runnable beforeCommit = () -> {
+    };
 
     public LmdbWriter(final Env<ByteBuffer> env,
                       final ReentrantLock dbCommitLock,
@@ -68,8 +71,44 @@ public class LmdbWriter implements AutoCloseable {
 
     public void tryCommit() {
         incrementChangeCount();
-        if (shouldCommit()) {
+        if (!deferring && shouldCommit()) {
             commit();
+        }
+    }
+
+    /**
+     * Work to do inside every commit, before the transaction lands.
+     *
+     * <p>For a caller holding records that only mean anything beside the rows it has already
+     * written. Asking it to write them at each point a commit might follow does not cover the
+     * commits it does not make itself - the one inside {@link #close()}, or one the writer takes
+     * when another part of the same job crosses the threshold. Here it is covered wherever the
+     * commit comes from.
+     *
+     * <p>Runs with commits held off, so the rows it writes do not ask for one and come back round.
+     */
+    public void beforeCommit(final Runnable work) {
+        beforeCommit = work;
+    }
+
+    /**
+     * Runs {@code work} with no commit landing part way through it.
+     *
+     * <p>A commit otherwise lands wherever the change count happens to pass its threshold, which is
+     * between any two rows. Where a caller writes several rows that only mean anything together,
+     * that leaves half of them on disk. Nothing is held open afterwards: the commit this put off is
+     * made by the next {@link #tryCommit()}, or by the caller once it has written whatever else
+     * belongs with the work.
+     *
+     * <p>Nesting is allowed, and the outermost call is the one that lifts it.
+     */
+    public void withoutCommitting(final Runnable work) {
+        final boolean was = deferring;
+        deferring = true;
+        try {
+            work.run();
+        } finally {
+            deferring = was;
         }
     }
 
@@ -116,6 +155,7 @@ public class LmdbWriter implements AutoCloseable {
         dbCommitLock.lock();
         try {
             if (writeTxn != null) {
+                withoutCommitting(beforeCommit);
                 try {
                     commitListener.accept(writeTxn);
                     writeTxn.commit();

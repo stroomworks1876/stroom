@@ -46,104 +46,243 @@ final class PathRecorder {
     }
 
     static Paths add(final Paths current,
-                      final PathShape shape,
-                      final NanoTime time,
-                      final NanoTime traceTime,
-                      final String traceId,
-                      final String sourceUuid) {
-        final List<String> nodes = new ArrayList<>(current.getNodes());
-        final Map<String, Integer> positions = new HashMap<>();
-        for (int i = 0; i < nodes.size(); i++) {
-            positions.put(nodes.get(i), i);
-        }
-
-        final List<PathStep> steps = new ArrayList<>(current.getSteps());
-        final Map<PathStep, Integer> shapes = new HashMap<>();
-        for (int i = 0; i < steps.size(); i++) {
-            shapes.putIfAbsent(steps.get(i), i);
-        }
-        // Held whether or not this trace goes on to create a path, because the changes it made are
-        // numbered against the same list and are recorded even when the path it took is one the
-        // pathway already had.
-        final List<String> sources = new ArrayList<>(current.getSources());
-        final int source = sourceIndex(sources, sourceUuid);
-
+                     final PathShape shape,
+                     final NanoTime time,
+                     final NanoTime traceTime,
+                     final String traceId,
+                     final String sourceUuid) {
+        final Account account = new Account(current);
         // A trace always has a shape; -1 is here so a caller that has none records a path the screen
         // reads as nothing rather than failing.
         final int root = shape == null
                 ? -1
-                : intern(shape, nodes, positions, steps, shapes);
+                : account.intern(shape);
+        account.took(root, 1L, time, time, traceId, traceTime, traceTime,
+                account.sourceIndex(sourceUuid));
+        return account.paths();
+    }
 
-        final List<PathUse> paths = new ArrayList<>(current.getPaths());
-        for (int i = 0; i < paths.size(); i++) {
-            if (paths.get(i).getRoot() == root) {
-                paths.set(i, paths.get(i).used(time, traceTime));
-                return new Paths(nodes, steps, paths, sources);
+    /**
+     * Two accounts of the same work, folded into one.
+     *
+     * <p>Every number in a {@link Paths} means something only against its own lists, so nothing can
+     * be compared number by number. Each of the second account's walks is interned into the first's
+     * lists afresh, which is the same thing {@link #add} does for one trace's walk.
+     */
+    static Paths merge(final Paths first, final Paths second) {
+        final Account account = new Account(first);
+        // One entry per step of the account being folded in, filled as each is reached, so a subtree
+        // many walks reach is interned once however many of them reach it. Without it the shared
+        // subtrees a Paths is made of are re-expanded into a tree.
+        final Integer[] moved = new Integer[second.getSteps().size()];
+        for (final PathUse row : second.getPaths()) {
+            final int root = row.getRoot() < 0
+                    ? -1
+                    : account.reintern(row.getRoot(), second, moved);
+            account.took(root, row.getTimesUsed(), row.getFirstUsedTime(), row.getLastUsedTime(),
+                    row.getCreatedByTraceId(), row.getTraceTime(), row.getLastTraceTime(),
+                    row.getSource() < 0
+                            ? -1
+                            : account.sourceIndex(second.getSources().get(row.getSource())));
+        }
+        return account.paths();
+    }
+
+    /**
+     * The same walks, numbered the way any other account of the same walks would be numbered.
+     *
+     * <p>A day record is written, moved into a bucket and may be written again by a later load of the
+     * same traces. Two accounts holding the same walks but numbering their nodes in the order each
+     * happened to meet them are different bytes, and the rule that loading a day twice changes
+     * nothing would not hold. So the walks are put in an order taken from what they hold rather than
+     * from when they arrived, and everything is numbered again from there.
+     */
+    static Paths canonical(final Paths paths) {
+        final List<PathUse> ordered = new ArrayList<>(paths.getPaths());
+        ordered.sort(PathRecorder::firstTaken);
+        return merge(Paths.empty(),
+                new Paths(paths.getNodes(), paths.getSteps(), ordered, paths.getSources()));
+    }
+
+    /**
+     * Which of two walks was taken first, as an order rather than as a yes or no.
+     *
+     * <p>A walk nothing dated comes first, then by when it was taken, and an exact tie goes to the
+     * lower trace id - which decides nothing in itself and is only there so that two accounts of the
+     * same walks order them the same way whatever order they were written in.
+     */
+    static int firstTaken(final PathUse first, final PathUse second) {
+        final int byTime = Times.compare(first.getFirstUsedTime(), second.getFirstUsedTime());
+        return byTime != 0
+                ? byTime
+                : Times.compare(first.getCreatedByTraceId(), second.getCreatedByTraceId());
+    }
+
+    /**
+     * One {@link Paths} being built, with the lookups a build needs beside it.
+     *
+     * <p>Held together because every number in a Paths means something only against its own lists, so
+     * the lists and the indexes over them are one thing. Built once per fold rather than per walk:
+     * rebuilding them is proportional to the whole account, and a fold is one walk.
+     */
+    private static final class Account {
+
+        private final List<String> nodes;
+        private final Map<String, Integer> positions = new HashMap<>();
+        private final List<PathStep> steps;
+        private final Map<PathStep, Integer> shapes = new HashMap<>();
+        // Held whether or not a trace goes on to create a walk, because the changes it made are
+        // numbered against the same list and are recorded even when the walk it took is one the
+        // pathway already had.
+        private final List<String> sources;
+        private final List<PathUse> rows;
+        private final Map<Integer, Integer> rowByRoot = new HashMap<>();
+
+        private Account(final Paths current) {
+            nodes = new ArrayList<>(current.getNodes());
+            for (int i = 0; i < nodes.size(); i++) {
+                positions.put(nodes.get(i), i);
+            }
+            steps = new ArrayList<>(current.getSteps());
+            for (int i = 0; i < steps.size(); i++) {
+                shapes.putIfAbsent(steps.get(i), i);
+            }
+            sources = new ArrayList<>(current.getSources());
+            rows = new ArrayList<>(current.getPaths());
+            for (int i = 0; i < rows.size(); i++) {
+                rowByRoot.putIfAbsent(rows.get(i).getRoot(), i);
             }
         }
 
-        // Kept in the order first taken, so the oldest path stays at the top of the table however
-        // the counts move.
-        paths.add(new PathUse(root, 1L, time, time, traceId, traceTime, traceTime, source));
-        return new Paths(nodes, steps, paths, sources);
-    }
-
-    // Where a trace store sits in the list, adding it where it is not there yet. A trace that arrived
-    // without a source is -1 rather than an entry, so an unattributed row says so instead of pointing
-    // at whichever store happens to be first.
-    private static int sourceIndex(final List<String> sources, final String sourceUuid) {
-        if (sourceUuid == null) {
-            return -1;
+        private Paths paths() {
+            return new Paths(nodes, steps, rows, sources);
         }
-        final int found = sources.indexOf(sourceUuid);
-        if (found >= 0) {
-            return found;
-        }
-        sources.add(sourceUuid);
-        return sources.size() - 1;
-    }
 
-    // Puts a shape and everything under it in the shape list, deepest first, and says where it went.
-    // A shape the list already holds is not added again, so a subtree many paths reach costs one
-    // entry however many of them reach it.
-    private static int intern(final PathShape shape,
-                              final List<String> nodes,
-                              final Map<String, Integer> positions,
-                              final List<PathStep> steps,
-                              final Map<PathStep, Integer> shapes) {
-        // Numbered on the way down, so nodes are numbered in the order the trace reached them and the
-        // root takes the first position. Where the shape goes in the list has to wait for the children,
-        // because it is made of where they went.
-        final int node;
-        if (shape.kind() != PathShape.Kind.NODE) {
-            node = switch (shape.kind()) {
-                case UNFINISHED -> PathStep.UNFINISHED;
-                case CONCURRENT -> PathStep.CONCURRENT;
-                case RUN -> PathStep.RUN;
-                case NODE -> throw new IllegalStateException("handled above");
-            };
-        } else {
-            Integer position = positions.get(shape.nodeUuid());
+        // A walk taken, whether for the first time or again. Found by where it begins rather than by
+        // walking the rows, so folding a whole account in does not cost the square of what it holds.
+        private void took(final int root,
+                          final long timesUsed,
+                          final NanoTime firstUsed,
+                          final NanoTime lastUsed,
+                          final String traceId,
+                          final NanoTime traceTime,
+                          final NanoTime lastTraceTime,
+                          final int source) {
+            final Integer held = rowByRoot.get(root);
+            if (held != null) {
+                rows.set(held, taken(rows.get(held), timesUsed, firstUsed, lastUsed, traceId,
+                        traceTime, lastTraceTime, source));
+                return;
+            }
+            // Kept in the order first taken, so the oldest walk stays at the top of the table however
+            // the counts move.
+            rowByRoot.put(root, rows.size());
+            rows.add(new PathUse(root, timesUsed, firstUsed, lastUsed, traceId, traceTime,
+                    lastTraceTime, source));
+        }
+
+        private int sourceIndex(final String sourceUuid) {
+            if (sourceUuid == null) {
+                return -1;
+            }
+            final int found = sources.indexOf(sourceUuid);
+            if (found >= 0) {
+                return found;
+            }
+            sources.add(sourceUuid);
+            return sources.size() - 1;
+        }
+
+        // Puts a shape and everything under it in the shape list, deepest first, and says where it
+        // went. A shape the list already holds is not added again, so a subtree many walks reach costs
+        // one entry however many of them reach it.
+        private int intern(final PathShape shape) {
+            // Numbered on the way down, so nodes are numbered in the order the trace reached them and
+            // the root takes the first position. Where the shape goes in the list has to wait for the
+            // children, because it is made of where they went.
+            final int node = shape.kind() == PathShape.Kind.NODE
+                    ? nodeIndex(shape.nodeUuid())
+                    : marker(shape.kind());
+            final List<Integer> children = new ArrayList<>(shape.steps().size());
+            for (final PathShape child : shape.steps()) {
+                children.add(intern(child));
+            }
+            return stepIndex(node, children);
+        }
+
+        // The same, for a shape held in another account's lists. The shape itself cannot be carried
+        // over, because its numbers point into the lists it came from.
+        private int reintern(final int stepIndex, final Paths from, final Integer[] moved) {
+            if (moved[stepIndex] != null) {
+                return moved[stepIndex];
+            }
+            final PathStep source = from.getSteps().get(stepIndex);
+            final int node = source.getNode() < 0
+                    ? source.getNode()
+                    : nodeIndex(from.getNodes().get(source.getNode()));
+            final List<Integer> children = new ArrayList<>(source.getSteps().size());
+            for (final Integer child : source.getSteps()) {
+                children.add(reintern(child, from, moved));
+            }
+            final int here = stepIndex(node, children);
+            moved[stepIndex] = here;
+            return here;
+        }
+
+        private int nodeIndex(final String nodeUuid) {
+            Integer position = positions.get(nodeUuid);
             if (position == null) {
                 position = nodes.size();
-                nodes.add(shape.nodeUuid());
-                positions.put(shape.nodeUuid(), position);
+                nodes.add(nodeUuid);
+                positions.put(nodeUuid, position);
             }
-            node = position;
+            return position;
         }
 
-        final List<Integer> children = new ArrayList<>(shape.steps().size());
-        for (final PathShape child : shape.steps()) {
-            children.add(intern(child, nodes, positions, steps, shapes));
+        private int stepIndex(final int node, final List<Integer> children) {
+            final PathStep step = new PathStep(node, children);
+            final Integer existing = shapes.get(step);
+            if (existing != null) {
+                return existing;
+            }
+            steps.add(step);
+            shapes.put(step, steps.size() - 1);
+            return steps.size() - 1;
         }
+    }
 
-        final PathStep step = new PathStep(node, children);
-        final Integer existing = shapes.get(step);
-        if (existing != null) {
-            return existing;
-        }
-        steps.add(step);
-        shapes.put(step, steps.size() - 1);
-        return steps.size() - 1;
+    // Not a node at all but a marker for how the work under it ran.
+    private static int marker(final PathShape.Kind kind) {
+        return switch (kind) {
+            case UNFINISHED -> PathStep.UNFINISHED;
+            case CONCURRENT -> PathStep.CONCURRENT;
+            case RUN -> PathStep.RUN;
+            case NODE -> throw new IllegalStateException("handled above");
+        };
+    }
+
+    // One row's worth of two accounts of the same walk. The counts add, the span covered widens both
+    // ways, and the trace credited with taking it first is whichever really was first.
+    private static PathUse taken(final PathUse held,
+                                 final long timesUsed,
+                                 final NanoTime firstUsed,
+                                 final NanoTime lastUsed,
+                                 final String traceId,
+                                 final NanoTime traceTime,
+                                 final NanoTime lastTraceTime,
+                                 final int source) {
+        final PathUse arrived = new PathUse(held.getRoot(), timesUsed, firstUsed, lastUsed, traceId,
+                traceTime, lastTraceTime, source);
+        final PathUse first = firstTaken(held, arrived) <= 0
+                ? held
+                : arrived;
+        return new PathUse(held.getRoot(),
+                held.getTimesUsed() + timesUsed,
+                first.getFirstUsedTime(),
+                PathUse.newest(held.getLastUsedTime(), lastUsed),
+                first.getCreatedByTraceId(),
+                first.getTraceTime(),
+                PathUse.newest(held.getLastTraceTime(), lastTraceTime),
+                first.getSource());
     }
 }

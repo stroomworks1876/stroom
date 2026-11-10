@@ -148,7 +148,7 @@ public class PathUse {
     // after fresh ones, and two stores feeding one pathway keep no order between them. Taking the
     // newer of the two keeps this the newest, which is what being asked how recently a path was taken
     // needs it to be.
-    private static NanoTime newest(final NanoTime held, final NanoTime arrived) {
+    public static NanoTime newest(final NanoTime held, final NanoTime arrived) {
         if (held == null) {
             return arrived;
         }

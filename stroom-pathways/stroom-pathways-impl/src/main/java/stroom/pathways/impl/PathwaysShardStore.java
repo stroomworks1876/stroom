@@ -216,9 +216,8 @@ public class PathwaysShardStore {
      *
      * @param work given a database open on the local copy, adds what is being archived to it.
      */
-    @WithSpan
     public void withBucket(final PathwaysDoc doc,
-                           @SpanAttribute("shardIndex") final int shardIndex,
+                           final int shardIndex,
                            final String dateLabel,
                            final Consumer<PathwaysDb> work) throws IOException {
         final SharedFileStoreSettings settings = doc.getSharedFileStore();
@@ -305,9 +304,8 @@ public class PathwaysShardStore {
      *             throws propagates, and the shard is left as it was on the shared store.
      * @return whether the model was pushed back.
      */
-    @WithSpan
     public boolean withShard(final PathwaysDoc doc,
-                             @SpanAttribute("shardIndex") final int shardIndex,
+                             final int shardIndex,
                              final Predicate<Path> work) throws IOException {
         final SharedFileStoreSettings settings = doc.getSharedFileStore();
         if (settings == null) {
@@ -467,7 +465,6 @@ public class PathwaysShardStore {
     // is pushed, so the shared store keeps, sends and returns the smaller one. What it costs is a read
     // pass over the local copy; what it saves is on the shared mount, both on the way up and on every
     // query that copies back down.
-    @WithSpan
     private static Path compact(final Path localDir) throws IOException {
         final Path dataFile = localDir.resolve(PlanBConstants.DATA_FILE_NAME);
         if (!Files.exists(dataFile)) {

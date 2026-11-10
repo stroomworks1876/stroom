@@ -42,6 +42,7 @@ import stroom.pathways.shared.pathway.NanoTimeRange;
 import stroom.pathways.shared.pathway.NanoTimeValue;
 import stroom.pathways.shared.pathway.PathKey;
 import stroom.pathways.shared.pathway.PathNode;
+import stroom.pathways.shared.pathway.Paths;
 import stroom.pathways.shared.pathway.PathwayMutation;
 import stroom.pathways.shared.pathway.Regex;
 import stroom.pathways.shared.pathway.StringSet;
@@ -101,7 +102,24 @@ public class NodeMutatorImpl {
     // notice a constraint moving are several calls below the one that knows. Which node it happened to
     // is passed instead, so a constraint is never recorded against the wrong one.
     private NanoTime time;
-    private final Map<String, Map<String, ConstraintValue>> observations = new LinkedHashMap<>();
+    // What this trace saw of each node it reached, by the path that reaches it. One entry per node
+    // rather than three maps side by side: a node is reached before it is asked for values, and most
+    // of them give none, so anything keyed only by what gave a value would lose them.
+    private final Map<List<String>, Seen> seenNodes = new LinkedHashMap<>();
+
+    private static final class Seen {
+
+        // What the model calls this node. Held so a day record can resolve the walks taken, which
+        // name their nodes the way the model does, against its own nodes.
+        private String uuid;
+
+        // Spans folded into it by this trace, counted the way the learnt model counts them, so the
+        // day's figure and the model's mean the same thing.
+        private long spans;
+
+        private final Map<String, DayRecord.ObservedConstraint> constraints = new LinkedHashMap<>();
+    }
+
     // When the trace ran, which is not when this ran: a trace waits in a queue to be applied, and how
     // long it waited is anyone's guess. Taken off the root span, which is the one span of a trace that
     // stands for the whole of it.
@@ -648,6 +666,7 @@ public class NodeMutatorImpl {
                                             final MessageReceiver messageReceiver,
                                             final PathwaysDoc pathwaysDoc) {
         // This runs once for every span folded into the node, so it counts spans rather than traces.
+        countSpan(pathNode);
         final PathNode.Builder pathNodeBuilder = pathNode.copy()
                 .timesUsed(pathNode.getTimesUsed() + 1)
                 .lastUsedTime(time);
@@ -770,9 +789,14 @@ public class NodeMutatorImpl {
 
         final Supplier<String> location = () -> pathNode.getNodePath() + " " + name;
         final Constraint constraint = constraints.get(name);
+        // What this constraint is, not what a new one on this node would be. The flag passed in says
+        // only that the node already has constraints, so taking it would mark every constraint of
+        // every node seen more than once optional, and a day record ors it so it would never come
+        // back.
+        final boolean opt = NullSafe.getOrElse(constraint, Constraint::isOptional, optional);
 
         if (isLearntFrom(value, constraint, pathwaysDoc)) {
-            observe(pathNode, name, value);
+            observe(pathNode, name, value, opt);
         }
 
         if (value == null) {
@@ -786,7 +810,6 @@ public class NodeMutatorImpl {
                         "Constraint not found: " + location.get() + " " + value);
 
             } else {
-                final boolean opt = NullSafe.getOrElse(constraint, Constraint::isOptional, optional);
                 switch (value) {
                     case final Integer val -> put(constraints, pathNode, name,
                             createIntConstraint(location,
@@ -890,13 +913,32 @@ public class NodeMutatorImpl {
     // What this trace gave each constraint, kept beside the model change it caused so the day it
     // belongs to can be summarised once the trace has been applied. A node reached more than once in a
     // trace folds its values together here, the same way a day folds a trace's into the ones before it.
-    private void observe(final PathNode node, final String name, final Object value) {
+    private void observe(final PathNode node,
+                         final String name,
+                         final Object value,
+                         final boolean optional) {
         final ConstraintValue observed = asValue(value);
         if (observed != null) {
-            observations
-                    .computeIfAbsent(node.getUuid(), uuid -> new LinkedHashMap<>())
-                    .merge(name, observed, ObservedValues::add);
+            // The same fold a day uses on two traces' accounts, because a node reached twice in one
+            // trace is the same question asked over a shorter span.
+            seen(node).constraints
+                    .merge(name,
+                            new DayRecord.ObservedConstraint(observed, optional, traceId, traceTime,
+                                    spanId),
+                            DayRecord.ObservedConstraint::and);
         }
+    }
+
+    // Counted here because this is what runs per span folded into a node, which is what the learnt
+    // model's own timesUsed counts.
+    private void countSpan(final PathNode node) {
+        seen(node).spans++;
+    }
+
+    private Seen seen(final PathNode node) {
+        final Seen held = seenNodes.computeIfAbsent(node.getNodePath(), path -> new Seen());
+        held.uuid = node.getUuid();
+        return held;
     }
 
     private static ConstraintValue asValue(final Object value) {
@@ -912,12 +954,19 @@ public class NodeMutatorImpl {
     }
 
     /**
-     * What this trace gave every constraint it touched, by node uuid then constraint name. Folded into
-     * the day's values once the trace has been applied, so the model can later be held to what it
-     * has been given lately rather than to everything it has ever been given.
+     * What this trace gave every constraint it touched, by the path that reaches the node and then
+     * by constraint name. Folded into the day's record once the trace has been applied, so the model
+     * can later be held to what it has been given lately rather than to everything it has ever been
+     * given.
      */
-    public Map<String, Map<String, ConstraintValue>> getObservations() {
-        return observations;
+    public DayRecord getObservations() {
+        final Map<List<String>, DayRecord.ObservedNode> nodes = new LinkedHashMap<>();
+        // Every node this trace reached, not only the ones that gave a value. A node whose values are
+        // all of a kind the model does not learn from still ran, and a day it is missing from is a
+        // day a model built from these records cannot draw it on.
+        seenNodes.forEach((path, seen) ->
+                nodes.put(path, new DayRecord.ObservedNode(seen.uuid, seen.spans, seen.constraints)));
+        return new DayRecord(nodes, Paths.empty());
     }
 
     // The name as the configuration spells it. An attribute is named without the prefix the model
