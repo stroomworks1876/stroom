@@ -93,6 +93,7 @@ public class PathwaysProcessor implements MergeStrategy {
     private final PathwaySerde pathwaySerde;
     private final MutationLog mutationLog;
     private final PathwayNarrower pathwayNarrower;
+    private final BucketArchiver bucketArchiver;
     private final ByteBuffers byteBuffers;
     private final ByteBufferFactory byteBufferFactory;
 
@@ -112,6 +113,7 @@ public class PathwaysProcessor implements MergeStrategy {
                              final MessageReceiverFactory messageReceiverFactory,
                              final PathwaySerde pathwaySerde,
                              final PathwayNarrower pathwayNarrower,
+                             final BucketArchiver bucketArchiver,
                              final ByteBuffers byteBuffers,
                              final ByteBufferFactory byteBufferFactory,
                              final Metrics metrics) {
@@ -120,6 +122,7 @@ public class PathwaysProcessor implements MergeStrategy {
         this.messageReceiverFactory = messageReceiverFactory;
         this.pathwaySerde = pathwaySerde;
         this.pathwayNarrower = pathwayNarrower;
+        this.bucketArchiver = bucketArchiver;
         this.byteBuffers = byteBuffers;
         this.byteBufferFactory = byteBufferFactory;
 
@@ -189,7 +192,8 @@ public class PathwaysProcessor implements MergeStrategy {
         final Map<Path, Exception> failures = new LinkedHashMap<>();
         try {
             shardStore.withShard(doc, ctx.shardIndex(),
-                    localDir -> work(doc, queueDirs, narrowNow, localDir, applied, failures));
+                    localDir -> work(doc, ctx.shardIndex(), queueDirs, narrowNow, localDir,
+                            applied, failures));
         } catch (final IOException e) {
             // The model could not be taken down or put back, so nothing here was committed. Saying
             // nothing was applied is the whole point: every item is offered again next cycle rather
@@ -254,6 +258,7 @@ public class PathwaysProcessor implements MergeStrategy {
     // model, and then the narrowing takes back whatever has fallen outside the window — so a run of
     // widenings and the narrowing that answers them land in the history in that order.
     private boolean work(final PathwaysDoc doc,
+                         final int shardIndex,
                          final List<Path> queueDirs,
                          final boolean narrowNow,
                          final Path localDir,
@@ -264,19 +269,20 @@ public class PathwaysProcessor implements MergeStrategy {
         boolean changed = !queueDirs.isEmpty()
                           && applyQueuedTraces(doc, queueDirs, localDir, applied, failures);
         if (narrowNow) {
-            changed = narrow(doc, localDir) || changed;
+            changed = narrow(doc, shardIndex, localDir) || changed;
         }
         return changed;
     }
 
-    private boolean narrow(final PathwaysDoc doc, final Path localDir) {
+    private boolean narrow(final PathwaysDoc doc, final int shardIndex, final Path localDir) {
         // Collected rather than written as the narrowing goes: opening the feed opens a stream
         // whether or not anything is put in it, and a model already as narrow as its window has
         // nothing to say — which is most models most days.
         final List<String> lines = new ArrayList<>();
         final boolean changed = pathwayNarrower.narrow(localDir,
                 PathwayNarrower.oldestDayInWindow(doc, Instant.now()),
-                (severity, message) -> lines.add(message.get()));
+                (severity, message) -> lines.add(message.get()),
+                bucketArchiver.forShard(doc, shardIndex));
         if (!lines.isEmpty()) {
             withMessageReceiver(messageReceiverFactory, doc, messages ->
                     lines.forEach(line -> messages.log(Severity.INFO, () -> line)));

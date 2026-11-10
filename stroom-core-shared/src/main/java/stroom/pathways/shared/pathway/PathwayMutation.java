@@ -40,7 +40,8 @@ import java.util.function.Function;
 public class PathwayMutation {
 
     // The names the grid sorts by, shared so the column clicked and the field ordered on cannot drift.
-    public static final String FIELD_TIME = "Time";
+    public static final String FIELD_TIME = "Applied";
+    public static final String FIELD_TRACE_TIME = "Trace time";
     public static final String FIELD_TYPE = "Change";
     public static final String FIELD_PATH = "Node";
     public static final String FIELD_CONSTRAINT = "Constraint";
@@ -142,7 +143,10 @@ public class PathwayMutation {
         final Comparator<PathwayMutation> comparator = switch (field == null
                 ? ""
                 : field) {
-            case FIELD_TIME -> Comparator.comparingLong(PathwayMutation::getSequence);
+            // Both order by the number rather than by the times themselves: every change one trace
+            // made shares a timestamp, so ordering on those alone would shuffle changes that happened
+            // in a definite order.
+            case FIELD_TIME, FIELD_TRACE_TIME -> Comparator.comparingLong(PathwayMutation::getSequence);
             case FIELD_TYPE -> text(m -> m.getType() == null
                     ? null
                     : m.getType().getDisplayValue());

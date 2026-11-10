@@ -35,6 +35,8 @@ import stroom.pathways.shared.pathway.PathwayReplay;
 import stroom.pathways.shared.pathway.PathwayUsage;
 import stroom.planb.impl.dao.ShardKeyRouter;
 import stroom.planb.impl.dao.trace.PathwaysDb;
+import stroom.planb.impl.data.archive.BucketGranularityUtil;
+import stroom.planb.shared.BucketGranularity;
 import stroom.planb.shared.SharedFileStoreSettings;
 import stroom.query.api.TimeFilter;
 import stroom.query.api.TimeRange;
@@ -51,6 +53,7 @@ import jakarta.inject.Singleton;
 import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashMap;
@@ -190,33 +193,10 @@ public class ShardedPathwayReader {
     }
 
     /**
-     * How much each node had been used at each point this pathway's history can be wound back to.
+     * The changes made to one learnt pathway, from wherever they are now.
      *
-     * <p>Not paged and not sorted: a reading is kept only where a trace changed the model, so there
-     * are as many as there are traces that taught it something, and the browser holds the lot to
-     * colour the drawing wherever the reader winds it back to.
-     */
-    public List<PathwayUsage> findUsage(final PathwaysDoc doc,
-                                        final FindPathwayMutationCriteria criteria) {
-        final SharedFileStoreSettings settings = doc.getSharedFileStore();
-        final String name = criteria.getPathwayName();
-        if (settings == null || NullSafe.isBlankString(settings.getSharedPath())
-            || NullSafe.isBlankString(name)) {
-            return List.of();
-        }
-
-        final int shard = ShardKeyRouter.computeShardIndex(name, shardCountOf(settings));
-        final List<PathwayUsage> usage = new ArrayList<>();
-        readShard(doc, shard, db -> {
-            usage.addAll(mutationLog.readUsage(db.getMutations(), name.getBytes(StandardCharsets.UTF_8)));
-            return null;
-        });
-        return usage;
-    }
-
-    /**
-     * The changes made to one learnt pathway. Only that pathway's shard is opened, and only its own
-     * run of keys is walked, because the mutation key begins with the name it belongs to.
+     * <p>Only that pathway's shard is opened, and only its own run of keys is walked, because the
+     * mutation key begins with the name it belongs to. The same is true of each week bucket read.
      */
     public PathwayMutationResultPage findMutations(final PathwaysDoc doc,
                                                    final FindPathwayMutationCriteria criteria) {
@@ -228,15 +208,31 @@ public class ShardedPathwayReader {
         }
 
         final int shard = ShardKeyRouter.computeShardIndex(name, shardCountOf(settings));
-        final List<PathwayMutation> mutations = new ArrayList<>();
+        final byte[] keyBytes = name.getBytes(StandardCharsets.UTF_8);
+        final List<PathwayMutation> live = new ArrayList<>();
         readShard(doc, shard, db -> {
-            mutations.addAll(mutationLog.read(db.getMutations(), name.getBytes(StandardCharsets.UTF_8)));
+            live.addAll(mutationLog.read(db.getMutations(), keyBytes));
             return null;
         });
 
         // The range the reader picked, on the same clock everything else here runs on: when the
         // learner took the change in, not when its work ran.
         final TimeFilter window = TraceHistograms.resolveTimeFilter(criteria.getTimeRange());
+
+        // The window splits one history across the live shard and the week buckets, so a list of it
+        // covers both. Only the weeks the range touches are opened; a range left open touches them
+        // all, which is what asking for every change there has ever been costs.
+        final List<PathwayMutation> archived = new ArrayList<>();
+        eachWeekIn(doc, shard,
+                window == null
+                        ? 0L
+                        : window.getFrom(),
+                window == null
+                        ? System.currentTimeMillis()
+                        : window.getTo(),
+                db -> archived.addAll(mutationLog.read(db.getMutations(), keyBytes)));
+
+        final List<PathwayMutation> mutations = new ArrayList<>(joinedChanges(live, archived));
         if (window != null) {
             mutations.removeIf(mutation -> outside(mutation, window));
         }
@@ -342,8 +338,12 @@ public class ShardedPathwayReader {
             return null;
         });
 
-        return Optional.ofNullable(found[0])
-                .map(pathway -> asAt(pathway, mutations, usage, latestIn(timeRange), toSequence));
+        if (found[0] == null) {
+            return Optional.empty();
+        }
+        final Long asAtMs = latestIn(timeRange);
+        addArchived(doc, shard, keyBytes, asAtMs, mutations, usage);
+        return Optional.of(asAt(found[0], mutations, usage, asAtMs, toSequence));
     }
 
     // The latest time the range covers, or null where it has no end - which is the model as it
@@ -354,6 +354,115 @@ public class ShardedPathwayReader {
         return filter == null || filter.getTo() == Long.MAX_VALUE
                 ? null
                 : filter.getTo();
+    }
+
+    // The window splits one pathway's history across the live shard and the week buckets, so winding
+    // the model back past what the shard still holds means reading the weeks between the time asked
+    // for and now. Nothing can be left out: a wind-back passes through every change between the two.
+    private void addArchived(final PathwaysDoc doc,
+                             final int shard,
+                             final byte[] keyBytes,
+                             final Long asAtMs,
+                             final List<PathwayMutation> mutations,
+                             final List<PathwayUsage> usage) {
+        if (asAtMs == null) {
+            // The model as it stands, so there is nothing to wind back through.
+            return;
+        }
+        final List<PathwayMutation> archivedChanges = new ArrayList<>();
+        final List<PathwayUsage> archivedUsage = new ArrayList<>();
+        eachWeekIn(doc, shard, asAtMs, System.currentTimeMillis(), db -> {
+            archivedChanges.addAll(mutationLog.read(db.getMutations(), keyBytes));
+            archivedUsage.addAll(mutationLog.readUsage(db.getMutations(), keyBytes));
+        });
+        if (archivedChanges.isEmpty() && archivedUsage.isEmpty()) {
+            return;
+        }
+
+        final List<PathwayMutation> allChanges = joinedChanges(mutations, archivedChanges);
+        mutations.clear();
+        mutations.addAll(allChanges);
+        final List<PathwayUsage> allUsage = joinedUsage(usage, archivedUsage);
+        usage.clear();
+        usage.addAll(allUsage);
+    }
+
+    /**
+     * Runs {@code work} against each week bucket the given span touches, oldest first.
+     *
+     * <p>The bucket names are the index, so which weeks to open is decided from a directory listing
+     * and no bucket outside the span is copied down. A week with nothing archived for it has no
+     * bucket and is simply not listed.
+     */
+    private void eachWeekIn(final PathwaysDoc doc,
+                            final int shard,
+                            final long fromMs,
+                            final long toMs,
+                            final Consumer<PathwaysDb> work) {
+        final List<String> weeks;
+        try {
+            weeks = shardStore.archivedWeeks(doc, shard);
+        } catch (final IOException | RuntimeException e) {
+            LOGGER.error(() -> "Could not list the buckets of shard " + shard + " of " + doc.getName()
+                               + ", so only what the live shard holds is in this answer: "
+                               + e.getMessage(), e);
+            return;
+        }
+        for (final String week : weeks) {
+            if (!covers(week, fromMs, toMs)) {
+                continue;
+            }
+            try {
+                shardStore.readBucket(doc, shard, week, db -> {
+                    work.accept(db);
+                    return null;
+                });
+            } catch (final IOException | RuntimeException e) {
+                LOGGER.error(() -> "Could not read the " + week + " bucket of shard " + shard + " of "
+                                   + doc.getName() + ", so its changes are missing from this answer: "
+                                   + e.getMessage(), e);
+            }
+        }
+    }
+
+    // Whether a bucket's own span overlaps the one asked for. An unreadable label is taken rather
+    // than skipped, because reading a bucket that turns out not to be wanted costs a copy and
+    // skipping one that was gives a wrong answer.
+    static boolean covers(final String week, final long fromMs, final long toMs) {
+        final BucketGranularity granularity = BucketGranularityUtil.detect(week);
+        if (granularity == null) {
+            return true;
+        }
+        final Instant start = BucketGranularityUtil.bucketStart(granularity, week);
+        final Instant end = BucketGranularityUtil.bucketEnd(granularity, week);
+        return start == null
+               || end == null
+               || BucketGranularityUtil.overlaps(start, end, fromMs, toMs);
+    }
+
+    // Both sides in one list, in the order they were made. Numbered by the same sequence wherever
+    // they are, so a row that is in both - which is what a narrowing interrupted between storing and
+    // dropping leaves - is taken once.
+    static List<PathwayMutation> joinedChanges(final List<PathwayMutation> live,
+                                               final List<PathwayMutation> archived) {
+        final Map<Long, PathwayMutation> bySequence = new HashMap<>();
+        archived.forEach(change -> bySequence.put(change.getSequence(), change));
+        live.forEach(change -> bySequence.put(change.getSequence(), change));
+        final List<PathwayMutation> joined = new ArrayList<>(bySequence.values());
+        joined.sort(Comparator.comparingLong(PathwayMutation::getSequence));
+        return joined;
+    }
+
+    // As above. A reading only means anything in its place in the chain, so order matters as much
+    // here as it does for the changes.
+    static List<PathwayUsage> joinedUsage(final List<PathwayUsage> live,
+                                          final List<PathwayUsage> archived) {
+        final Map<Long, PathwayUsage> bySequence = new HashMap<>();
+        archived.forEach(reading -> bySequence.put(reading.getSequence(), reading));
+        live.forEach(reading -> bySequence.put(reading.getSequence(), reading));
+        final List<PathwayUsage> joined = new ArrayList<>(bySequence.values());
+        joined.sort(Comparator.comparingLong(PathwayUsage::getSequence));
+        return joined;
     }
 
     /**

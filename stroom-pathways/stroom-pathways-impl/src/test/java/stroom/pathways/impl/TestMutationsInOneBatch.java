@@ -76,6 +76,7 @@ class TestMutationsInOneBatch {
     private static final byte NODE_MARKER = 2;
     private static final byte TRACE_MARKER = 3;
     private static final byte COUNTS_MARKER = 4;
+    private static final byte HIGHEST_MARKER = 5;
 
     @Test
     void everyChangeIsKeptAndNumberedInOrder(@TempDir final Path dir) {
@@ -310,7 +311,7 @@ class TestMutationsInOneBatch {
     // Every marker counted on one pass, because each open of the environment maps a region of its own
     // and a test that opens it once per question runs the JVM out of room.
     private static long[] rowsByMarker(final Path dir) {
-        final long[] counts = new long[COUNTS_MARKER + 1];
+        final long[] counts = new long[HIGHEST_MARKER + 1];
         try (final PathwaysDb db = PathwaysDb.create(dir, BYTE_BUFFERS, true)) {
             db.getMutations().iterate((key, val) -> counts[key.get(key.limit() - Long.BYTES - 1)]++);
         }

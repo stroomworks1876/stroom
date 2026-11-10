@@ -698,19 +698,26 @@ public class PathwayMutationListPresenter extends MyPresenterWidget<PagerView> {
     private void addColumns() {
         addExpanderColumn();
 
-        // When the work ran, which is what a reader is asking about. Everything else here runs on
-        // when Stroom learnt the change - the order of the list, the plot above it, which rows a range
-        // selects - because that is the only order the model can be wound back along. So a trace
-        // loaded long after it ran sits at the top of the list showing an old time, which is correct
-        // and is the point.
+        // Both times, named, because they are not the same question and the list runs on one of them
+        // while a reader is usually asking about the other. Applied is when Stroom learnt the change,
+        // and is the order of the list, the clock the plot above it runs on, and what a picked range
+        // selects, because it is the only order the model can be wound back along. Trace time is when
+        // the trace itself ran. A trace loaded long after it ran therefore sits at the top of the list
+        // with an old trace time, which is correct and is the point of the feature.
         //
-        // Not sortable: every change a trace made shares one timestamp, so ordering on the times alone
-        // would shuffle changes that happened in a definite order.
+        // Neither sorts on the times themselves: every change one trace made shares a timestamp, so
+        // ordering on those alone would shuffle changes that happened in a definite order.
         timeColumn = DataGridUtil
-                .textColumnBuilder((MutationRow row) -> NullSafe.get(row.getRanAt(),
+                .textColumnBuilder((MutationRow row) -> NullSafe.get(row.getTime(),
                         value -> dateTimeFormatter.format(value.toEpochMillis())))
                 .build();
         dataGrid.addResizableColumn(timeColumn, PathwayMutation.FIELD_TIME,
+                ColumnSizeConstants.DATE_COL);
+        dataGrid.addResizableColumn(DataGridUtil
+                        .textColumnBuilder((MutationRow row) -> NullSafe.get(row.getRanAt(),
+                                value -> dateTimeFormatter.format(value.toEpochMillis())))
+                        .build(),
+                PathwayMutation.FIELD_TRACE_TIME,
                 ColumnSizeConstants.DATE_COL);
 
         // What the change belonged to comes before what it was: the list is grouped by trace, so the

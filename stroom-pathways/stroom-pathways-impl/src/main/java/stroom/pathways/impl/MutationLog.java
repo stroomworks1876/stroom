@@ -46,6 +46,7 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 import java.util.function.Consumer;
+import java.util.function.IntFunction;
 
 /**
  * The record of every change made to a model, numbered in the order the changes were made.
@@ -62,6 +63,7 @@ public class MutationLog {
     private static final byte NODE_MARKER = 2;
     private static final byte TRACE_MARKER = 3;
     private static final byte COUNTS_MARKER = 4;
+    private static final byte HIGHEST_MARKER = 5;
 
     private final ByteBuffers byteBuffers;
     private final PathwaySerde pathwaySerde;
@@ -126,6 +128,7 @@ public class MutationLog {
         }
 
         writeUsage(writer, db, pathwayKey, sequence, firstMutation.getTime(), root, history);
+        recordHighest(writer, db, pathwayKey, sequence);
     }
 
     /**
@@ -344,16 +347,50 @@ public class MutationLog {
         return readings;
     }
 
-    // Where this pathway's history got to, taken from the last key rather than kept anywhere, so
-    // nothing has to stay in step with it. Read on the batch's own transaction, so it counts on from
-    // what earlier traces in the same batch wrote rather than starting them all again from what was
-    // last committed.
-    private static long lastSequence(final LmdbWriter writer,
-                                     final SimpleDb db,
-                                     final byte[] pathwayKey) {
-        return db.lastPrefixed(writer.getWriteTxn(), prefixOf(pathwayKey, CHANGE_MARKER), key -> key == null
-                ? 0L
-                : key.getLong(key.limit() - Long.BYTES));
+    // Where this pathway's history got to. The last change row still here answers it until the
+    // narrowing moves rows out, and after that it says only where the part still here got to - so the
+    // highest number ever used is kept as well and whichever is greater wins. Numbering from the
+    // lower of the two would hand numbers out twice, and a change number is how a bucket's rows and
+    // the shard's are told apart when they are read together.
+    //
+    // Read on the batch's own transaction, so it counts on from what earlier traces in the same
+    // batch wrote rather than starting them all again from what was last committed.
+    private long lastSequence(final LmdbWriter writer,
+                              final SimpleDb db,
+                              final byte[] pathwayKey) {
+        final long lastHere = db.lastPrefixed(writer.getWriteTxn(), prefixOf(pathwayKey, CHANGE_MARKER),
+                key -> key == null
+                        ? 0L
+                        : key.getLong(key.limit() - Long.BYTES));
+        return Math.max(lastHere, highest(writer, db, pathwayKey));
+    }
+
+    // Zero where there is none, which is both a pathway nothing has changed yet and a shard written
+    // before this row existed. Either way the last change row still here is the better answer.
+    private long highest(final LmdbWriter writer, final SimpleDb db, final byte[] pathwayKey) {
+        final long[] highest = {0L};
+        byteBuffers.useBytes(markedKey(pathwayKey, HIGHEST_MARKER, 0L),
+                (Consumer<ByteBuffer>) keyByteBuffer -> db.get(writer.getWriteTxn(), keyByteBuffer,
+                        value -> {
+                            if (value != null) {
+                                highest[0] = value.getLong(value.position());
+                            }
+                            return null;
+                        }));
+        return highest[0];
+    }
+
+    // One row per pathway, written over each time. Kept beside the changes rather than in the counts
+    // row because it has to be there whether or not the counts moved, and it must outlive every
+    // change row the narrowing takes away.
+    private void recordHighest(final LmdbWriter writer,
+                               final SimpleDb db,
+                               final byte[] pathwayKey,
+                               final long sequence) {
+        byteBuffers.useBytes(markedKey(pathwayKey, HIGHEST_MARKER, 0L),
+                (Consumer<ByteBuffer>) keyByteBuffer ->
+                        byteBuffers.useLong(sequence, (Consumer<ByteBuffer>) valueByteBuffer ->
+                                db.insert(writer, keyByteBuffer, valueByteBuffer)));
     }
 
     // Pathway first, so one model's changes are a single run of keys, then where each sits in that
@@ -403,10 +440,196 @@ public class MutationLog {
     int removeAll(final LmdbWriter writer, final SimpleDb db, final byte[] pathwayKey) {
         int removed = 0;
         for (final byte marker :
-                new byte[]{CHANGE_MARKER, USAGE_MARKER, NODE_MARKER, TRACE_MARKER, COUNTS_MARKER}) {
+                new byte[]{CHANGE_MARKER, USAGE_MARKER, NODE_MARKER, TRACE_MARKER, COUNTS_MARKER,
+                        HIGHEST_MARKER}) {
             removed += db.deletePrefixed(writer, prefixOf(pathwayKey, marker));
         }
         return removed;
+    }
+
+    /**
+     * One row as it is stored, both halves, so a bucket is written from it rather than from a re-read
+     * of a row that has already gone.
+     */
+    record Row(byte[] key, byte[] value) {
+
+    }
+
+    /**
+     * One pathway's rows that the window has passed, grouped by the week they belong to.
+     *
+     * <p>Nothing is deleted here. What comes back is handed to whoever stores it, and only once that
+     * has worked are the same rows dropped.
+     *
+     * <p>A trace is the unit. Every change a trace made carries that trace's applied time, so a trace
+     * and its changes always fall in the same week and move together - which is what stops a
+     * wind-back finding half of one. The node rows a change names are copied into every week that
+     * takes any of this pathway's changes, because a change row cannot be read without them.
+     */
+    Expired expired(final LmdbWriter writer,
+                    final SimpleDb db,
+                    final byte[] pathwayKey,
+                    final int oldestDay,
+                    final IntFunction<String> weekOfDay) {
+        final List<Row> nodeRows = new ArrayList<>();
+        db.iteratePrefix(writer.getWriteTxn(), prefixOf(pathwayKey, NODE_MARKER), (key, value) ->
+                nodeRows.add(new Row(copyOf(key), copyOf(value))));
+
+        // Which week each trace belongs to, for the ones the window has passed. Held by the trace's
+        // own number because that is what a change row names it by.
+        final Map<Long, String> weekByTrace = new HashMap<>();
+        final Map<String, List<Row>> byWeek = new LinkedHashMap<>();
+        db.iteratePrefix(writer.getWriteTxn(), prefixOf(pathwayKey, TRACE_MARKER), (key, value) -> {
+            // Taken before the row is read. Reading it walks the buffer to its end, and a row copied
+            // after that is a row of nothing.
+            final Row row = new Row(copyOf(key), copyOf(value));
+            final StoredTrace trace = pathwaySerde.readTrace(value);
+            final NanoTime applied = trace.time();
+            if (applied == null
+                || applied.toEpochMillis() / TraceProcessor.MILLIS_PER_DAY >= oldestDay) {
+                return;
+            }
+            final String week = weekOfDay.apply(
+                    (int) (applied.toEpochMillis() / TraceProcessor.MILLIS_PER_DAY));
+            weekByTrace.put(idOfKey(key), week);
+            byWeek.computeIfAbsent(week, w -> new ArrayList<>()).add(row);
+        });
+
+        if (byWeek.isEmpty()) {
+            return Expired.NOTHING;
+        }
+
+        db.iteratePrefix(writer.getWriteTxn(), prefixOf(pathwayKey, CHANGE_MARKER), (key, value) -> {
+            final Row row = new Row(copyOf(key), copyOf(value));
+            final String week = weekByTrace.get(pathwaySerde.readMutation(value).traceSequence());
+            if (week != null) {
+                byWeek.get(week).add(row);
+            }
+        });
+
+        expireUsage(writer, db, pathwayKey, oldestDay, weekOfDay, byWeek);
+
+        // The rows that move, and the rows that are copied. Node rows are copied: a bucket cannot
+        // read its own change rows without them, and neither can the live shard read the ones it
+        // keeps. Moving them would take the node names off every change still here.
+        final Map<String, List<Row>> toStore = new LinkedHashMap<>();
+        byWeek.forEach((week, rows) -> {
+            final List<Row> all = new ArrayList<>(rows);
+            all.addAll(nodeRows);
+            toStore.put(week, all);
+        });
+        return new Expired(toStore, byWeek);
+    }
+
+    /**
+     * What a week is given, and what may then be dropped from the live shard.
+     *
+     * @param toStore what goes in each bucket, including the node rows a change cannot be read
+     *                without
+     * @param toDrop  the subset that has actually left - never the node rows, which are copied
+     */
+    record Expired(Map<String, List<Row>> toStore, Map<String, List<Row>> toDrop) {
+
+        static final Expired NOTHING = new Expired(Map.of(), Map.of());
+    }
+
+    /**
+     * Moves the readings the window has passed into their weeks, and makes both sides of the split
+     * readable.
+     *
+     * <p>A reading says only what moved since the one before it, so a chain cut in half leaves both
+     * halves wrong: the part left behind starts in the middle with nothing carried in, and the part
+     * taken away starts at its own first reading with nothing before it. So the first reading on each
+     * side of a cut is rewritten as a full account of every node, which is what the first reading ever
+     * written looks like anyway.
+     *
+     * <p>The totals come from replaying the chain, which can be done here because nothing has been
+     * dropped yet. On a later pass the part left behind already begins with a full account, so the
+     * replay begins there.
+     */
+    private void expireUsage(final LmdbWriter writer,
+                             final SimpleDb db,
+                             final byte[] pathwayKey,
+                             final int oldestDay,
+                             final IntFunction<String> weekOfDay,
+                             final Map<String, List<Row>> byWeek) {
+        final List<Row> rows = new ArrayList<>();
+        final List<StoredUsage> readings = new ArrayList<>();
+        db.iteratePrefix(writer.getWriteTxn(), prefixOf(pathwayKey, USAGE_MARKER), (key, value) -> {
+            rows.add(new Row(copyOf(key), copyOf(value)));
+            readings.add(pathwaySerde.readUsage(value));
+        });
+        if (rows.isEmpty()) {
+            return;
+        }
+
+        final Map<Long, StoredCount> running = new LinkedHashMap<>();
+        String lastWeek = null;
+        Row liveBoundary = null;
+        StoredUsage liveBoundaryReading = null;
+
+        for (int i = 0; i < rows.size(); i++) {
+            final StoredUsage reading = readings.get(i);
+            carryForward(running, reading);
+
+            final NanoTime time = reading.time();
+            if (time == null || time.toEpochMillis() / TraceProcessor.MILLIS_PER_DAY >= oldestDay) {
+                // The first one staying behind. Whatever came before it has gone, so it has to say
+                // where everything stood rather than only what it moved.
+                liveBoundary = rows.get(i);
+                liveBoundaryReading = reading;
+                break;
+            }
+
+            final String week = weekOfDay.apply(
+                    (int) (time.toEpochMillis() / TraceProcessor.MILLIS_PER_DAY));
+            final boolean firstInWeek = !week.equals(lastWeek);
+            lastWeek = week;
+            byWeek.computeIfAbsent(week, w -> new ArrayList<>())
+                    .add(firstInWeek
+                            ? whole(rows.get(i).key(), reading, running)
+                            : rows.get(i));
+        }
+
+        if (liveBoundary != null && lastWeek != null) {
+            final Row rewritten = whole(liveBoundary.key(), liveBoundaryReading, running);
+            byteBuffers.useBytes(rewritten.key(), (Consumer<ByteBuffer>) keyByteBuffer ->
+                    byteBuffers.useBytes(rewritten.value(), (Consumer<ByteBuffer>) valueByteBuffer ->
+                            db.insert(writer, keyByteBuffer, valueByteBuffer)));
+        }
+    }
+
+    // Applies one reading to the totals, the way reading them back does.
+    private static void carryForward(final Map<Long, StoredCount> running, final StoredUsage reading) {
+        NullSafe.list(reading.gone()).forEach(running::remove);
+        NullSafe.list(reading.moved()).forEach(count -> running.put(count.nodeId(),
+                // The flag says "as at this reading's own time", which only holds where the reading
+                // it came from is still the one being read. Spelled out instead, so it survives being
+                // carried into a reading written later.
+                new StoredCount(count.nodeId(), count.timesUsed(), false,
+                        count.usedNow()
+                                ? reading.time()
+                                : count.lastUsedTime())));
+    }
+
+    private Row whole(final byte[] key, final StoredUsage reading, final Map<Long, StoredCount> running) {
+        final StoredUsage full = new StoredUsage(reading.sequence(), reading.time(),
+                new ArrayList<>(running.values()), List.of());
+        final byte[][] written = new byte[1][];
+        pathwaySerde.writeUsage(full, value -> written[0] = copyOf(value));
+        return new Row(key, written[0]);
+    }
+
+    /** Drops rows handed over to a bucket, once they are safely there. */
+    void drop(final LmdbWriter writer, final SimpleDb db, final List<Row> rows) {
+        rows.forEach(row -> byteBuffers.useBytes(row.key(),
+                (Consumer<ByteBuffer>) keyByteBuffer -> db.delete(writer, keyByteBuffer)));
+    }
+
+    private static byte[] copyOf(final ByteBuffer buffer) {
+        final byte[] bytes = new byte[buffer.remaining()];
+        buffer.duplicate().get(bytes);
+        return bytes;
     }
 
     private static ByteBuffer prefixOf(final byte[] pathwayKey, final byte marker) {

@@ -295,6 +295,46 @@ public class SharedFileStorePublisher {
     // no lock. The name to publish under comes from the caller because a live shard and an archive
     // bucket hold their data in different forms.
     //
+    /**
+     * Copies a bucket's data file down to {@code destFile}, decompressing it where it is compressed.
+     *
+     * <p>Here because the pieces an archive bucket is made of live in this package, and a store that
+     * keeps its own kind of bucket beside Plan B's needs them without copying the protocol.
+     *
+     * @return false where the bucket holds no data file at all, which is a miss rather than an error.
+     */
+    public boolean copyArchiveDown(final Path bucketDir, final Path destFile) throws IOException {
+        return ArchiveData.copyDown(bucketDir, destFile);
+    }
+
+    /**
+     * Publishes a finished bucket: compresses the local file, copies it up under a temporary name,
+     * renames it within the live bucket directory and writes the version last.
+     *
+     * <p>The directory is never renamed away, so a reader holding no lock never finds it absent.
+     * {@link #recoverOrphaned} is not called for the archive tree, so an interrupted swap there would
+     * leave a bucket permanently invisible.
+     *
+     * <p>The caller has already merged whatever it is publishing into {@code localData}. Merging
+     * cannot be done here because what a record means, and how two of them combine, belongs to
+     * whoever owns the store.
+     */
+    @WithSpan
+    public void publishArchive(final Path localData, final Path bucketDir) throws IOException {
+        final String version = Instant.now().toEpochMilli() + "_" + nodeInfo.getThisNodeName();
+        final Path localCompressed = localData.resolveSibling(PlanBConstants.DATA_ZST_FILE_NAME);
+        try {
+            ArchiveData.compress(localData, localCompressed);
+            publishData(localCompressed, bucketDir, PlanBConstants.DATA_ZST_FILE_NAME, version);
+            // A bucket that held the plain form still has it beside the compressed one just written.
+            // Dropped only after that is published and versioned, so a crash between the two leaves
+            // both and a reader prefers the compressed one.
+            Files.deleteIfExists(bucketDir.resolve(PlanBConstants.DATA_FILE_NAME));
+        } finally {
+            Files.deleteIfExists(localCompressed);
+        }
+    }
+
     // .version goes last because a reader treats its presence as "this holds something", so writing it
     // first would advertise data that never arrived. Not covered: a crash between the two on a dir's
     // first publish leaves data.mdb unversioned. A reader copies such a file down anyway and records an

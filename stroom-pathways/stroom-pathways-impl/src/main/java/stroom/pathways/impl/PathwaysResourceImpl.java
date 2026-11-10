@@ -30,14 +30,11 @@ import stroom.pathways.shared.PathwayResultPage;
 import stroom.pathways.shared.PathwaysDoc;
 import stroom.pathways.shared.PathwaysResource;
 import stroom.pathways.shared.UpdatePathway;
-import stroom.pathways.shared.pathway.Pathway;
-import stroom.pathways.shared.pathway.PathwayUsage;
 import stroom.util.shared.EntityServiceException;
 
 import jakarta.inject.Inject;
 import jakarta.inject.Provider;
 
-import java.util.List;
 
 @AutoLogged
 class PathwaysResourceImpl implements PathwaysResource {
@@ -99,12 +96,6 @@ class PathwaysResourceImpl implements PathwaysResource {
     @AutoLogged(OperationType.UNLOGGED)
     public PathwayMutationResultPage findMutations(final FindPathwayMutationCriteria criteria) {
         return pathwaysServiceProvider.get().findMutations(criteria);
-    }
-
-    @AutoLogged(OperationType.UNLOGGED)
-    @Override
-    public List<PathwayUsage> findUsage(final FindPathwayMutationCriteria criteria) {
-        return pathwaysServiceProvider.get().findUsage(criteria);
     }
 
     @AutoLogged(OperationType.UNLOGGED)

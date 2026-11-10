@@ -29,8 +29,6 @@ import stroom.pathways.shared.PathwayMutationResultPage;
 import stroom.pathways.shared.PathwayResultPage;
 import stroom.pathways.shared.PathwaysDoc;
 import stroom.pathways.shared.UpdatePathway;
-import stroom.pathways.shared.pathway.Pathway;
-import stroom.pathways.shared.pathway.PathwayUsage;
 import stroom.planb.impl.dao.LmdbWriter;
 import stroom.planb.impl.dao.ShardKeyRouter;
 import stroom.planb.impl.dao.trace.PathwaysDb;
@@ -48,7 +46,6 @@ import java.io.UncheckedIOException;
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
-import java.util.List;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Consumer;
 
@@ -96,14 +93,6 @@ public class PathwaysService {
             throw new DocumentNotFoundException(criteria.getPathwaysDocRef());
         }
         return shardedPathwayReader.findMutations(pathwaysDoc, criteria);
-    }
-
-    public List<PathwayUsage> findUsage(final FindPathwayMutationCriteria criteria) {
-        final PathwaysDoc pathwaysDoc = pathwaysStore.readDocument(criteria.getPathwaysDocRef());
-        if (pathwaysDoc == null) {
-            throw new DocumentNotFoundException(criteria.getPathwaysDocRef());
-        }
-        return shardedPathwayReader.findUsage(pathwaysDoc, criteria);
     }
 
     /**

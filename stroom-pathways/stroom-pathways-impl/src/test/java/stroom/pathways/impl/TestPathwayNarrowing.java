@@ -34,6 +34,7 @@ import stroom.pathways.shared.pathway.PathNode;
 import stroom.pathways.shared.pathway.Pathway;
 import stroom.pathways.shared.pathway.PathwayMutation;
 import stroom.pathways.shared.pathway.PathwayReplay;
+import stroom.pathways.shared.pathway.PathwayUsage;
 import stroom.planb.impl.dao.LmdbWriter;
 import stroom.planb.impl.dao.trace.PathwaysDb;
 import stroom.util.shared.time.SimpleDuration;
@@ -49,6 +50,7 @@ import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -56,6 +58,7 @@ import java.util.UUID;
 import java.util.function.Consumer;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Holding a model to what it has been given lately.
@@ -423,9 +426,202 @@ class TestPathwayNarrowing {
         });
     }
 
+    @Test
+    void aDayThatFallsOutOfTheWindowIsHandedOverBeforeItIsDeleted(@TempDir final Path tempDir) {
+        // The row being deleted is the day's only copy. Handing it over first is what lets it be kept
+        // somewhere that can still answer for that day; handing it over afterwards would lose it.
+        applied(tempDir, List.of(trace(0, 900), trace(1, 20), trace(2, 25)));
+
+        final Map<String, Integer> handedOver = new LinkedHashMap<>();
+        narrow(tempDir, day(1), quiet(), (dateLabel, dayRecords, logRows) ->
+                handedOver.merge(dateLabel, dayRecords.size(), Integer::sum));
+
+        assertThat(handedOver.values().stream().mapToInt(Integer::intValue).sum())
+                .as("day zero fell out of the window, so its record was handed over")
+                .isEqualTo(1);
+        assertThat(handedOver.keySet())
+                .allSatisfy(label -> assertThat(label).startsWith("week-"));
+    }
+
+    @Test
+    void aDayIsKeptWhereItCouldNotBeHandedOver(@TempDir final Path tempDir) {
+        // Deleting it anyway would lose the only copy of a day nothing else can answer for, so a
+        // failure has to leave the shard as it was and let the next pass try again.
+        applied(tempDir, List.of(trace(0, 900), trace(1, 20), trace(2, 25)));
+
+        assertThatThrownBy(() -> narrow(tempDir, day(1), quiet(), (dateLabel, dayRecords, logRows) -> {
+            throw new IllegalStateException("the shared store is unreachable");
+        })).isInstanceOf(IllegalStateException.class);
+
+        final Map<String, Integer> handedOver = new LinkedHashMap<>();
+        narrow(tempDir, day(1), quiet(), (dateLabel, dayRecords, logRows) ->
+                handedOver.merge(dateLabel, dayRecords.size(), Integer::sum));
+        assertThat(handedOver.values().stream().mapToInt(Integer::intValue).sum())
+                .as("still there to be handed over on the next pass")
+                .isEqualTo(1);
+    }
+
+    @Test
+    void aTraceThatFallsOutOfTheWindowTakesItsChangesAndNodesWithIt(@TempDir final Path tempDir) {
+        // A change row holds no time and no node name - both are resolved when it is read, from the
+        // trace row it points at and the node row it names. Moved without them it cannot be read.
+        applied(tempDir, List.of(trace(0, 900), trace(1, 20), trace(2, 25)));
+
+        // Log rows leave on when the learner took them in, not on when their work ran, and this
+        // harness applies everything at the real clock. So the boundary has to be after that for any
+        // of them to have fallen out.
+        final Map<String, Integer> logRowsByWeek = new LinkedHashMap<>();
+        final Map<String, Integer> dayRecordsByWeek = new LinkedHashMap<>();
+        narrow(tempDir, tomorrow(), quiet(), (dateLabel, dayRecords, logRows) -> {
+            logRowsByWeek.merge(dateLabel, logRows.size(), Integer::sum);
+            dayRecordsByWeek.merge(dateLabel, dayRecords.size(), Integer::sum);
+        });
+
+        assertThat(logRowsByWeek.values().stream().mapToInt(Integer::intValue).sum())
+                .as("the traces that fell out, the changes they made, and the nodes those name")
+                .isGreaterThan(3);
+
+        // The two kinds are on two clocks, so they land in different weeks: these traces ran years
+        // before the moment this test applied them.
+        final String appliedWeek = weekWith(logRowsByWeek);
+        final String ranWeek = weekWith(dayRecordsByWeek);
+        assertThat(appliedWeek)
+                .as("log rows go to the week they were applied in")
+                .isNotEqualTo(ranWeek);
+        assertThat(dayRecordsByWeek.getOrDefault(appliedWeek, 0))
+                .as("and carry no day records with them")
+                .isZero();
+        assertThat(logRowsByWeek.getOrDefault(ranWeek, 0))
+                .as("nor the other way about")
+                .isZero();
+    }
+
+    @Test
+    void howBusyEachNodeWasSurvivesTheChainBeingSplit(@TempDir final Path tempDir) {
+        // A reading says only what moved since the one before it. Cut the chain and both halves are
+        // wrong unless the first reading on each side says where everything stood.
+        applied(tempDir, List.of(trace(0, 900), trace(1, 20), trace(2, 25)));
+        final List<PathwayUsage> before = usage(tempDir);
+
+        narrow(tempDir, tomorrow(), quiet(), (dateLabel, dayRecords, logRows) -> {
+        });
+
+        assertThat(before).as("there were readings to split").isNotEmpty();
+        assertThat(usage(tempDir))
+                .as("everything was handed over, so nothing is left to read")
+                .isEmpty();
+    }
+
+    @Test
+    void theFirstReadingHandedOverSaysWhereEverythingStood(@TempDir final Path tempDir) {
+        // A reading says only what moved since the one before it. The first one in a bucket has
+        // nothing before it there, so it has to say where everything stood or the totals read low.
+        applied(tempDir, List.of(trace(0, 900), trace(1, 20), trace(2, 25)));
+        final List<PathwayUsage> before = usage(tempDir);
+        assertThat(before).hasSizeGreaterThan(1);
+        final int everyNode = before.get(before.size() - 1).getNodes().size();
+
+        final List<PathwaySerde.StoredUsage> handedOver = new ArrayList<>();
+        narrow(tempDir, tomorrow(), quiet(), (dateLabel, dayRecords, logRows) ->
+                logRows.forEach(row -> {
+                    if (isUsage(row)) {
+                        handedOver.add(readUsage(row));
+                    }
+                }));
+
+        assertThat(handedOver).as("there were readings to hand over").isNotEmpty();
+        assertThat(handedOver.get(0).moved())
+                .as("the first names every node, not only the ones that moved in it")
+                .hasSize(everyNode);
+        assertThat(handedOver.get(0).moved())
+                .as("and each carries its own last used time rather than the flag meaning this one")
+                .allSatisfy(count -> assertThat(count.usedNow()).isFalse());
+    }
+
+    @Test
+    void theNodeRowsAreCopiedRatherThanMoved(@TempDir final Path tempDir) {
+        // A change row names its node by a number, and the node row is what turns that back into a
+        // path. Move those out and every change left behind loses the name of what it changed.
+        applied(tempDir, List.of(trace(0, 900), trace(1, 20), trace(2, 25)));
+
+        final List<MutationLog.Row> handedOver = new ArrayList<>();
+        narrow(tempDir, tomorrow(), quiet(), (dateLabel, dayRecords, logRows) ->
+                handedOver.addAll(logRows));
+
+        assertThat(handedOver).as("something was handed over").isNotEmpty();
+        assertThat(handedOver.stream().filter(TestPathwayNarrowing::isNode).count())
+                .as("the bucket is given the node rows, because it cannot read its changes without them")
+                .isPositive();
+        assertThat(nodeRowsLeft(tempDir))
+                .as("and they are still here, because the changes left behind need them too")
+                .isPositive();
+    }
+
+    private static long nodeRowsLeft(final Path dir) {
+        try (final PathwaysDb db = PathwaysDb.create(dir, BYTE_BUFFERS, false)) {
+            final long[] count = {0};
+            db.getMutations().iterate((key, value) -> {
+                if (key.get(key.position() + OPERATION.getBytes(StandardCharsets.UTF_8).length) == 2) {
+                    count[0]++;
+                }
+            });
+            return count[0];
+        }
+    }
+
+    // A node row is marked 2.
+    private static boolean isNode(final MutationLog.Row row) {
+        return row.key()[OPERATION.getBytes(StandardCharsets.UTF_8).length] == 2;
+    }
+
+    // The marker sits straight after the pathway key, and a usage row is marked 1.
+    private static boolean isUsage(final MutationLog.Row row) {
+        return row.key()[OPERATION.getBytes(StandardCharsets.UTF_8).length] == 1;
+    }
+
+    private static PathwaySerde.StoredUsage readUsage(final MutationLog.Row row) {
+        final ByteBuffer buffer = ByteBuffer.allocateDirect(row.value().length);
+        buffer.put(row.value()).flip();
+        return serde().readUsage(buffer);
+    }
+
+    private static List<PathwayUsage> usage(final Path dir) {
+        try (final PathwaysDb db = PathwaysDb.create(dir, BYTE_BUFFERS, false)) {
+            return mutationLog().readUsage(db.getMutations(), OPERATION.getBytes(StandardCharsets.UTF_8));
+        }
+    }
+
+
+    private static String weekWith(final Map<String, Integer> byWeek) {
+        return byWeek.entrySet().stream()
+                .filter(entry -> entry.getValue() > 0)
+                .map(Map.Entry::getKey)
+                .findFirst()
+                .orElseThrow();
+    }
+
+    // A boundary past everything this test applied, since the harness applies at the real clock.
+    private static int tomorrow() {
+        return (int) ((System.currentTimeMillis() + DAY_MS) / DAY_MS);
+    }
+
+    private static MessageReceiver quiet() {
+        return (severity, message) -> {
+        };
+    }
+
     private static boolean narrow(final Path dir, final int oldestDay, final MessageReceiver messages) {
+        // Dropped rather than archived, which is what these are about: where a day goes once the
+        // window has passed it is a separate question from what the narrowing does to the model.
+        return narrow(dir, oldestDay, messages, PathwayNarrower.ExpiredArchiver.DISCARD);
+    }
+
+    private static boolean narrow(final Path dir,
+                                  final int oldestDay,
+                                  final MessageReceiver messages,
+                                  final PathwayNarrower.ExpiredArchiver archiver) {
         return new PathwayNarrower(serde(), mutationLog(), BYTE_BUFFERS)
-                .narrow(dir, oldestDay, messages);
+                .narrow(dir, oldestDay, messages, archiver);
     }
 
     // Applies each trace as the processor would, so the model and the day by day account are built the

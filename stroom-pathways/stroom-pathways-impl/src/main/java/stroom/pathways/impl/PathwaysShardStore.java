@@ -39,11 +39,14 @@ import java.nio.file.Files;
 import java.nio.file.NoSuchFileException;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
+import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.function.Consumer;
 import java.util.function.Function;
 import java.util.function.Predicate;
+import java.util.stream.Stream;
 
 /**
  * Lends out one shard of a Pathways document's learnt model, as a local copy.
@@ -75,6 +78,44 @@ public class PathwaysShardStore {
     private final ByteBuffers byteBuffers;
     private final Path localRoot;
     private final Path readCacheRoot;
+
+    /**
+     * A shard is published as a plain data file.
+     */
+    private static final DataFile SHARD_DATA = new DataFile() {
+        @Override
+        public boolean present(final Path dir) {
+            return Files.exists(dir.resolve(PlanBConstants.DATA_FILE_NAME));
+        }
+
+        // A shard nothing has written yet has no data file, and the caller then starts from an empty
+        // directory. Replace rather than create: an interrupted cycle can leave a partial file behind,
+        // and failing on it would stop this shard being worked until the process restarts.
+        @Override
+        public boolean copyDown(final Path dir, final Path destFile) throws IOException {
+            final Path source = dir.resolve(PlanBConstants.DATA_FILE_NAME);
+            if (!Files.exists(source)) {
+                return false;
+            }
+            Files.copy(source, destFile, StandardCopyOption.REPLACE_EXISTING);
+            return true;
+        }
+    };
+
+    /**
+     * An archive bucket is published compressed, so it is expanded on the way down.
+     */
+    private final DataFile bucketData = new DataFile() {
+        @Override
+        public boolean present(final Path dir) {
+            return Files.exists(dir.resolve(PlanBConstants.DATA_ZST_FILE_NAME));
+        }
+
+        @Override
+        public boolean copyDown(final Path dir, final Path destFile) throws IOException {
+            return publisher.copyArchiveDown(dir, destFile);
+        }
+    };
 
     /**
      * One per shard, so two queries do not replace a cached copy from under each other, and a query
@@ -116,6 +157,137 @@ public class PathwaysShardStore {
                 .resolve(PathSegmentUtil.requireSafeSegment(docUuid));
     }
 
+    // One week of one shard, under the same archive tree Plan B ages its own records into. A bucket
+    // holds what has left the live shard: the day records for work whose trace time fell in that week,
+    // and the change rows applied in it. Two clocks in one directory, deliberately - the day records
+    // answer for the day work happened, and the change rows are found by number, which runs in the
+    // order they were applied.
+    private static Path sharedBucketDir(final SharedFileStoreSettings settings,
+                                        final String docUuid,
+                                        final int shardIndex,
+                                        final String dateLabel) {
+        return sharedArchiveDir(settings, docUuid, shardIndex)
+                .resolve(PathSegmentUtil.requireSafeSegment(dateLabel));
+    }
+
+    private static Path sharedArchiveDir(final SharedFileStoreSettings settings,
+                                         final String docUuid,
+                                         final int shardIndex) {
+        return Path.of(settings.getSharedPath())
+                .resolve(PlanBConstants.ARCHIVE_DIR_NAME)
+                .resolve(PathSegmentUtil.requireSafeSegment(docUuid))
+                .resolve(PlanBConstants.formatShardIndex(shardIndex));
+    }
+
+    /**
+     * Which weeks this shard has buckets for, oldest first.
+     *
+     * <p>The names are the index. A reader that knows which weeks a question covers can pick them
+     * from this without opening anything, and a week nothing was ever archived for is simply not
+     * here.
+     */
+    public List<String> archivedWeeks(final PathwaysDoc doc, final int shardIndex) throws IOException {
+        final SharedFileStoreSettings settings = doc.getSharedFileStore();
+        if (settings == null) {
+            return List.of();
+        }
+        final Path dir = sharedArchiveDir(settings, doc.getUuid(), shardIndex);
+        if (!Files.isDirectory(dir)) {
+            return List.of();
+        }
+        try (final Stream<Path> weeks = Files.list(dir)) {
+            return weeks
+                    .filter(Files::isDirectory)
+                    .map(week -> week.getFileName().toString())
+                    .sorted()
+                    .toList();
+        }
+    }
+
+    /**
+     * Merges records into one week's bucket and publishes it.
+     *
+     * <p>The bucket already there is copied down first, so what is written unions with it rather than
+     * replacing it: late records keep arriving for an old week, and a bucket rewritten from one batch
+     * would lose every batch before it.
+     *
+     * <p>Nothing opens an environment on the shared store. The merge runs against a local copy and
+     * only the finished file goes back up.
+     *
+     * @param work given a database open on the local copy, adds what is being archived to it.
+     */
+    @WithSpan
+    public void withBucket(final PathwaysDoc doc,
+                           @SpanAttribute("shardIndex") final int shardIndex,
+                           final String dateLabel,
+                           final Consumer<PathwaysDb> work) throws IOException {
+        final SharedFileStoreSettings settings = doc.getSharedFileStore();
+        if (settings == null) {
+            throw new IOException("Pathways document " + doc.getName() + " names no shared file store");
+        }
+        final Path bucketDir = sharedBucketDir(settings, doc.getUuid(), shardIndex, dateLabel);
+        final Path localDir = localRoot.resolve(PathSegmentUtil.requireSafeSegment(doc.getUuid())
+                                                + "_" + PlanBConstants.formatShardIndex(shardIndex)
+                                                + "_" + PathSegmentUtil.requireSafeSegment(dateLabel));
+        FileUtil.deleteDir(localDir);
+        Files.createDirectories(localDir);
+        try {
+            bucketData.copyDown(bucketDir, localDir.resolve(PlanBConstants.DATA_FILE_NAME));
+            try (final PathwaysDb db = PathwaysDb.create(localDir, byteBuffers, false)) {
+                work.accept(db);
+            }
+            // The archive layout is a data file and a version, nothing else. The lock file LMDB made
+            // locally is recreated on the next open.
+            Files.deleteIfExists(localDir.resolve(PlanBConstants.LOCK_FILE_NAME));
+            publisher.publishArchive(localDir.resolve(PlanBConstants.DATA_FILE_NAME), bucketDir);
+        } finally {
+            try {
+                FileUtil.deleteDir(localDir);
+            } catch (final RuntimeException e) {
+                LOGGER.warn(() -> "Could not clean up " + localDir + ": " + e.getMessage());
+            }
+        }
+    }
+
+    /**
+     * Reads one week's bucket, without holding any lock.
+     *
+     * <p>Copied down and opened for the call, the same way {@link #readShard} works and for the same
+     * reason: nothing holds an environment open, so a bucket that is merged into again can be
+     * replaced underneath without a reader having it mapped.
+     *
+     * @return empty where no bucket has been published for that week, which is not an error.
+     */
+    public <R> Optional<R> readBucket(final PathwaysDoc doc,
+                                      final int shardIndex,
+                                      final String dateLabel,
+                                      final Function<PathwaysDb, R> work) throws IOException {
+        final SharedFileStoreSettings settings = doc.getSharedFileStore();
+        if (settings == null) {
+            return Optional.empty();
+        }
+        final Path bucketDir = sharedBucketDir(settings, doc.getUuid(), shardIndex, dateLabel);
+        final String key = doc.getUuid() + "_" + PlanBConstants.formatShardIndex(shardIndex)
+                           + "_" + dateLabel;
+
+        synchronized (readLocks.computeIfAbsent(key, k -> new Object())) {
+            final Path localDir = readCacheRoot.resolve(PathSegmentUtil.requireSafeSegment(key));
+            if (!refreshReadCopy(bucketDir, localDir, bucketData)) {
+                return Optional.empty();
+            }
+            final PathwaysDb db;
+            try {
+                db = PathwaysDb.create(localDir, byteBuffers, true);
+            } catch (final RuntimeException e) {
+                discard(localDir);
+                throw e;
+            }
+            try (db) {
+                return Optional.ofNullable(work.apply(db));
+            }
+        }
+    }
+
     /**
      * Copies the shard down, runs {@code work} against the local copy, and copies it back up if
      * {@code work} says it changed anything.
@@ -133,8 +305,9 @@ public class PathwaysShardStore {
      *             throws propagates, and the shard is left as it was on the shared store.
      * @return whether the model was pushed back.
      */
+    @WithSpan
     public boolean withShard(final PathwaysDoc doc,
-                             final int shardIndex,
+                             @SpanAttribute("shardIndex") final int shardIndex,
                              final Predicate<Path> work) throws IOException {
         final SharedFileStoreSettings settings = doc.getSharedFileStore();
         if (settings == null) {
@@ -148,7 +321,8 @@ public class PathwaysShardStore {
         FileUtil.deleteDir(localDir);
         Files.createDirectories(localDir);
         try {
-            copyDown(sharedDocDir.resolve(PlanBConstants.formatShardIndex(shardIndex)), localDir);
+            SHARD_DATA.copyDown(sharedDocDir.resolve(PlanBConstants.formatShardIndex(shardIndex)),
+                    localDir.resolve(PlanBConstants.DATA_FILE_NAME));
 
             if (!work.test(localDir)) {
                 LOGGER.debug(() -> LogUtil.message("Shard {} of {} was not changed, so not pushed",
@@ -197,7 +371,7 @@ public class PathwaysShardStore {
 
         synchronized (readLocks.computeIfAbsent(shardKey, k -> new Object())) {
             final Path localDir = readCacheRoot.resolve(shardKey);
-            if (!refreshReadCopy(sharedShardDir, localDir)) {
+            if (!refreshReadCopy(sharedShardDir, localDir, SHARD_DATA)) {
                 return Optional.empty();
             }
             final PathwaysDb db;
@@ -222,9 +396,11 @@ public class PathwaysShardStore {
     // copy is done tells us whether a publish landed mid-copy; one retry is enough for a publish that
     // takes far less time than a cycle. A copy taken between the data and its marker is kept, labelled
     // with the version it had: the marker that follows then reads as a change and it is taken again.
-    private boolean refreshReadCopy(final Path sharedShardDir, final Path localDir) throws IOException {
+    private boolean refreshReadCopy(final Path sharedShardDir,
+                                    final Path localDir,
+                                    final DataFile dataFile) throws IOException {
         for (int attempt = 0; attempt < 2; attempt++) {
-            final String sharedVersion = sharedVersion(sharedShardDir);
+            final String sharedVersion = sharedVersion(sharedShardDir, dataFile);
             if (sharedVersion == null) {
                 return false;
             }
@@ -234,7 +410,7 @@ public class PathwaysShardStore {
             Files.createDirectories(localDir);
             Files.deleteIfExists(localDir.resolve(PlanBConstants.VERSION_FILE_NAME));
             try {
-                copyDown(sharedShardDir, localDir);
+                dataFile.copyDown(sharedShardDir, localDir.resolve(PlanBConstants.DATA_FILE_NAME));
             } catch (final NoSuchFileException e) {
                 // Where the shared mount has no atomic rename, publishing replaces data.mdb by a plain
                 // move, so it can go between being found and being read. The next attempt takes the
@@ -242,7 +418,7 @@ public class PathwaysShardStore {
                 LOGGER.debug(() -> "Shard data went while copying " + sharedShardDir + ", retrying");
                 continue;
             }
-            if (sharedVersion.equals(sharedVersion(sharedShardDir))) {
+            if (sharedVersion.equals(sharedVersion(sharedShardDir, dataFile))) {
                 Files.writeString(localDir.resolve(PlanBConstants.VERSION_FILE_NAME), sharedVersion);
                 return true;
             }
@@ -255,12 +431,12 @@ public class PathwaysShardStore {
     // between publishing the data and writing the marker leaves on a shard's first publish. Reading that
     // data beats reporting the shard empty, and recording "" means the first real version to appear
     // reads as a change. Null where there is nothing there to read at all.
-    private static String sharedVersion(final Path sharedShardDir) {
+    private static String sharedVersion(final Path sharedShardDir, final DataFile dataFile) {
         final String version = readVersion(sharedShardDir);
         if (version != null) {
             return version;
         }
-        return Files.exists(sharedShardDir.resolve(PlanBConstants.DATA_FILE_NAME))
+        return dataFile.present(sharedShardDir)
                 ? ""
                 : null;
     }
@@ -291,6 +467,7 @@ public class PathwaysShardStore {
     // is pushed, so the shared store keeps, sends and returns the smaller one. What it costs is a read
     // pass over the local copy; what it saves is on the shared mount, both on the way up and on every
     // query that copies back down.
+    @WithSpan
     private static Path compact(final Path localDir) throws IOException {
         final Path dataFile = localDir.resolve(PlanBConstants.DATA_FILE_NAME);
         if (!Files.exists(dataFile)) {
@@ -322,14 +499,22 @@ public class PathwaysShardStore {
         }
     }
 
-    // A shard nothing has written yet has no data file, and the caller then starts from an empty
-    // directory. Replace rather than create: an interrupted cycle can leave a partial file behind, and
-    // failing on it would stop this shard being worked until the process restarts.
-    private static void copyDown(final Path sharedShardDir, final Path localDir) throws IOException {
-        final Path sharedData = sharedShardDir.resolve(PlanBConstants.DATA_FILE_NAME);
-        if (Files.exists(sharedData)) {
-            Files.copy(sharedData, localDir.resolve(PlanBConstants.DATA_FILE_NAME),
-                    StandardCopyOption.REPLACE_EXISTING);
-        }
+    /**
+     * Where a published directory keeps its data, so one read path serves both kinds.
+     */
+    private interface DataFile {
+
+        /**
+         * Whether the directory holds data at all. A directory with data and no version marker is
+         * read anyway, so this is asked separately from reading the marker.
+         */
+        boolean present(Path dir);
+
+        /**
+         * Brings the data down to {@code destFile}, expanding it where it is held compressed.
+         *
+         * @return false where there is no data there, which is a miss rather than an error.
+         */
+        boolean copyDown(Path dir, Path destFile) throws IOException;
     }
 }

@@ -183,6 +183,7 @@ class TestPathwaysProcessor {
                 new PathwayNarrower(new PathwaySerde(BYTE_BUFFER_FACTORY),
                         new MutationLog(BYTE_BUFFERS, new PathwaySerde(BYTE_BUFFER_FACTORY)),
                         BYTE_BUFFERS),
+                new BucketArchiver(shardStore, BYTE_BUFFERS),
                 BYTE_BUFFERS, BYTE_BUFFER_FACTORY,
                 () -> new MetricRegistry());
     }

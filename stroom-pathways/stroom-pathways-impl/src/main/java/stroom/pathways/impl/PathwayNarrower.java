@@ -19,6 +19,7 @@ package stroom.pathways.impl;
 import stroom.bytebuffer.impl6.ByteBuffers;
 import stroom.cluster.lock.api.ClusterLockService;
 import stroom.docref.DocRef;
+import stroom.pathways.impl.MutationLog.Row;
 import stroom.pathways.shared.PathwaysDoc;
 import stroom.pathways.shared.otel.trace.NanoTime;
 import stroom.pathways.shared.pathway.AbstractRange;
@@ -46,7 +47,9 @@ import stroom.planb.impl.dao.LmdbWriter;
 import stroom.planb.impl.dao.trace.NanoTimeUtil;
 import stroom.planb.impl.dao.trace.PathwaysDb;
 import stroom.planb.impl.dao.trace.PathwaysDb.SimpleDb;
+import stroom.planb.impl.data.archive.BucketGranularityUtil;
 import stroom.planb.impl.fs.ShardQueue;
+import stroom.planb.shared.BucketGranularity;
 import stroom.planb.shared.SharedFileStoreSettings;
 import stroom.security.api.SecurityContext;
 import stroom.util.logging.LambdaLogger;
@@ -72,6 +75,7 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 import java.util.function.Consumer;
+import java.util.stream.Stream;
 
 /**
  * Holds each model to what it has been given lately.
@@ -150,7 +154,10 @@ public class PathwayNarrower {
     // Returns whether anything changed, which is what decides whether the shard is worth pushing back.
     // Not private so that what it does to a shard can be tested without a cluster lock and a document
     // store standing behind it.
-    boolean narrow(final Path localDir, final int oldestDay, final MessageReceiver messages) {
+    boolean narrow(final Path localDir,
+                   final int oldestDay,
+                   final MessageReceiver messages,
+                   final ExpiredArchiver archiver) {
         boolean changed = false;
         try (final PathwaysDb pathwaysDb = PathwaysDb.create(localDir, byteBuffers, false)) {
             try (final LmdbWriter writer = pathwaysDb.createWriter()) {
@@ -167,7 +174,37 @@ public class PathwayNarrower {
                 // looking one up is a lookup and not another walk — the table holds a row per model
                 // per day, and asking it that many times over would grow with the square of how many
                 // models a shard holds.
-                final Map<String, Window> byPathway = valuesInWindow(writer, pathwaysDb, oldestDay);
+                final Map<String, List<Row>> expiredDays = new LinkedHashMap<>();
+                final Map<String, Window> byPathway =
+                        valuesInWindow(writer, pathwaysDb, oldestDay, expiredDays);
+
+                // The log rows the window has passed, gathered before anything is narrowed so a week
+                // is stored once with everything that belongs to it rather than opened twice.
+                final Map<String, List<Row>> expiredRows = new LinkedHashMap<>();
+                final Map<String, List<Row>> droppableRows = new LinkedHashMap<>();
+                keys.forEach(key -> {
+                    final MutationLog.Expired expired = mutationLog.expired(
+                            writer, pathwaysDb.getMutations(), key, oldestDay, PathwayNarrower::weekOf);
+                    expired.toStore().forEach((week, rows) ->
+                            expiredRows.computeIfAbsent(week, w -> new ArrayList<>()).addAll(rows));
+                    expired.toDrop().forEach((week, rows) ->
+                            droppableRows.computeIfAbsent(week, w -> new ArrayList<>()).addAll(rows));
+                });
+
+                // Stored first, dropped second. A bucket merge is a union, so a failure between the
+                // two leaves the same records to be handed over again next time and nothing is lost.
+                // The other way round, a failure loses the only copy of a day nothing else can answer
+                // for.
+                Stream.concat(expiredDays.keySet().stream(), expiredRows.keySet().stream())
+                        .distinct()
+                        .forEach(week -> archiver.archive(week,
+                                expiredDays.getOrDefault(week, List.of()),
+                                expiredRows.getOrDefault(week, List.of())));
+
+                expiredDays.values().forEach(rows -> drop(writer, pathwaysDb.getObservedValues(), rows));
+                droppableRows.values().forEach(rows ->
+                        mutationLog.drop(writer, pathwaysDb.getMutations(), rows));
+                changed |= !expiredDays.isEmpty() || !expiredRows.isEmpty();
 
                 for (int i = 0; i < keys.size(); i++) {
                     final byte[] key = keys.get(i);
@@ -282,21 +319,24 @@ public class PathwayNarrower {
         return expired.size();
     }
 
-    // Everything the window still covers, folded into one account per model, node and constraint. Days
-    // that have fallen out of it are deleted on the way past, which is the only thing that bounds what
+    // Everything the window still covers, folded into one account per model, node and constraint.
+    // Days that have fallen out of it leave on the way past, which is the only thing that bounds what
     // this table holds.
     private Map<String, Window> valuesInWindow(final LmdbWriter writer,
                                                final PathwaysDb pathwaysDb,
-                                               final int oldestDay) {
+                                               final int oldestDay,
+                                               final Map<String, List<Row>> expired) {
         final SimpleDb db = pathwaysDb.getObservedValues();
         final Map<String, Map<String, Map<String, ConstraintValue>>> byPathway = new LinkedHashMap<>();
         final Map<String, Integer> droppedBy = new LinkedHashMap<>();
-        final List<byte[]> expired = new ArrayList<>();
-
         db.iterate(writer.getWriteTxn(), (key, value) -> {
             final String owner = ownerOf(key);
             if (dayOf(key) < oldestDay) {
-                expired.add(copyOf(key));
+                // Keyed by the week the day falls in, which is the bucket it belongs to. Both
+                // halves of the row are kept: a bucket is written from them, not from a re-read of a
+                // row already gone.
+                expired.computeIfAbsent(weekOf(dayOf(key)), week -> new ArrayList<>())
+                        .add(new Row(copyOf(key), copyOf(value)));
                 droppedBy.merge(owner, 1, Integer::sum);
                 return;
             }
@@ -309,8 +349,7 @@ public class PathwayNarrower {
             });
         });
 
-        expired.forEach(key -> byteBuffers.useBytes(key,
-                (Consumer<ByteBuffer>) keyByteBuffer -> db.delete(writer, keyByteBuffer)));
+
 
         final Map<String, Window> windows = new LinkedHashMap<>();
         byPathway.forEach((owner, values) ->
@@ -330,6 +369,41 @@ public class PathwayNarrower {
 
     private static int dayOf(final ByteBuffer key) {
         return key.getInt(key.limit() - Integer.BYTES);
+    }
+
+    // The bucket a day belongs to, named the way Plan B names its own so the two sit side by side in
+    // one archive tree. A week, because a day apiece is a file per day per shard on the shared store
+    // and a month apiece means copying four weeks down to read one day.
+    static String weekOf(final int day) {
+        return BucketGranularityUtil.label(BucketGranularity.WEEK,
+                Instant.ofEpochMilli((long) day * TraceProcessor.MILLIS_PER_DAY));
+    }
+
+    private void drop(final LmdbWriter writer, final SimpleDb db, final List<Row> rows) {
+        rows.forEach(row -> byteBuffers.useBytes(row.key(),
+                (Consumer<ByteBuffer>) keyByteBuffer -> db.delete(writer, keyByteBuffer)));
+    }
+
+    /**
+     * Where records go when the window has passed them.
+     *
+     * <p>Given to the narrowing rather than reached for, because what a bucket is and where it lives
+     * is not the narrowing's business - it knows only that these have fallen out and must be stored
+     * somewhere before they are dropped.
+     *
+     * <p>Anything it throws stops them being deleted, so the next pass hands them over again.
+     *
+     * @param dayRecords what each model was given on a day, for the days in this week
+     * @param logRows    the traces applied in this week, their changes, and the node rows those name
+     */
+    @FunctionalInterface
+    interface ExpiredArchiver {
+
+        void archive(String dateLabel, List<Row> dayRecords, List<Row> logRows);
+
+        /** Drops them, which is what the narrowing did before buckets existed. */
+        ExpiredArchiver DISCARD = (dateLabel, dayRecords, logRows) -> {
+        };
     }
 
     // Key bytes as something that can be looked up in a map, which raw arrays cannot be.

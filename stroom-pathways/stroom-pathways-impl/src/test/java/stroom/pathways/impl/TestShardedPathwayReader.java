@@ -36,16 +36,13 @@ import stroom.planb.impl.fs.MergeCompletionStrategy;
 import stroom.planb.impl.fs.SharedFileStorePublisher;
 import stroom.planb.shared.SharedFileStoreSettings;
 import stroom.planb.shared.StateType;
-import stroom.util.io.PathCreator;
+import stroom.util.io.SimplePathCreator;
 import stroom.util.shared.CriteriaFieldSort;
 import stroom.util.shared.PageRequest;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
-import org.mockito.Mock;
-import org.mockito.Mockito;
-import org.mockito.MockitoAnnotations;
 
 import java.io.IOException;
 import java.nio.ByteBuffer;
@@ -78,18 +75,12 @@ class TestShardedPathwayReader {
     @TempDir
     Path tempDir;
 
-    @Mock
-    private PathCreator pathCreator;
-    @Mock
-    private NodeInfo nodeInfo;
-
     private PathwaysDoc doc;
     private PathwaysShardStore shardStore;
     private ShardedPathwayReader reader;
 
     @BeforeEach
     void setUp() throws IOException {
-        MockitoAnnotations.openMocks(this);
         final Path shared = Files.createDirectories(tempDir.resolve("pathways_shared"));
         doc = PathwaysDoc.builder()
                 .uuid(UUID.randomUUID().toString())
@@ -97,17 +88,15 @@ class TestShardedPathwayReader {
                 .sharedFileStore(new SharedFileStoreSettings(SHARD_COUNT, shared.toString()))
                 .build();
 
-        Mockito.when(pathCreator.toAppPath(Mockito.anyString())).thenReturn(tempDir.resolve("local"));
-        Mockito.when(nodeInfo.getThisNodeName()).thenReturn("test-node");
         shardStore = new PathwaysShardStore(
                 new SharedFileStorePublisher(
-                        nodeInfo,
+                        () -> "test-node",
                         BYTE_BUFFERS,
                         BYTE_BUFFER_FACTORY,
                         new PlanBPaths(tempDir.resolve("local_state")),
                         Map.<StateType, MergeCompletionStrategy>of()),
                 BYTE_BUFFERS,
-                pathCreator);
+                new SimplePathCreator(() -> tempDir.resolve("local"), () -> tempDir.resolve("temp")));
         final PathwaySerde serde = new PathwaySerde(BYTE_BUFFER_FACTORY);
         reader = new ShardedPathwayReader(shardStore, serde, new MutationLog(BYTE_BUFFERS, serde));
     }
