@@ -17,6 +17,7 @@
 package stroom.pathways.impl;
 
 import stroom.bytebuffer.ByteBufferUtils;
+import stroom.lmdb.stream.LmdbIterable.EntryConsumer;
 import stroom.pathways.shared.FindPathwayCriteria;
 import stroom.pathways.shared.FindPathwayMutationCriteria;
 import stroom.pathways.shared.PathwayAsAt;
@@ -684,6 +685,72 @@ public class ShardedPathwayReader {
     // showing, and a shard nothing has applied to yet has no model at all, which is normal.
     private static int shardCountOf(final SharedFileStoreSettings settings) {
         return Math.max(1, settings.getShardCount());
+    }
+
+    /**
+     * What the window ending on a day was given, from wherever those days now are.
+     *
+     * <p>A day record starts life in the live shard and moves to the bucket for its week once the
+     * narrowing window has passed it. A window ending on a recent day is therefore all in the shard,
+     * one ending on an old day is all in buckets, and one on the boundary is split across both. All
+     * three have to be read the same way, because a fold that reads only the buckets answers a recent
+     * date from whatever was last archived and silently leaves out everything since.
+     *
+     * <p>What comes back is the days already merged into one, which is what {@link PathwayFold}
+     * takes.
+     */
+    DayRecord daysOfWindow(final PathwaysDoc doc,
+                           final int shard,
+                           final byte[] pathwayKey,
+                           final int oldestDay,
+                           final int newestDay) {
+        final DayRecord[] folded = {DayRecord.empty()};
+        final EntryConsumer gather = (key, value) -> {
+            final int day = dayOfKey(key);
+            if (day >= oldestDay && day <= newestDay) {
+                folded[0] = DayRecord.merge(folded[0], pathwaySerde.readObservedValues(value));
+            }
+        };
+
+        final ByteBuffer prefix = dayPrefix(pathwayKey);
+        readShard(doc, shard, db -> {
+            db.getObservedValues().iteratePrefix(prefix.duplicate(), gather);
+            return null;
+        });
+        eachWeekIn(doc, shard, startOfDay(oldestDay), endOfDay(newestDay), db ->
+                db.getObservedValues().iteratePrefix(prefix.duplicate(), gather));
+        return folded[0];
+    }
+
+    /**
+     * The oldest day a window ending on the given day reaches back to.
+     *
+     * <p>Worked out by the same rule the narrowing uses, because the two have to agree. A day that
+     * aged out under one window and is folded under another is a day whose model depends on when it
+     * was looked at.
+     */
+    static int oldestDayOfWindow(final PathwaysDoc doc, final int day) {
+        return PathwayNarrower.oldestDayInWindow(doc, Instant.ofEpochMilli(endOfDay(day)));
+    }
+
+    // A day record is keyed by the pathway, a zero byte and then the day, so one pathway's days sit
+    // together and a prefix covers all of them.
+    private static ByteBuffer dayPrefix(final byte[] pathwayKey) {
+        final ByteBuffer prefix = ByteBuffer.allocateDirect(pathwayKey.length + 1);
+        prefix.put(pathwayKey).put((byte) 0).flip();
+        return prefix;
+    }
+
+    private static int dayOfKey(final ByteBuffer key) {
+        return key.getInt(key.limit() - Integer.BYTES);
+    }
+
+    private static long startOfDay(final int day) {
+        return day * TraceProcessor.MILLIS_PER_DAY;
+    }
+
+    private static long endOfDay(final int day) {
+        return ((day + 1L) * TraceProcessor.MILLIS_PER_DAY) - 1L;
     }
 
     private <R> void readShard(final PathwaysDoc doc,

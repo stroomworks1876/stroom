@@ -19,6 +19,8 @@ package stroom.pathways.impl;
 import stroom.bytebuffer.impl6.ByteBufferFactoryImpl;
 import stroom.bytebuffer.impl6.ByteBuffers;
 import stroom.pathways.shared.PathwaysDoc;
+import stroom.pathways.shared.pathway.NamePathKey;
+import stroom.pathways.shared.pathway.Pathway;
 import stroom.planb.impl.PlanBConstants;
 import stroom.planb.impl.PlanBPaths;
 import stroom.planb.impl.dao.trace.NanoTimeUtil;
@@ -65,7 +67,8 @@ import static org.assertj.core.api.Assertions.assertThat;
  * account of the day its work ran, in the bucket for that week.
  *
  * <p>End to end through the real processor, with a real shard store and real queue items, because
- * the parts of this have their own tests and what was untested is the way they join up.
+ * the parts of this have their own tests and what was untested is the way they join up. That
+ * includes reading them back: a write nothing can read is not a feature.
  */
 class TestLoadingOldTraces {
 
@@ -190,12 +193,69 @@ class TestLoadingOldTraces {
                 .isEqualTo(1);
     }
 
+    @Test
+    void aWindowSpanningTheBoundaryReadsBothStores() throws IOException {
+        // The one that matters. Old days are in a bucket and recent ones are still in the live
+        // shard, so a fold that reads either alone answers with part of the window missing - and
+        // silently, because what comes back is a perfectly good model of the wrong thing.
+        final Instant old = daysAgo(400);
+        load(old, 3);
+        load(Instant.now(), 2);
+
+        final DayRecord folded = reader().daysOfWindow(doc, 0, keyBytes(), dayOf(old), today());
+
+        assertThat(folded.nodes().get(List.of(OPERATION)).timesUsed())
+                .as("all five traces, three out of the bucket and two out of the live shard")
+                .isEqualTo(5L);
+    }
+
+    @Test
+    void aWindowOfOnlyOldDaysStillBuildsAModel() throws IOException {
+        final Instant old = daysAgo(400);
+        load(old, 3);
+
+        final DayRecord folded = reader().daysOfWindow(doc, 0, keyBytes(), dayOf(old), dayOf(old));
+        final Pathway model = PathwayFold.of(folded).model(new NamePathKey(OPERATION), OPERATION);
+
+        assertThat(model.getRoot()).as("a model out of buckets alone").isNotNull();
+        assertThat(model.getRoot().getNodePath()).isEqualTo(List.of(OPERATION));
+        assertThat(model.getRoot().getTimesUsed()).isEqualTo(3L);
+    }
+
+    @Test
+    void aWindowThatMissesEveryDayFoldsToNothing() throws IOException {
+        load(daysAgo(400), 3);
+
+        final DayRecord folded = reader().daysOfWindow(doc, 0, keyBytes(), today() - 5, today());
+
+        assertThat(folded.nodes())
+                .as("the days are real but none of them is in this window")
+                .isEmpty();
+    }
+
     // -----------------------------------------------------------------------
     // Fixture
     // -----------------------------------------------------------------------
 
     private static String weekOf(final Instant ran) {
         return PathwayNarrower.weekOf((int) (ran.toEpochMilli() / TraceProcessor.MILLIS_PER_DAY));
+    }
+
+    private ShardedPathwayReader reader() {
+        final PathwaySerde serde = new PathwaySerde(BYTE_BUFFER_FACTORY);
+        return new ShardedPathwayReader(shardStore, serde, new MutationLog(BYTE_BUFFERS, serde));
+    }
+
+    private static byte[] keyBytes() {
+        return OPERATION.getBytes(java.nio.charset.StandardCharsets.UTF_8);
+    }
+
+    private static int dayOf(final Instant when) {
+        return (int) (when.toEpochMilli() / TraceProcessor.MILLIS_PER_DAY);
+    }
+
+    private static int today() {
+        return dayOf(Instant.now());
     }
 
     private static Instant daysAgo(final int days) {
