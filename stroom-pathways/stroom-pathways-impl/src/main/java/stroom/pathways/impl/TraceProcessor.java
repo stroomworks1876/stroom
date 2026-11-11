@@ -21,6 +21,7 @@ import stroom.pathways.shared.PathwaysDoc;
 import stroom.pathways.shared.otel.trace.NanoTime;
 import stroom.pathways.shared.otel.trace.Span;
 import stroom.pathways.shared.otel.trace.Trace;
+import stroom.pathways.shared.pathway.NamePathKey;
 import stroom.pathways.shared.pathway.PathKey;
 import stroom.pathways.shared.pathway.PathNode;
 import stroom.pathways.shared.pathway.Paths;
@@ -48,7 +49,6 @@ import java.util.Map;
 import java.util.Map.Entry;
 import java.util.Objects;
 import java.util.Optional;
-import java.util.TreeMap;
 import java.util.function.Consumer;
 import java.util.function.Function;
 
@@ -99,6 +99,11 @@ public class TraceProcessor {
      * @throws RuntimeException where the trace could not be applied. Deliberately not absorbed: the
      * caller holds the only copy and decides whether to delete it, so a failure it cannot see is a
      * trace lost.
+     *
+     * @param oldestDayInWindow the oldest day the model is held to. A trace whose work ran before it
+     *                          would be narrowed straight back out, so it changes no model and
+     *                          writes no change row - all it leaves is an account of its day, kept
+     *                          until the end of the hold and then put in that week's bucket.
      */
     public ApplyOutcome processTrace(final LmdbWriter writer,
                                      final PathwaysDb pathwaysDb,
@@ -106,7 +111,8 @@ public class TraceProcessor {
                                      final Function<byte[], Optional<Trace>> traceFunction,
                                      final PathwaysDoc doc,
                                      final MessageReceiver messageReceiver,
-                                     final String sourceUuid) {
+                                     final String sourceUuid,
+                                     final int oldestDayInWindow) {
         return byteBuffers.useBytes(traceId, keyByteBuffer -> {
             final SimpleDb processingStatus = pathwaysDb.getProcessingStatus();
             final boolean processed = processingStatus
@@ -135,6 +141,12 @@ public class TraceProcessor {
                         messageReceiver.log(Severity.WARNING, () -> "Skipping trace "
                                 + HexStringUtil.encode(traceId) + " as it has no root span");
                         return ApplyOutcome.NOT_APPLICABLE;
+                    } else if (ranOn(trace) < oldestDayInWindow) {
+                        // It would be narrowed straight back out, so the model is left alone, no
+                        // change row is written and nothing is marked. What the day was given still
+                        // counts, and is kept until the end of the hold with the rest of its week.
+                        keepForABucket(trace, ranOn(trace), doc, messageReceiver, sourceUuid);
+                        return ApplyOutcome.APPLIED;
                     } else {
                         // No commit falls inside one trace. Its changes, the marker saying it was
                         // applied, and the day record that justifies what it taught all belong
@@ -150,6 +162,7 @@ public class TraceProcessor {
                             buildPathways(writer, trace, doc, messageReceiver, pathwaysDb, sourceUuid);
                             markProcessed(writer, processingStatus, keyByteBuffer);
                         });
+                        movedTheModel = true;
                         writer.tryCommit();
                         return ApplyOutcome.APPLIED;
                     }
@@ -160,6 +173,91 @@ public class TraceProcessor {
     }
 
 
+
+    /**
+     * What one model was given by a trace whose work ran before the window, without applying it to
+     * anything.
+     *
+     * <p>The ordinary reading of a trace, against no model at all. What it builds is thrown away;
+     * what it observed is the answer. That it gives the same account either way is what
+     * {@code TestRecordingWithoutAModel} is about - so an old trace and a live one cannot disagree
+     * about what a day contained.
+     *
+     * <p>Two things here do read the model, so the account is not quite the same either way.
+     *
+     * <p>A value is learnt from only where the constraint is already held or the document allows new
+     * ones. Every document allows new ones today, so that one does not bite. Turn it off and a trace
+     * taking this route would record nothing at all, because against no model every constraint is a
+     * new one.
+     *
+     * <p>Whether a constraint is optional is learnt across traces - it goes optional when a later
+     * trace arrives without the attribute - and that history lives in the model. A trace recorded on
+     * its own cannot know it, so it says required where the live route would say optional, and
+     * {@link DayRecord.ObservedConstraint#and} only ever ors optional upward.
+     * {@code TestRecordingWithoutAModel} holds that difference so it is not found by surprise.
+     */
+    private DayRecord observed(final Trace trace,
+                               final PathwaysDoc doc,
+                               final MessageReceiver messageReceiver,
+                               final String sourceUuid) {
+        final NodeMutatorImpl nodeMutator = mutatorFor(doc);
+        nodeMutator.process(trace, pathKeyOf(trace), null, messageReceiver, doc);
+        // The trace's own time where it has one, and the moment it was taken in where it does not -
+        // the same fallback the route into the live shard uses, so the two agree on which day a
+        // trace belongs to.
+        final NanoTime ranAt = NullSafe.getOrElse(nodeMutator.getTraceTime(), t -> t,
+                NanoTimeUtil.fromInstant(Instant.now()));
+        return new DayRecord(nodeMutator.getObservations().nodes(),
+                PathRecorder.add(Paths.empty(), nodeMutator.getPathShape(), ranAt, ranAt,
+                        trace.getTraceId(), sourceUuid));
+    }
+
+
+    // Gathered rather than written where they are found, so a week is opened once for the whole hold
+    // rather than once per trace. A bulk load is thousands of traces across a handful of weeks.
+    private final Map<String, Map<DayOfPathway, DayRecord>> beforeTheWindow = new LinkedHashMap<>();
+    private boolean movedTheModel;
+
+    // The day a trace's work ran, read off the root span, which is where the mutator reads it too.
+    // A root span carrying no start time counts as having run now, so that deciding which route a
+    // trace takes is never what breaks on one. Reading its spans still refuses such a trace, as it
+    // always has, and that is where it is reported from.
+    private static int ranOn(final Trace trace) {
+        final NanoTime ranAt = NanoTime.fromString(trace.root().getStartTimeUnixNano());
+        return dayOf(ranAt == null
+                ? NanoTimeUtil.fromInstant(Instant.now())
+                : ranAt);
+    }
+
+    private void keepForABucket(final Trace trace,
+                                final int day,
+                                final PathwaysDoc doc,
+                                final MessageReceiver messageReceiver,
+                                final String sourceUuid) {
+        final byte[] pathwayKey = pathKeyOf(trace).toString().getBytes(StandardCharsets.UTF_8);
+        beforeTheWindow.computeIfAbsent(PathwayNarrower.weekOf(day), week -> new LinkedHashMap<>())
+                .merge(DayOfPathway.of(pathwayKey, day),
+                        observed(trace, doc, messageReceiver, sourceUuid),
+                        DayRecord::merge);
+    }
+
+    /**
+     * The days gathered from traces whose work ran before the window, ready to go to their buckets.
+     *
+     * <p>Handed over rather than written here: what a bucket is and where it lives belongs to
+     * whoever owns the store, and this is holding a writer for the live shard, which these must
+     * never reach.
+     */
+    Map<String, Map<DayOfPathway, DayRecord>> drainBeforeTheWindow() {
+        final Map<String, Map<DayOfPathway, DayRecord>> byWeek = new LinkedHashMap<>(beforeTheWindow);
+        beforeTheWindow.clear();
+        return byWeek;
+    }
+
+    /** Whether anything this processor was given actually moved a model. */
+    boolean movedTheModel() {
+        return movedTheModel;
+    }
 
     /**
      * What is written against a trace that has been applied: when it was applied, so the entry can be
@@ -173,18 +271,28 @@ public class TraceProcessor {
                 processingStatus.insert(writer, keyByteBuffer, valueByteBuffer));
     }
 
+    // What a pathway is called, however the trace reached us. A day written by a trace inside the
+    // window and a day written by one before it are the same record only if they are filed under the
+    // same name, so neither route may spell this out for itself.
+    private static PathKey pathKeyOf(final Trace trace) {
+        return new PathKeyFactoryImpl().create(Collections.singletonList(trace.root()));
+    }
+
+    private NodeMutatorImpl mutatorFor(final PathwaysDoc doc) {
+        return new NodeMutatorImpl(new CanonicalSpanOrder(doc.getTemporalOrderingTolerance()),
+                ignoredAttributes, ignoredSpans);
+    }
+
     private void buildPathways(final LmdbWriter writer,
                                final Trace trace,
                                final PathwaysDoc doc,
                                final MessageReceiver messageReceiver,
                                final PathwaysDb pathwaysDb,
                                final String sourceUuid) {
-        final CanonicalSpanOrder spanOrder = new CanonicalSpanOrder(doc.getTemporalOrderingTolerance());
-        final PathKeyFactory pathKeyFactory = new PathKeyFactoryImpl();
-        final NodeMutatorImpl nodeMutator = new NodeMutatorImpl(spanOrder, ignoredAttributes, ignoredSpans);
+        final NodeMutatorImpl nodeMutator = mutatorFor(doc);
 
         final Span root = trace.root();
-        final PathKey pathKey = pathKeyFactory.create(Collections.singletonList(root));
+        final PathKey pathKey = pathKeyOf(trace);
         final MessageReceiver messages =
                 MessageReceiver.forSpan(messageReceiver, trace.getTraceId(), root.getSpanId());
 
@@ -299,7 +407,7 @@ public class TraceProcessor {
 
     // What each model has been given, by the day the traces ran, built up across a hold and written
     // at the end of it. Held here rather than written per trace because writing one is serialising
-    // the whole of a model's day — every node, every constraint and every walk — which is not
+    // the whole of a model's day — every node, every constraint and every path taken — which is not
     // something to do once a trace on a path that already rewrites the model itself.
     private final Map<DayOfPathway, DayRecord> observedValues = new LinkedHashMap<>();
 
@@ -311,10 +419,10 @@ public class TraceProcessor {
     // What the day holds now, plus what this trace gave it. Read from disk the first time the hold
     // touches a day and kept in memory after that.
     //
-    // The walk is interned straight into the day's own account rather than into an account of its
-    // own that would then have to be folded in: folding re-numbers everything it is given, so doing
-    // it that way interns the same walk twice and costs the size of the day rather than the size of
-    // the trace.
+    // The path the trace took is interned straight into the day's own account rather than into an
+    // account of its own that would then have to be folded in: folding re-numbers everything it is
+    // given, so doing it that way interns the same path twice and costs the size of the day rather
+    // than the size of the trace.
     private void given(final LmdbWriter writer,
                        final PathwaysDb pathwaysDb,
                        final byte[] pathwayKey,
@@ -323,7 +431,7 @@ public class TraceProcessor {
                        final PathShape shape,
                        final String traceId,
                        final String sourceUuid) {
-        final DayOfPathway key = new DayOfPathway(pathwayKey, dayOf(ranAt));
+        final DayOfPathway key = DayOfPathway.of(pathwayKey, dayOf(ranAt));
         final DayRecord held = observedValues.computeIfAbsent(key, k -> read(writer, pathwaysDb, k));
         final Map<List<String>, DayRecord.ObservedNode> nodes = new LinkedHashMap<>(held.nodes());
         seen.nodes().forEach((path, arrived) -> nodes.merge(path, arrived,
@@ -349,38 +457,7 @@ public class TraceProcessor {
         return byteBuffers.useBytes(key.bytes(), read);
     }
 
-    // The day as it is written. Both halves are put in an order taken from what they hold rather than
-    // from the order this hold happened to meet them: the nodes by their path, the walks by
-    // renumbering. Otherwise two holds given the same traces in a different order write different
-    // bytes, and old history could not be loaded without a marker per trace saying it already had
-    // been. The node order is also what a drawing is laid out by walking, so it has to be settled
-    // here rather than left to whichever trace arrived first.
-    private static DayRecord written(final DayRecord day) {
-        final Map<List<String>, DayRecord.ObservedNode> inOrder =
-                new TreeMap<>(TraceProcessor::byPath);
-        day.nodes().forEach((path, node) -> inOrder.put(path, ordered(node)));
-        return new DayRecord(inOrder, PathRecorder.canonical(day.paths()));
-    }
 
-    // The constraints too, for the same reason: the trace table is numbered by walking them, so two
-    // holds meeting one node's constraints in a different order would otherwise write different
-    // bytes for the same day.
-    private static DayRecord.ObservedNode ordered(final DayRecord.ObservedNode node) {
-        return new DayRecord.ObservedNode(node.nodeUuid(), node.timesUsed(),
-                new TreeMap<>(node.constraints()));
-    }
-
-    // A path at a time, so a node sits next to the ones it shares a parent with and after that
-    // parent.
-    private static int byPath(final List<String> first, final List<String> second) {
-        for (int i = 0; i < Math.min(first.size(), second.size()); i++) {
-            final int order = first.get(i).compareTo(second.get(i));
-            if (order != 0) {
-                return order;
-            }
-        }
-        return Integer.compare(first.size(), second.size());
-    }
 
     /**
      * How busy each model's nodes were when its last reading was taken. Written once here rather than
@@ -402,7 +479,7 @@ public class TraceProcessor {
      * own close.
      *
      * @return how many were written, which is one per model per day the hold touched. A day record
-     * counts how many traces took each walk and how busy each node was, so every applied trace moves
+     * counts how many traces took each path and how busy each node was, so every applied trace moves
      * the day it falls on and there is no longer a case where a hold writes none.
      */
     int writeObservedValues(final LmdbWriter writer, final PathwaysDb pathwaysDb) {
@@ -410,7 +487,7 @@ public class TraceProcessor {
         for (final Entry<DayOfPathway, DayRecord> entry : observedValues.entrySet()) {
             final DayRecord day = entry.getValue();
             byteBuffers.useBytes(entry.getKey().bytes(), (Consumer<ByteBuffer>) keyByteBuffer ->
-                    pathwaySerde.writeObservedValues(written(day), valueByteBuffer ->
+                    pathwaySerde.writeObservedValues(day, valueByteBuffer ->
                             pathwaysDb.getObservedValues().insert(writer, keyByteBuffer, valueByteBuffer)));
             written++;
         }
@@ -418,12 +495,12 @@ public class TraceProcessor {
         return written;
     }
 
-    // One model's values for one day. Holds the key bytes it is written under so the end of the hold
-    // does not have to work them out again.
-    private record DayOfPathway(byte[] bytes) {
+    // One model's values for one day, as the key bytes they are written under, worked out once when
+    // the day is first touched rather than again at the end of the hold.
+    record DayOfPathway(byte[] bytes) {
 
-        private DayOfPathway(final byte[] pathwayKey, final int day) {
-            this(observedValuesKey(pathwayKey, day));
+        static DayOfPathway of(final byte[] pathwayKey, final int day) {
+            return new DayOfPathway(observedValuesKey(pathwayKey, day));
         }
 
         @Override

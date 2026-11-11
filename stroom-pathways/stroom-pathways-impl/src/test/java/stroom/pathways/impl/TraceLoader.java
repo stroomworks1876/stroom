@@ -65,6 +65,11 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 public class TraceLoader {
 
+    // A boundary no trace can have run before, for tests that are about what a trace does to the
+    // model rather than about the window. Their traces carry fixed dates so they read the same every
+    // run, and a trace that ran before the window never reaches the model at all.
+    static final int WITHIN_THE_WINDOW = Integer.MIN_VALUE;
+
     /** Nothing ignored, which is the default. */
     private static final IgnoredAttributes NO_IGNORED = new IgnoredAttributes(List.of());
 

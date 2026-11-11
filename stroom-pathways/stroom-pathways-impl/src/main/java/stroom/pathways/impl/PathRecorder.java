@@ -70,7 +70,21 @@ final class PathRecorder {
      * lists afresh, which is the same thing {@link #add} does for one trace's walk.
      */
     static Paths merge(final Paths first, final Paths second) {
-        final Account account = new Account(first);
+        return merge(first, second, Map.of());
+    }
+
+    /**
+     * As above, where the two accounts call the same node different things.
+     *
+     * <p>A day record gives each node a short stand-in so its paths do not repeat the node's name
+     * and path over and over. The stand-in is that record's own, so two records for one day pick
+     * different ones for the same node, and folding them without saying which is which leaves one
+     * node in the list twice with half the paths pointing at the copy nothing describes.
+     *
+     * @param renamed what each of the second account's stand-ins is called in the first
+     */
+    static Paths merge(final Paths first, final Paths second, final Map<String, String> renamed) {
+        final Account account = new Account(first, renamed);
         // One entry per step of the account being folded in, filled as each is reached, so a subtree
         // many walks reach is interned once however many of them reach it. Without it the shared
         // subtrees a Paths is made of are re-expanded into a tree.
@@ -138,7 +152,14 @@ final class PathRecorder {
         private final List<PathUse> rows;
         private final Map<Integer, Integer> rowByRoot = new HashMap<>();
 
+        private final Map<String, String> renamed;
+
         private Account(final Paths current) {
+            this(current, Map.of());
+        }
+
+        private Account(final Paths current, final Map<String, String> renamed) {
+            this.renamed = renamed;
             nodes = new ArrayList<>(current.getNodes());
             for (int i = 0; i < nodes.size(); i++) {
                 positions.put(nodes.get(i), i);
@@ -219,7 +240,7 @@ final class PathRecorder {
             final PathStep source = from.getSteps().get(stepIndex);
             final int node = source.getNode() < 0
                     ? source.getNode()
-                    : nodeIndex(from.getNodes().get(source.getNode()));
+                    : nodeIndex(called(from.getNodes().get(source.getNode())));
             final List<Integer> children = new ArrayList<>(source.getSteps().size());
             for (final Integer child : source.getSteps()) {
                 children.add(reintern(child, from, moved));
@@ -227,6 +248,11 @@ final class PathRecorder {
             final int here = stepIndex(node, children);
             moved[stepIndex] = here;
             return here;
+        }
+
+        // What this account calls a node the other one named, where the two disagree.
+        private String called(final String theirs) {
+            return renamed.getOrDefault(theirs, theirs);
         }
 
         private int nodeIndex(final String nodeUuid) {

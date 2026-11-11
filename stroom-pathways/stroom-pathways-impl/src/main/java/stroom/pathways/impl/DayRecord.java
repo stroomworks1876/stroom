@@ -28,9 +28,13 @@ import java.util.Map;
  * What one model was given on one day.
  *
  * <p>Nodes are named by the path of span names that reaches them, not by the uuid the model minted,
- * so a day can be rebuilt into a model from the records alone. Each one says what the model called
- * it that day as well, because the walks taken name their nodes the way the model does - so the
- * record resolves its own walks without reaching for the model.
+ * so a day can be rebuilt into a model from the records alone.
+ *
+ * <p>Each node also carries a short stand-in for itself. {@link #paths()} refers to its nodes by that
+ * rather than by their names and paths, which would otherwise be written out again for every path
+ * they appear in - the repeated strings are a large part of what a pathways file costs. The stand-in
+ * belongs to the record that wrote it and means nothing outside it: two records for the same day
+ * pick different ones for the same node, which is why merging them has to say which is which.
  *
  * <p>A bound names its trace outright. A model has hundreds of constraints and a handful of traces
  * set most of them, so the same id would be written out hundreds of times - which is why the serde
@@ -38,7 +42,7 @@ import java.util.Map;
  * record is stored: nothing here knows about it, and a trace no bound names is never written.
  *
  * <p><b>Every field is a union except the two counts.</b> They are the spans folded into each node,
- * and the number of traces that took each walk in {@link #paths()}. Give the same day the same traces
+ * and the number of traces that took each path in {@link #paths()}. Give the same day the same traces
  * twice and nothing else moves. That is what lets old history be loaded without a marker per trace saying
  * it already has been, and every merge rule here has to keep it true - which means not depending on
  * which of two accounts was read first.
@@ -49,19 +53,34 @@ record DayRecord(Map<List<String>, ObservedNode> nodes, Paths paths) {
         return new DayRecord(Map.of(), Paths.empty());
     }
 
-    /** Two accounts of one day, folded into one. */
+    /**
+     * Two accounts of one day, folded into one.
+     *
+     * <p>The nodes join by path, because that is what a node is called here. Their stand-ins do not
+     * join - each record chose its own - so the paths of the second are told what the first calls
+     * each node before they are folded in. Without that the same node lands in the paths twice and
+     * half of them point at the copy the node list no longer describes.
+     */
     static DayRecord merge(final DayRecord first, final DayRecord second) {
         final Map<List<String>, ObservedNode> nodes = new LinkedHashMap<>(first.nodes());
-        second.nodes().forEach((path, arrived) -> nodes.merge(path, arrived, ObservedNode::and));
-        return new DayRecord(nodes, PathRecorder.merge(first.paths(), second.paths()));
+        final Map<String, String> renamed = new LinkedHashMap<>();
+        second.nodes().forEach((path, arrived) -> {
+            final ObservedNode held = nodes.get(path);
+            if (held != null && held.nodeUuid() != null && arrived.nodeUuid() != null
+                && !held.nodeUuid().equals(arrived.nodeUuid())) {
+                renamed.put(arrived.nodeUuid(), held.nodeUuid());
+            }
+            nodes.merge(path, arrived, ObservedNode::and);
+        });
+        return new DayRecord(nodes, PathRecorder.merge(first.paths(), second.paths(), renamed));
     }
 
     /**
      * One node's account of a day.
      *
-     * @param nodeUuid  what the model called this node that day. Held so that {@link #paths()}, which
-     *                  names its nodes the way the learnt model does, resolves against this record's
-     *                  own nodes and needs nothing outside it
+     * @param nodeUuid  this record's short stand-in for the node, so its paths do not repeat the
+     *                   node's name and path every time they mention it. The record that wrote it
+     *                   chose it, and another record for the same day will have chosen differently
      * @param timesUsed spans folded into this node that day, counted the way the learnt model counts
      *                  them. The one figure here that is a sum rather than a union, so it drifts if
      *                  a day is loaded twice - a deliberate exemption, taken because the alternatives
@@ -73,9 +92,9 @@ record DayRecord(Map<List<String>, ObservedNode> nodes, Paths paths) {
             final Map<String, ObservedConstraint> all = new LinkedHashMap<>(constraints);
             arrived.constraints().forEach((name, seen) ->
                     all.merge(name, seen, ObservedConstraint::and));
-            // The uuid is whichever account has one. Both come from the same model, so they agree; a
-            // node retired and made again under the same path is the only way they differ, and then
-            // either names a node this record itself describes.
+            // The stand-in is the one already held, so the paths folded in are renamed to match it
+            // rather than the other way round. Either would do; what matters is that one of them is
+            // chosen and the paths are told.
             return new ObservedNode(nodeUuid == null
                     ? arrived.nodeUuid()
                     : nodeUuid,

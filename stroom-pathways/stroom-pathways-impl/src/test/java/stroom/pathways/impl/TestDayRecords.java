@@ -129,6 +129,38 @@ class TestDayRecords {
     }
 
     // One trace's account of one node's one constraint.
+    @Test
+    void twoRecordsCallingOneNodeDifferentThingsStillFoldToOneNode() {
+        // The stand-in each record uses for a node is its own, so two records for a day pick
+        // different ones. Folded without saying which is which, the node lands in the paths twice and
+        // half of them point at the copy the node list no longer describes - which is every old trace
+        // loaded into a day that live traffic has already written.
+        final DayRecord live = dayTaking(ROOT, "from-the-model", "trace-a");
+        final DayRecord loaded = dayTaking(ROOT, "its-own", "trace-b");
+
+        final DayRecord both = DayRecord.merge(live, loaded);
+
+        assertThat(both.nodes()).containsOnlyKeys(ROOT);
+        assertThat(both.paths().getNodes())
+                .as("one node, named once, however many records mentioned it")
+                .containsExactly("from-the-model");
+        assertThat(both.paths().getPaths())
+                .as("and one path, taken by both traces")
+                .hasSize(1);
+        assertThat(both.paths().getPaths().getFirst().getTimesUsed()).isEqualTo(2L);
+    }
+
+    // One record: one node under its own stand-in, and one trace that took the path to it.
+    private static DayRecord dayTaking(final List<String> path,
+                                       final String standIn,
+                                       final String traceId) {
+        return new DayRecord(Map.of(path, new ObservedNode(standIn, 1L,
+                constraints("size", new IntegerValue(3), false, traceId, time(10), "span"))),
+                PathRecorder.add(Paths.empty(),
+                        new PathShape(standIn, List.of(), PathShape.Kind.NODE),
+                        time(10), time(10), traceId, "a-traces-doc-uuid"));
+    }
+
     private static DayRecord day(final String traceId, final int seconds, final ConstraintValue value) {
         return new DayRecord(Map.of(ROOT, new ObservedNode("uuid-root", 1L,
                 constraints("size", value, false, traceId, time(seconds), "span-" + traceId))),

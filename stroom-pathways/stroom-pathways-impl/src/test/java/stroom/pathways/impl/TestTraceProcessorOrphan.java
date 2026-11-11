@@ -52,6 +52,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  */
 class TestTraceProcessorOrphan {
 
+
     /** Nothing ignored, which is the default. */
     private static final IgnoredAttributes NO_IGNORED = new IgnoredAttributes(List.of());
 
@@ -129,7 +130,8 @@ class TestTraceProcessorOrphan {
                             PathwaysDoc.builder().uuid(UUID.randomUUID().toString()).build(),
                             (severity, message) -> {
                             },
-                            null))
+                            null,
+                            TraceLoader.WITHIN_THE_WINDOW))
                     .isInstanceOf(IllegalStateException.class)
                     .hasMessage("the trace could not be read");
             writer.commit();
@@ -151,7 +153,8 @@ class TestTraceProcessorOrphan {
                                 warnings.add(message.get());
                             }
                         },
-                        null);
+                        null,
+                        TraceLoader.WITHIN_THE_WINDOW);
     }
 
     private static boolean isMarkedProcessed(final PathwaysDb pathwaysDb) {

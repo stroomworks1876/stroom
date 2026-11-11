@@ -37,6 +37,7 @@ import stroom.pathways.shared.pathway.PathwayMutation;
 import stroom.pathways.shared.pathway.PathwayReplay;
 import stroom.pathways.shared.pathway.PathwayUsage;
 import stroom.planb.impl.dao.LmdbWriter;
+import stroom.planb.impl.dao.trace.IgnoredSpans;
 import stroom.planb.impl.dao.trace.PathwaysDb;
 import stroom.util.shared.time.SimpleDuration;
 import stroom.util.shared.time.TimeUnit;
@@ -55,6 +56,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -72,6 +74,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * which is what makes the next widening worth being told about.
  */
 class TestPathwayNarrowing {
+
 
     private static final ByteBufferFactoryImpl BYTE_BUFFER_FACTORY = new ByteBufferFactoryImpl();
     private static final ByteBuffers BYTE_BUFFERS = new ByteBuffers(BYTE_BUFFER_FACTORY);
@@ -648,22 +651,39 @@ class TestPathwayNarrowing {
     }
 
     private static int recordsWritten(final Path dir, final List<Trace> traces, final PathwaysDoc doc) {
+        return applying(dir, traces, doc, TraceLoader.WITHIN_THE_WINDOW).written;
+    }
+
+    private static TraceProcessor applyingWithBoundary(final Path dir,
+                                                       final List<Trace> traces,
+                                                       final int oldestDay) {
+        return applying(dir, traces, doc(), oldestDay).processor;
+    }
+
+    // One hold: every trace applied against the given boundary, then what the hold was given written
+    // once at the end of it, as the processor does.
+    private static Hold applying(final Path dir,
+                                 final List<Trace> traces,
+                                 final PathwaysDoc doc,
+                                 final int oldestDay) {
         try (final PathwaysDb db = PathwaysDb.create(dir, BYTE_BUFFERS, false)) {
             try (final LmdbWriter writer = db.createWriter()) {
                 final TraceProcessor processor = new TraceProcessor(mutationLog(), BYTE_BUFFERS, serde(),
                         new IgnoredAttributes(doc.getIgnoredAttributes()),
-                        new stroom.planb.impl.dao.trace.IgnoredSpans(List.of()));
+                        new IgnoredSpans(List.of()));
                 for (final Trace trace : traces) {
-                    processor.processTrace(writer, db, idBytes(trace), id -> java.util.Optional.of(trace),
-                            doc, (severity, message) -> {
-                            }, null);
+                    processor.processTrace(writer, db, idBytes(trace), id -> Optional.of(trace),
+                            doc, quiet(), null, oldestDay);
                 }
-                // What the hold was given is written once at the end of it, as the processor does.
                 final int written = processor.writeObservedValues(writer, db);
                 writer.commit();
-                return written;
+                return new Hold(processor, written);
             }
         }
+    }
+
+    private record Hold(TraceProcessor processor, int written) {
+
     }
 
     private static Object duration(final Path dir) {
@@ -920,6 +940,64 @@ class TestPathwayNarrowing {
         assertThat(ping.nodeUuid())
                 .as("and the walks taken that day name it by this")
                 .isNotBlank();
+    }
+
+    @Test
+    void aTraceThatRanBeforeTheWindowTeachesTheModelNothing(@TempDir final Path tempDir) {
+        // It would be narrowed straight back out, so applying it would move the model and then move
+        // it back, leaving a pair of changes in the history saying nothing happened.
+        applyingWithBoundary(tempDir, List.of(withChildren(0, "Ping")), day(5));
+
+        assertThat(observedValueRecords(tempDir))
+                .as("no day record in the live shard - that day belongs in a bucket")
+                .isZero();
+        assertThat(mutations(tempDir))
+                .as("and no change row, because the model never moved")
+                .isEmpty();
+        assertThat(appliedTraceRecords(tempDir))
+                .as("nor a marker: nothing here was applied, and the bucket decides what it has seen")
+                .isZero();
+    }
+
+    @Test
+    void whatThatTraceGaveIsKeptForItsWeek(@TempDir final Path tempDir) {
+        final TraceProcessor processor = applyingWithBoundary(tempDir,
+                List.of(withChildren(0, "Ping", "Commit")), day(5));
+
+        final Map<String, Map<TraceProcessor.DayOfPathway, DayRecord>> kept =
+                processor.drainBeforeTheWindow();
+
+        assertThat(kept).containsOnlyKeys(PathwayNarrower.weekOf(day(0)));
+        final DayRecord record = kept.values().iterator().next().values().iterator().next();
+        assertThat(record.nodes().keySet())
+                .as("the same account a trace inside the window would have left")
+                .contains(List.of(OPERATION), List.of(OPERATION, "Ping"),
+                        List.of(OPERATION, "Commit"));
+        assertThat(record.paths().getPaths())
+                .as("including the path it took")
+                .hasSize(1);
+    }
+
+    @Test
+    void givingThoseTracesAgainLeavesTheirDayAsItWas(@TempDir final Path tempDir) {
+        // The rule the whole historic load rests on: no marker is written for these, so loading the
+        // same month twice must leave the records alone apart from the counts.
+        final DayRecord once = beforeTheWindow(tempDir, withChildren(0, "Ping", "Commit"));
+        final DayRecord twice = DayRecord.merge(once,
+                beforeTheWindow(tempDir, withChildren(0, "Ping", "Commit")));
+
+        assertThat(twice.nodes().keySet()).isEqualTo(once.nodes().keySet());
+        assertThat(twice.nodes().get(List.of(OPERATION)).constraints())
+                .as("the same values, from the same traces")
+                .isEqualTo(once.nodes().get(List.of(OPERATION)).constraints());
+        assertThat(twice.paths().getPaths())
+                .as("and one path, not two")
+                .hasSize(1);
+    }
+
+    private static DayRecord beforeTheWindow(final Path dir, final Trace trace) {
+        return applyingWithBoundary(dir, List.of(trace), day(5))
+                .drainBeforeTheWindow().values().iterator().next().values().iterator().next();
     }
 
     private static DayRecord onlyDayRecord(final Path dir) {

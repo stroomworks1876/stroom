@@ -70,6 +70,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  */
 class TestReadingArchivedChanges {
 
+
     private static final ByteBufferFactoryImpl BYTE_BUFFER_FACTORY = new ByteBufferFactoryImpl();
     private static final ByteBuffers BYTE_BUFFERS = new ByteBuffers(BYTE_BUFFER_FACTORY);
     private static final String OPERATION = "ProcessorTaskCreatorJob.run";
@@ -109,7 +110,7 @@ class TestReadingArchivedChanges {
         final PathwaySerde serde = new PathwaySerde(BYTE_BUFFER_FACTORY);
         mutationLog = new MutationLog(BYTE_BUFFERS, serde);
         reader = new ShardedPathwayReader(shardStore, serde, mutationLog);
-        bucketArchiver = new BucketArchiver(shardStore, BYTE_BUFFERS);
+        bucketArchiver = new BucketArchiver(shardStore, BYTE_BUFFERS, serde);
     }
 
     @Test
@@ -269,9 +270,41 @@ class TestReadingArchivedChanges {
                 .isTrue();
     }
 
+    @Test
+    void theDayRecordsTheWindowHasPassedGoToTheBucketToo() throws IOException {
+        // The narrowing hands over day records as the bytes it read off the live shard, not as
+        // records, and the bucket has to read them back to fold them in. Driven through the real
+        // narrowing rather than by handing the archiver a record, because that reading is the step
+        // nothing else exercises.
+        apply(trace("a", 10));
+
+        final int tomorrow = (int) ((System.currentTimeMillis() + DAY_MS) / DAY_MS);
+        final PathwayNarrower narrower = new PathwayNarrower(
+                new PathwaySerde(BYTE_BUFFER_FACTORY), mutationLog, BYTE_BUFFERS);
+        shardStore.withShard(doc, shard(), localDir -> narrower.narrow(localDir, tomorrow,
+                (severity, message) -> {
+                }, bucketArchiver.forShard(doc, shard())));
+
+        final DayRecord record = onlyDayRecordIn(PathwayNarrower.weekOf(tomorrow - 1));
+        assertThat(record.nodes().keySet())
+                .as("what that day was given, read back out of the bucket")
+                .contains(List.of(OPERATION));
+    }
+
     // -----------------------------------------------------------------------
     // Fixture
     // -----------------------------------------------------------------------
+    private DayRecord onlyDayRecordIn(final String week) throws IOException {
+        final List<DayRecord> found = new ArrayList<>();
+        shardStore.readBucket(doc, shard(), week, db -> {
+            db.getObservedValues().iterate((key, value) ->
+                    found.add(new PathwaySerde(BYTE_BUFFER_FACTORY).readObservedValues(value)));
+            return null;
+        });
+        assertThat(found).hasSize(1);
+        return found.get(0);
+    }
+
 
     private PathwayMutationResultPage changesListed() {
         return reader.findMutations(doc, new FindPathwayMutationCriteria(
@@ -392,7 +425,7 @@ class TestReadingArchivedChanges {
                         new IgnoredSpans(List.of()));
                 processor.processTrace(writer, db, idBytes(trace), id -> Optional.of(trace), doc,
                         (severity, message) -> {
-                        }, null);
+                        }, null, TraceLoader.WITHIN_THE_WINDOW);
                 processor.writeObservedValues(writer, db);
                 writer.commit();
             }

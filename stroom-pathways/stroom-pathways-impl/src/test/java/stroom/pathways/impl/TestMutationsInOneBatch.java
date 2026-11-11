@@ -63,6 +63,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  */
 class TestMutationsInOneBatch {
 
+
     private static final ByteBufferFactoryImpl BYTE_BUFFER_FACTORY = new ByteBufferFactoryImpl();
     private static final ByteBuffers BYTE_BUFFERS = new ByteBuffers(BYTE_BUFFER_FACTORY);
     private static final IgnoredAttributes NO_IGNORED = new IgnoredAttributes(List.of());
@@ -457,7 +458,7 @@ class TestMutationsInOneBatch {
                         doc(),
                         (severity, message) -> {
                         },
-                        null);
+                        null, TraceLoader.WITHIN_THE_WINDOW);
             }
             // A reading says only what moved, so where things stood has to outlive the hold that
             // measured it. The processor does this at the end of every hold.

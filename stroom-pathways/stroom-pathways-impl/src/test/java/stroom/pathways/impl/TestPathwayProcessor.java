@@ -52,6 +52,7 @@ import java.util.UUID;
 
 public class TestPathwayProcessor {
 
+
     /** Nothing ignored, which is the default. */
     private static final IgnoredAttributes NO_IGNORED = new IgnoredAttributes(List.of());
 
@@ -157,7 +158,8 @@ public class TestPathwayProcessor {
                             traceDb::findTrace,
                             PathwaysDoc.builder().uuid(UUID.randomUUID().toString()).build(),
                             messageReceiver,
-                            null));
+                            null,
+                            TraceLoader.WITHIN_THE_WINDOW));
             writer.commit();
         }
     }

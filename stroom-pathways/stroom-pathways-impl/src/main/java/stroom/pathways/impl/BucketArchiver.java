@@ -19,6 +19,7 @@ package stroom.pathways.impl;
 import stroom.bytebuffer.impl6.ByteBuffers;
 import stroom.pathways.shared.PathwaysDoc;
 import stroom.planb.impl.dao.LmdbWriter;
+import stroom.planb.impl.dao.trace.PathwaysDb;
 import stroom.planb.impl.dao.trace.PathwaysDb.SimpleDb;
 
 import jakarta.inject.Inject;
@@ -28,6 +29,7 @@ import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.nio.ByteBuffer;
 import java.util.List;
+import java.util.Map;
 import java.util.function.Consumer;
 
 /**
@@ -43,11 +45,15 @@ public class BucketArchiver {
 
     private final PathwaysShardStore shardStore;
     private final ByteBuffers byteBuffers;
+    private final PathwaySerde pathwaySerde;
 
     @Inject
-    public BucketArchiver(final PathwaysShardStore shardStore, final ByteBuffers byteBuffers) {
+    public BucketArchiver(final PathwaysShardStore shardStore,
+                          final ByteBuffers byteBuffers,
+                          final PathwaySerde pathwaySerde) {
         this.shardStore = shardStore;
         this.byteBuffers = byteBuffers;
+        this.pathwaySerde = pathwaySerde;
     }
 
     /**
@@ -62,7 +68,15 @@ public class BucketArchiver {
             try {
                 shardStore.withBucket(doc, shardIndex, dateLabel, db -> {
                     try (final LmdbWriter writer = db.createWriter()) {
-                        put(writer, db.getObservedValues(), dayRecords);
+                        // Day records fold rather than overwrite, the same way the other route in
+                        // does. A day can already be in a bucket - an old trace put it there - and
+                        // writing this one over it would throw that away.
+                        //
+                        // Read through a pooled buffer because the serde reads off-heap addresses
+                        // and refuses anything else, and these arrive as bytes read off the shard.
+                        dayRecords.forEach(row -> byteBuffers.useBytes(row.value(),
+                                (Consumer<ByteBuffer>) value -> fold(writer, db, row.key(),
+                                        pathwaySerde.readObservedValues(value))));
                         put(writer, db.getMutations(), logRows);
                         writer.commit();
                     }
@@ -71,6 +85,49 @@ public class BucketArchiver {
                 throw new UncheckedIOException(e);
             }
         };
+    }
+
+    /**
+     * Folds the days of one week into that week's bucket.
+     *
+     * <p>The route a trace takes when its work ran before the window: it changes no model, writes no
+     * change row, and never touches the live shard. What is already in the bucket for a day is read
+     * first and the new account folded into it, the same way a hold folds a trace into the day it is
+     * building - so giving the same traces again leaves the record as it was apart from the counts.
+     *
+     * <p>A week at a time rather than a day or a trace, because opening a bucket is copying it down
+     * and publishing it back, and a load of old history is thousands of traces over a handful of
+     * weeks.
+     */
+    void archive(final PathwaysDoc doc,
+                 final int shardIndex,
+                 final String dateLabel,
+                 final Map<TraceProcessor.DayOfPathway, DayRecord> days) throws IOException {
+        shardStore.withBucket(doc, shardIndex, dateLabel, db -> {
+            try (final LmdbWriter writer = db.createWriter()) {
+                days.forEach((key, seen) -> fold(writer, db, key.bytes(), seen));
+                writer.commit();
+            }
+        });
+    }
+
+    // One day into a bucket, under the key it already had. What is there is read first and this is
+    // folded into it, so whichever route put a day here and whichever order they arrived in, the
+    // bucket holds the union - which is what everything reading one assumes.
+    private void fold(final LmdbWriter writer,
+                      final PathwaysDb db,
+                      final byte[] key,
+                      final DayRecord seen) {
+        byteBuffers.useBytes(key, (Consumer<ByteBuffer>) keyByteBuffer -> {
+            final DayRecord held = db.getObservedValues().get(writer.getWriteTxn(),
+                    keyByteBuffer.duplicate(),
+                    value -> value == null
+                            ? DayRecord.empty()
+                            : pathwaySerde.readObservedValues(value));
+            pathwaySerde.writeObservedValues(DayRecord.merge(held, seen),
+                    valueByteBuffer -> db.getObservedValues()
+                            .insert(writer, keyByteBuffer, valueByteBuffer));
+        });
     }
 
     // Written under the keys they already had, so a bucket holds them exactly as the live shard did

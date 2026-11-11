@@ -54,6 +54,7 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Map.Entry;
 import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.Consumer;
@@ -267,7 +268,8 @@ public class PathwaysProcessor implements MergeStrategy {
         // A shard opened only because its narrowing is due has nothing waiting, and applying nothing
         // still opens the document's feed.
         boolean changed = !queueDirs.isEmpty()
-                          && applyQueuedTraces(doc, queueDirs, localDir, applied, failures);
+                          && applyQueuedTraces(doc, shardIndex, queueDirs, localDir, applied,
+                failures);
         if (narrowNow) {
             changed = narrow(doc, shardIndex, localDir) || changed;
         }
@@ -294,12 +296,16 @@ public class PathwaysProcessor implements MergeStrategy {
     // model is safely back on the shared store. Returns whether the local model changed, which is what
     // decides whether it is worth pushing.
     private boolean applyQueuedTraces(final PathwaysDoc doc,
+                               final int shardIndex,
                                final List<Path> queueDirs,
                                final Path localDir,
                                final List<Path> applied,
                                final Map<Path, Exception> failures) {
         final Instant deadline = Instant.now().plus(MAX_TIME_PER_HOLD);
         final Counts counts = new Counts();
+        // Settled once for the hold rather than per trace, so every trace in it is measured against
+        // the same boundary however long the hold runs.
+        final int oldestDayInWindow = PathwayNarrower.oldestDayInWindow(doc, Instant.now());
 
         try (final PathwaysDb pathwaysDb = PathwaysDb.create(localDir, byteBuffers, false)) {
             withMessageReceiver(messageReceiverFactory, doc, messageReceiver -> {
@@ -328,7 +334,7 @@ public class PathwaysProcessor implements MergeStrategy {
                         }
                         try {
                             if (apply(item, pathwaysDb, writer, traceProcessor, doc,
-                                    messageReceiver, counts)) {
+                                    messageReceiver, counts, oldestDayInWindow)) {
                                 applied.add(item);
                             } else {
                                 // Nothing here applied and deleting is irreversible, so it is handed
@@ -347,6 +353,10 @@ public class PathwaysProcessor implements MergeStrategy {
                     // go in with that commit rather than here.
                     traceProcessor.writeHistories(writer, pathwaysDb);
                     writer.commit();
+                    // The days whose traces ran before the window go to their buckets, never to the
+                    // shard. After the commit, because a bucket is on the shared store and a failure
+                    // there must not take the model's own work with it.
+                    archiveBeforeTheWindow(doc, shardIndex, traceProcessor, applied);
                 }
             });
         }
@@ -375,7 +385,8 @@ public class PathwaysProcessor implements MergeStrategy {
                           final TraceProcessor traceProcessor,
                           final PathwaysDoc doc,
                           final MessageReceiver messageReceiver,
-                          final Counts counts) {
+                          final Counts counts,
+                          final int oldestDayInWindow) {
         final boolean[] allDealtWith = {true};
         try (final QueueItemReader reader = new QueueItemReader(item, byteBuffers, byteBufferFactory)) {
             reader.forEachTrace((root, trace) -> {
@@ -389,13 +400,44 @@ public class PathwaysProcessor implements MergeStrategy {
                         traceId -> Optional.of(trace),
                         doc,
                         messageReceiver,
-                        reader.getSource());
-                counts.changed |= outcome == ApplyOutcome.APPLIED;
+                        reader.getSource(),
+                        oldestDayInWindow);
+                // Not whether the item was dealt with: a trace whose work ran before the window is
+                // dealt with and moves nothing here, and pushing the shard back for it would copy
+                // the whole model up to say nothing had changed.
+                counts.changed |= outcome == ApplyOutcome.APPLIED
+                                  && traceProcessor.movedTheModel();
                 allDealtWith[0] &= outcome != ApplyOutcome.NOT_APPLICABLE;
             });
         }
         return allDealtWith[0];
     }
+
+    // Each week opened once for the whole hold rather than once per trace: opening one is copying it
+    // down and publishing it back.
+    //
+    // Nothing here is reported as applied until it has landed. The caller deletes every item it is
+    // told was applied, so handing an item back after the fact changes nothing - the only way to
+    // have a failed week tried again is for none of the hold to count as done. Re-applying is safe:
+    // giving a day the same traces again leaves its record as it was apart from the counts.
+    private void archiveBeforeTheWindow(final PathwaysDoc doc,
+                                        final int shardIndex,
+                                        final TraceProcessor traceProcessor,
+                                        final List<Path> applied) {
+        final Map<String, Map<TraceProcessor.DayOfPathway, DayRecord>> byWeek =
+                traceProcessor.drainBeforeTheWindow();
+        for (final Entry<String, Map<TraceProcessor.DayOfPathway, DayRecord>> week : byWeek.entrySet()) {
+            try {
+                bucketArchiver.archive(doc, shardIndex, week.getKey(), week.getValue());
+            } catch (final IOException | RuntimeException e) {
+                LOGGER.error(() -> "Could not archive " + week.getKey() + " for " + doc.getName()
+                                   + ", so none of this hold is counted as applied: " + e.getMessage(), e);
+                applied.clear();
+                return;
+            }
+        }
+    }
+
 
     // Findings go to the document's info feed, as one stream per run of work. A document with no feed
     // still learns; it just has nowhere to report what it found, which beats not learning at all.

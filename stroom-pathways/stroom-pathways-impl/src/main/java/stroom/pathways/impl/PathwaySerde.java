@@ -66,6 +66,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Map.Entry;
 import java.util.Set;
+import java.util.TreeMap;
 import java.util.function.BiConsumer;
 import java.util.function.Consumer;
 import java.util.function.Function;
@@ -377,11 +378,18 @@ public class PathwaySerde {
     }
 
     /**
-     * A day's worth of what each of a model's constraints was given, by node uuid then constraint
-     * name. Written with the same constraint values the model holds, so the two can be compared
-     * without either being converted.
+     * A day's worth of what each of a model's constraints was given, by the path that reaches the
+     * node and then by constraint name. Written with the same constraint values the model holds, so
+     * the two can be compared without either being converted.
+     *
+     * <p>Both halves go out in an order taken from what they hold rather than from the order whoever
+     * built the record happened to meet them: the nodes and their constraints by name, the paths by
+     * renumbering. Otherwise two records holding the same day are different bytes, and old history
+     * could not be loaded without a marker per trace saying it already had been. Done here so that
+     * nothing writing one of these has to remember to do it.
      */
-    public void writeObservedValues(final DayRecord record, final Consumer<ByteBuffer> consumer) {
+    public void writeObservedValues(final DayRecord day, final Consumer<ByteBuffer> consumer) {
+        final DayRecord record = canonical(day);
         try (final ByteBufferPoolOutput output =
                 new ByteBufferPoolOutput(byteBufferFactory, MIN_BUFFER_SIZE, -1)) {
             output.writeByte(OBSERVED_VALUES_VERSION);
@@ -425,6 +433,26 @@ public class PathwaySerde {
         }
     }
 
+    private static DayRecord canonical(final DayRecord day) {
+        final Map<List<String>, DayRecord.ObservedNode> inOrder = new TreeMap<>(PathwaySerde::byPath);
+        day.nodes().forEach((path, node) -> inOrder.put(path,
+                new DayRecord.ObservedNode(node.nodeUuid(), node.timesUsed(),
+                        new TreeMap<>(node.constraints()))));
+        return new DayRecord(inOrder, PathRecorder.canonical(day.paths()));
+    }
+
+    // A path at a time, so a node sits next to the ones it shares a parent with and after that
+    // parent. The node order is also what a drawing is laid out by walking.
+    private static int byPath(final List<String> first, final List<String> second) {
+        for (int i = 0; i < Math.min(first.size(), second.size()); i++) {
+            final int order = first.get(i).compareTo(second.get(i));
+            if (order != 0) {
+                return order;
+            }
+        }
+        return Integer.compare(first.size(), second.size());
+    }
+
     public DayRecord readObservedValues(final ByteBuffer byteBuffer) {
         final Input input = new UnsafeByteBufferInput(byteBuffer);
         checkVersion(input.readByte(), OBSERVED_VALUES_VERSION, "observed values", "observed-values");
@@ -438,8 +466,8 @@ public class PathwaySerde {
         }
 
         final int nodes = input.readVarInt(true);
-        // Insertion ordered, so a record names its nodes in the order the model first met them
-        // rather than in whatever order a hash gives back. A drawing is laid out by walking them.
+        // Insertion ordered, so the nodes come back in the order they were written, which is by
+        // path - whatever order a hash gives back would move a drawing about between readings.
         final Map<List<String>, DayRecord.ObservedNode> observed = new LinkedHashMap<>(nodes);
         for (int i = 0; i < nodes; i++) {
             final int depth = input.readVarInt(true);
