@@ -67,6 +67,8 @@ public class PathwayAsAt {
     private final long changeCeiling;
     @JsonProperty
     private final long usageCeiling;
+    @JsonProperty
+    private final boolean folded;
 
     @JsonCreator
     public PathwayAsAt(@JsonProperty("pathway") final Pathway pathway,
@@ -74,7 +76,9 @@ public class PathwayAsAt {
                        @JsonProperty("usage") final Map<String, NodeUsage> usage,
                        @JsonProperty("asAt") final NanoTime asAt,
                        @JsonProperty("changeCeiling") final long changeCeiling,
-                       @JsonProperty("usageCeiling") final long usageCeiling) {
+                       @JsonProperty("usageCeiling") final long usageCeiling,
+                       @JsonProperty("folded") final boolean folded) {
+        this.folded = folded;
         this.pathway = pathway;
         this.changes = changes == null
                 ? Collections.emptyMap()
@@ -85,6 +89,23 @@ public class PathwayAsAt {
         this.asAt = asAt;
         this.changeCeiling = changeCeiling;
         this.usageCeiling = usageCeiling;
+    }
+
+    /**
+     * Whether this model was folded out of day records rather than wound back from the change
+     * history.
+     *
+     * <p>The two are different answers to the same question and only one is available for a given
+     * moment. A wound-back model is exact and carries everything the learner ever took in. A folded
+     * one holds only what was seen over the window it covers, so it has no count of changes, and
+     * its nodes are named by a stand-in worked out from the path of span names that reaches each of
+     * them rather than by the uuid the learner minted.
+     *
+     * <p>That last part is why a drawing has to ask: it is laid out from the model as it stands and
+     * looks each node up by uuid, which finds nothing in a folded model.
+     */
+    public boolean isFolded() {
+        return folded;
     }
 
     public Pathway getPathway() {

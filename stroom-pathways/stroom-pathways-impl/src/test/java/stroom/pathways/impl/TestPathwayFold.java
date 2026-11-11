@@ -60,7 +60,7 @@ class TestPathwayFold {
     void theSameNodesAsTheModelTheSameTracesTaught() {
         final Seen seen = apply(trace(0, "Validate", "Commit"), trace(1, "Validate", "Commit"));
 
-        final Pathway folded = PathwayFold.of(seen.record).model(key(), OPERATION);
+        final Pathway folded = new PathwayFold(seen.record).model(key(), OPERATION);
 
         assertThat(pathsOf(folded.getRoot()))
                 .as("the fixture only says something if there are nodes to compare")
@@ -75,7 +75,7 @@ class TestPathwayFold {
         // one day of it.
         final Seen seen = apply(trace(0, "Validate"), trace(1, "Validate"), trace(2, "Validate"));
 
-        final Pathway folded = PathwayFold.of(seen.record).model(key(), OPERATION);
+        final Pathway folded = new PathwayFold(seen.record).model(key(), OPERATION);
 
         assertThat(constraintsOf(folded.getRoot()))
                 .as("the fixture only says something if the fold claims anything at all")
@@ -90,7 +90,7 @@ class TestPathwayFold {
     void eachNodeIsCountedTheWayTheModelCountsIt() {
         final Seen seen = apply(trace(0, "Validate", "Validate", "Commit"));
 
-        final Pathway folded = PathwayFold.of(seen.record).model(key(), OPERATION);
+        final Pathway folded = new PathwayFold(seen.record).model(key(), OPERATION);
 
         assertThat(usedOf(folded.getRoot()))
                 .as("the fixture only says something if a node was reached twice")
@@ -105,7 +105,7 @@ class TestPathwayFold {
         // SVG id where a space ends the reference and the line is drawn with no paint.
         final Seen seen = apply(trace(0, "UPDATE stroom.cluster_lock"));
 
-        final Pathway folded = PathwayFold.of(seen.record).model(key(), OPERATION);
+        final Pathway folded = new PathwayFold(seen.record).model(key(), OPERATION);
 
         assertThat(identitiesOf(folded.getRoot()))
                 .allSatisfy(id -> assertThat(id).matches("[0-9a-f]{16}"));
@@ -120,7 +120,7 @@ class TestPathwayFold {
         // the one figure in a folded model that is worked out rather than read.
         final Seen seen = apply(trace(0, "Validate"), trace(5, "Validate"));
 
-        final PathwayFold fold = PathwayFold.of(seen.record);
+        final PathwayFold fold = new PathwayFold(seen.record);
         final Pathway folded = fold.model(key(), OPERATION);
 
         assertThat(folded.getRoot().getLastUsedTime())
@@ -137,7 +137,7 @@ class TestPathwayFold {
         // not told the new names, half of them point at nodes the tree no longer describes.
         final Seen seen = apply(trace(0, "Validate", "Commit"));
 
-        final Pathway folded = PathwayFold.of(seen.record).model(key(), OPERATION);
+        final Pathway folded = new PathwayFold(seen.record).model(key(), OPERATION);
 
         final Paths paths = folded.getPaths();
         assertThat(paths.getPaths()).as("the fixture only says something if a path was taken")
@@ -151,7 +151,7 @@ class TestPathwayFold {
 
     @Test
     void aDayWithNothingInItFoldsToNothingRatherThanFailing() {
-        final Pathway folded = PathwayFold.of(DayRecord.empty()).model(key(), OPERATION);
+        final Pathway folded = new PathwayFold(DayRecord.empty()).model(key(), OPERATION);
 
         assertThat(folded.getRoot()).isNull();
         assertThat(folded.getTimesUsed()).isZero();

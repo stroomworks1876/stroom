@@ -442,8 +442,9 @@ public class PathwaySerde {
     }
 
     // A path at a time, so a node sits next to the ones it shares a parent with and after that
-    // parent. The node order is also what a drawing is laid out by walking.
-    private static int byPath(final List<String> first, final List<String> second) {
+    // parent. The node order is also what a drawing is laid out by walking, which is why a fold
+    // orders its nodes by the same rule rather than by the order a merge happened to leave them in.
+    static int byPath(final List<String> first, final List<String> second) {
         for (int i = 0; i < Math.min(first.size(), second.size()); i++) {
             final int order = first.get(i).compareTo(second.get(i));
             if (order != 0) {

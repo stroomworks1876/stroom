@@ -160,10 +160,10 @@ class TestPathwayAsAt {
     }
 
     @Test
-    void theCutIsTheNewestChangeTakenInByThatMoment() {
-        assertThat(ShardedPathwayReader.cutAt(changes(), NOON + 1_500)).isEqualTo(1L);
-        assertThat(ShardedPathwayReader.cutAt(changes(), NOON + 2_500)).isEqualTo(2L);
-        assertThat(ShardedPathwayReader.cutAt(changes(), NOON - 1))
+    void theLastChangeIsTheNewestTakenInByThatMoment() {
+        assertThat(ShardedPathwayReader.lastChangeBy(changes(), NOON + 1_500)).isEqualTo(1L);
+        assertThat(ShardedPathwayReader.lastChangeBy(changes(), NOON + 2_500)).isEqualTo(2L);
+        assertThat(ShardedPathwayReader.lastChangeBy(changes(), NOON - 1))
                 .as("nothing had been taken in by then")
                 .isNull();
     }
@@ -175,8 +175,8 @@ class TestPathwayAsAt {
         final List<PathwayMutation> changes = changes();
         changes.add(change(3L, NOON + 3_000, NOON - 500_000, 5, 7));
 
-        assertThat(ShardedPathwayReader.cutAt(changes, NOON + 3_500)).isEqualTo(3L);
-        assertThat(ShardedPathwayReader.cutAt(changes, NOON + 2_500))
+        assertThat(ShardedPathwayReader.lastChangeBy(changes, NOON + 3_500)).isEqualTo(3L);
+        assertThat(ShardedPathwayReader.lastChangeBy(changes, NOON + 2_500))
                 .as("read against when it was learnt, not when its work ran")
                 .isEqualTo(2L);
     }

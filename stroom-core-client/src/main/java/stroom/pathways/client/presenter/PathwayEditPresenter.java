@@ -573,16 +573,25 @@ public class PathwayEditPresenter
                     pathListPresenter.getSelectedRunStarts(),
                     pathListPresenter.getSelectedHolds());
         }
-        // Winding the model back takes nodes out of it. Placing what is left from the model as it
-        // stands now keeps every node where it was, rather than closing the gaps and moving
-        // everything the reader was looking at.
-        pathwayTreePresenter.setLayout(pathway.getRoot());
-
         // The model on show is whatever came back for the moment asked for, and the figures with it.
         // Neither is worked out here: winding back needs an unbroken run of changes from the newest,
         // and the rows it needs are filed by the day their work ran rather than by when they were
         // learnt, so a date never promises one.
         final Pathway shown = NullSafe.getOrElse(asAt, PathwayAsAt::getPathway, pathway);
+
+        // Winding the model back takes nodes out of it. Placing what is left from the model as it
+        // stands now keeps every node where it was, rather than closing the gaps and moving
+        // everything the reader was looking at.
+        //
+        // A folded model is laid out from itself instead. It names its nodes by a stand-in worked
+        // out from the path of span names that reaches each one, so looking them up among the
+        // learnt model's uuids finds nothing and the drawing comes out empty. It is also not wound
+        // back from anything, so there are no gaps to hold open. And it can hold nodes the learnt
+        // model never had, from history loaded after the fact, which the layout would leave out.
+        final boolean folded = NullSafe.isTrue(asAt, PathwayAsAt::isFolded);
+        pathwayTreePresenter.setLayout(folded
+                ? NullSafe.get(shown, Pathway::getRoot)
+                : pathway.getRoot());
         pathwayTreePresenter.setFigures(asAt);
         pathwayTreePresenter.setAsAt(NullSafe.get(asAt, PathwayAsAt::getAsAt),
                 mutationListPresenter.getSelectedSequence());

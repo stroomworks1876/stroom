@@ -520,6 +520,21 @@ public class TraceProcessor {
         return (int) (time.toEpochMillis() / MILLIS_PER_DAY);
     }
 
+    // The prefix every day of one model shares, for reading them back. The day sits at the end of
+    // the key in big endian, so one model's days are together and in order and a prefix covers all
+    // of them.
+    static ByteBuffer observedValuesPrefix(final byte[] pathwayKey) {
+        final ByteBuffer prefix = ByteBuffer.allocateDirect(pathwayKey.length + 1);
+        prefix.put(pathwayKey).put((byte) 0).flip();
+        return prefix;
+    }
+
+    // The day one of those keys names. Beside the method that writes them, so the layout is only
+    // ever described in one place.
+    static int dayOf(final ByteBuffer observedValuesKey) {
+        return observedValuesKey.getInt(observedValuesKey.limit() - Integer.BYTES);
+    }
+
     private static byte[] observedValuesKey(final byte[] pathwayKey, final int day) {
         final ByteBuffer buffer = ByteBuffer.allocate(pathwayKey.length + 1 + Integer.BYTES);
         buffer.put(pathwayKey);

@@ -18,6 +18,7 @@ package stroom.pathways.impl;
 
 import stroom.bytebuffer.impl6.ByteBufferFactoryImpl;
 import stroom.bytebuffer.impl6.ByteBuffers;
+import stroom.pathways.shared.PathwayAsAt;
 import stroom.pathways.shared.PathwaysDoc;
 import stroom.pathways.shared.pathway.NamePathKey;
 import stroom.pathways.shared.pathway.Pathway;
@@ -38,6 +39,7 @@ import stroom.planb.shared.PlanBDoc;
 import stroom.planb.shared.SharedFileStoreSettings;
 import stroom.planb.shared.StateType;
 import stroom.planb.shared.TraceSettings;
+import stroom.query.api.TimeRange;
 import stroom.util.io.SimplePathCreator;
 import stroom.util.shared.time.SimpleDuration;
 import stroom.util.shared.time.TimeUnit;
@@ -55,6 +57,7 @@ import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -195,42 +198,40 @@ class TestLoadingOldTraces {
 
     @Test
     void aWindowSpanningTheBoundaryReadsBothStores() throws IOException {
-        // The one that matters. Old days are in a bucket and recent ones are still in the live
-        // shard, so a fold that reads either alone answers with part of the window missing - and
-        // silently, because what comes back is a perfectly good model of the wrong thing.
-        final Instant old = daysAgo(400);
-        load(old, 3);
-        load(Instant.now(), 2);
+        // The one that matters. The narrowing moves a day out once the window has passed it, so a
+        // window ending a few days back straddles the move: its older days are in a bucket and its
+        // newer ones are still in the live shard. A fold that reads either alone answers with part
+        // of the window missing, and silently, because what comes back is a good model of the wrong
+        // thing.
+        load(daysAgo(10), 3);
+        load(daysAgo(5), 2);
 
-        final DayRecord folded = reader().daysOfWindow(doc, 0, keyBytes(), dayOf(old), today());
+        // Ten days ago was already past the seven day window when it was loaded, so it went to a
+        // bucket. Five days ago was inside it, so it is still in the shard. The window ending four
+        // days ago reaches back eleven days and so covers both.
+        final PathwayAsAt asAt = fetchAt(daysAgo(4));
 
-        assertThat(folded.nodes().get(List.of(OPERATION)).timesUsed())
+        assertThat(asAt.isFolded()).isTrue();
+        assertThat(asAt.getPathway().getRoot().getTimesUsed())
                 .as("all five traces, three out of the bucket and two out of the live shard")
                 .isEqualTo(5L);
     }
 
     @Test
-    void aWindowOfOnlyOldDaysStillBuildsAModel() throws IOException {
-        final Instant old = daysAgo(400);
-        load(old, 3);
-
-        final DayRecord folded = reader().daysOfWindow(doc, 0, keyBytes(), dayOf(old), dayOf(old));
-        final Pathway model = PathwayFold.of(folded).model(new NamePathKey(OPERATION), OPERATION);
-
-        assertThat(model.getRoot()).as("a model out of buckets alone").isNotNull();
-        assertThat(model.getRoot().getNodePath()).isEqualTo(List.of(OPERATION));
-        assertThat(model.getRoot().getTimesUsed()).isEqualTo(3L);
-    }
-
-    @Test
-    void aWindowThatMissesEveryDayFoldsToNothing() throws IOException {
+    void aWindowThatMissesEveryDayDrawsNothing() throws IOException {
         load(daysAgo(400), 3);
+        // Traffic today as well, because a pathway whose traces are all old history has no model
+        // row and so cannot be fetched at all - a limit of its own, not the one being tested here.
+        load(Instant.now(), 1);
 
-        final DayRecord folded = reader().daysOfWindow(doc, 0, keyBytes(), today() - 5, today());
+        final PathwayAsAt asAt = fetchAt(daysAgo(200));
 
-        assertThat(folded.nodes())
+        assertThat(asAt.isFolded())
+                .as("it took the folding route, because no change was made that long ago")
+                .isTrue();
+        assertThat(asAt.getPathway().getRoot())
                 .as("the days are real but none of them is in this window")
-                .isEmpty();
+                .isNull();
     }
 
     // -----------------------------------------------------------------------
@@ -239,6 +240,65 @@ class TestLoadingOldTraces {
 
     private static String weekOf(final Instant ran) {
         return PathwayNarrower.weekOf((int) (ran.toEpochMilli() / TraceProcessor.MILLIS_PER_DAY));
+    }
+
+    @Test
+    void aDateTheHistoryDoesNotReachIsAnsweredFromTheDayRecords() throws IOException {
+        // The whole point of the rebuild. Traffic today teaches a model, history from a year ago
+        // teaches nothing, and picking a date in that history still has to draw something.
+        final Instant old = daysAgo(400);
+        load(old, 3);
+        load(Instant.now(), 1);
+
+        final PathwayAsAt asAt = fetchAt(old);
+
+        assertThat(asAt.isFolded())
+                .as("built from day records, because no change was made that long ago")
+                .isTrue();
+        assertThat(asAt.getPathway().getRoot()).isNotNull();
+        assertThat(asAt.getPathway().getRoot().getNodePath()).isEqualTo(List.of(OPERATION));
+        assertThat(asAt.getPathway().getRoot().getTimesUsed())
+                .as("the three traces that ran that day, not the one that ran today")
+                .isEqualTo(3L);
+    }
+
+    @Test
+    void todayIsStillAnsweredFromTheChangeHistory() throws IOException {
+        load(daysAgo(400), 3);
+        load(Instant.now(), 1);
+
+        final PathwayAsAt asAt = fetchAt(Instant.now());
+
+        assertThat(asAt.isFolded())
+                .as("wound back, because the history reaches today")
+                .isFalse();
+        assertThat(asAt.getPathway().getRoot())
+                .as("and it is the learnt model, which the fold is not")
+                .isNotNull();
+    }
+
+    @Test
+    void aFoldedModelIsScaledAgainstItsOwnWindow() throws IOException {
+        final Instant old = daysAgo(400);
+        load(old, 3);
+        load(Instant.now(), 1);
+
+        final PathwayAsAt asAt = fetchAt(old);
+
+        assertThat(asAt.getUsageCeiling())
+                .as("the busiest node over the window folded, not over the model's whole life")
+                .isEqualTo(3L);
+        assertThat(asAt.getChangeCeiling())
+                .as("nothing folded has been through the learner, so nothing has changed")
+                .isZero();
+        assertThat(asAt.getUsage().keySet())
+                .as("named the way the model names its nodes, or the drawing finds neither")
+                .isEqualTo(Set.of(asAt.getPathway().getRoot().getUuid()));
+    }
+
+    private PathwayAsAt fetchAt(final Instant when) {
+        return reader().fetchPathwayAsAt(doc, OPERATION,
+                new TimeRange(null, null, null, when.toString()), null).orElseThrow();
     }
 
     private ShardedPathwayReader reader() {

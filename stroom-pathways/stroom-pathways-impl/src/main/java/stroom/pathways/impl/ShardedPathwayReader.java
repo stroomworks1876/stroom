@@ -17,7 +17,6 @@
 package stroom.pathways.impl;
 
 import stroom.bytebuffer.ByteBufferUtils;
-import stroom.lmdb.stream.LmdbIterable.EntryConsumer;
 import stroom.pathways.shared.FindPathwayCriteria;
 import stroom.pathways.shared.FindPathwayMutationCriteria;
 import stroom.pathways.shared.PathwayAsAt;
@@ -322,9 +321,13 @@ public class ShardedPathwayReader {
 
         final int shard = ShardKeyRouter.computeShardIndex(name, shardCountOf(settings));
         final byte[] keyBytes = name.getBytes(StandardCharsets.UTF_8);
+        final Long asAtMs = latestIn(timeRange);
+        final ByteBuffer prefix = TraceProcessor.observedValuesPrefix(keyBytes);
         final Pathway[] found = {null};
+        final boolean[] folding = {false};
         final List<PathwayMutation> mutations = new ArrayList<>();
         final List<PathwayUsage> usage = new ArrayList<>();
+        final DayRecord[] days = {DayRecord.empty()};
         readShard(doc, shard, db -> {
             withKey(name, keyBuffer -> db.getPathways().get(keyBuffer, valueBuffer -> {
                 if (valueBuffer != null) {
@@ -332,7 +335,16 @@ public class ShardedPathwayReader {
                 }
                 return null;
             }));
-            if (found[0] != null) {
+            if (found[0] == null) {
+                return null;
+            }
+            // Which of the two answers this date gets is settled while the shard is open, because
+            // they want entirely different things out of it. Reading both would mean decoding every
+            // change this model has ever made only to throw them away.
+            folding[0] = asAtMs != null && toSequence == null && !reaches(found[0], asAtMs);
+            if (folding[0]) {
+                days[0] = daysIn(db, prefix, oldestDayOfWindow(doc, asAtMs), dayOf(asAtMs));
+            } else {
                 mutations.addAll(mutationLog.read(db.getMutations(), keyBytes));
                 usage.addAll(mutationLog.readUsage(db.getMutations(), keyBytes));
             }
@@ -342,9 +354,58 @@ public class ShardedPathwayReader {
         if (found[0] == null) {
             return Optional.empty();
         }
-        final Long asAtMs = latestIn(timeRange);
+        if (folding[0]) {
+            return Optional.of(folded(doc, shard, prefix, found[0], asAtMs, days[0]));
+        }
+        // A wind-back needs every change between the moment asked for and now, and gathering them
+        // opens a bucket per week in between - so a date from a year ago opens a year of them. That
+        // is why the choice above is made first: where the history does not reach the date, none of
+        // those changes can help.
         addArchived(doc, shard, keyBytes, asAtMs, mutations, usage);
         return Optional.of(asAt(found[0], mutations, usage, asAtMs, toSequence));
+    }
+
+    // Whether the change history reaches a moment, which is the whole test for which of the two
+    // answers a date gets. A pathway comes into being with its first change, so nothing before that
+    // can be wound back to. The time is on the row already in hand and nothing ever moves it
+    // backwards - a trace whose work ran before the window writes no change row and creates no
+    // pathway. Where a model is too old to carry the time, this says it reaches and the wind-back
+    // route finds out for itself.
+    private static boolean reaches(final Pathway pathway, final long asAtMs) {
+        final NanoTime createTime = pathway.getCreateTime();
+        return createTime == null || createTime.toEpochMillis() <= asAtMs;
+    }
+
+    /**
+     * The model a date gets where the change history does not reach it: built from what the window
+     * ending on that date was given, rather than wound back from changes that do not exist.
+     *
+     * <p>It carries no changes and no count of them, because a folded node has never been through
+     * the learner. The drawing sizes a node and picks its colour from how much it has changed, so
+     * every node of a folded model comes out at its smallest and in the never-changed colour. Only
+     * the links vary, because their width comes from use. That is what the differences between days
+     * are for, and they are not built yet.
+     */
+    private PathwayAsAt folded(final PathwaysDoc doc,
+                               final int shard,
+                               final ByteBuffer prefix,
+                               final Pathway pathway,
+                               final long asAtMs,
+                               final DayRecord fromTheShard) {
+        final int day = dayOf(asAtMs);
+        final PathwayFold fold = new PathwayFold(DayRecord.merge(fromTheShard,
+                bucketDays(doc, shard, prefix, oldestDayOfWindow(doc, asAtMs), day)));
+        final Pathway model = fold.model(pathway.getPathKey(), pathway.getName());
+        // Scaled against its own window rather than against the learnt model's lifetime. The learnt
+        // figures mean nothing here: a folded node has no count of changes, and the uses a day
+        // record carries are that day's rather than every day's.
+        return new PathwayAsAt(model,
+                Map.of(),
+                fold.usage(),
+                NanoTime.ofMillis(asAtMs),
+                mostChanged(model.getRoot()),
+                mostUsed(model.getRoot()),
+                true);
     }
 
     // The latest time the range covers, or null where it has no end - which is the model as it
@@ -474,17 +535,17 @@ public class ShardedPathwayReader {
      * change history does not reach it, which is a different answer from showing the model as it
      * stands.
      */
-    static Long cutAt(final List<PathwayMutation> mutations, final long asAtMs) {
-        Long cut = null;
+    static Long lastChangeBy(final List<PathwayMutation> mutations, final long asAtMs) {
+        Long last = null;
         for (final PathwayMutation mutation : mutations) {
             final NanoTime time = mutation.getTime();
             if (time != null
                 && time.toEpochMillis() <= asAtMs
-                && (cut == null || mutation.getSequence() > cut)) {
-                cut = mutation.getSequence();
+                && (last == null || mutation.getSequence() > last)) {
+                last = mutation.getSequence();
             }
         }
-        return cut;
+        return last;
     }
 
     static PathwayAsAt asAt(final Pathway pathway,
@@ -507,7 +568,8 @@ public class ShardedPathwayReader {
                     usageByUuid(usage, toSequence),
                     timeOf(mutations, toSequence),
                     changeCeiling,
-                    usageCeiling);
+                    usageCeiling,
+                    false);
         }
 
         if (asAtMs == null) {
@@ -517,21 +579,25 @@ public class ShardedPathwayReader {
                     Map.of(),
                     null,
                     changeCeiling,
-                    usageCeiling);
+                    usageCeiling,
+                    false);
         }
 
         final NanoTime asAt = NanoTime.ofMillis(asAtMs);
-        final Long cut = cutAt(mutations, asAtMs);
-        if (cut == null) {
-            // The learner had taken nothing in by then, so there is nothing to wind back through and
-            // no model to show. Folding the day records is the other answer and is not built yet.
+        final Long lastChange = lastChangeBy(mutations, asAtMs);
+        if (lastChange == null) {
+            // The learner had taken nothing in by then, so there is nothing to wind back through.
+            // Folding the day records is the other answer, and the caller takes that route before
+            // reaching here by asking the model when it came into being. Getting here means it could
+            // not say, which is a model written before it recorded that.
             return new PathwayAsAt(
                     pathway.copy().root(null).build(),
                     Map.of(),
                     Map.of(),
                     asAt,
                     changeCeiling,
-                    usageCeiling);
+                    usageCeiling,
+                    false);
         }
 
         // Nothing to undo means the time asked for is now, however the range was written - so the
@@ -541,25 +607,27 @@ public class ShardedPathwayReader {
         // was taken, and one is only taken when the model learns something; a node gets busier every
         // time a trace passes through it. So a reading is usually behind, and using one here would
         // draw thinner lines for a time that is not past at all.
-        final List<PathwayMutation> later = after(mutations, cut);
+        final List<PathwayMutation> later = after(mutations, lastChange);
         if (later.isEmpty()) {
             return new PathwayAsAt(
                     pathway,
-                    changesByUuid(pathway, MutationCounts.of(mutations, cut)),
+                    changesByUuid(pathway, MutationCounts.of(mutations, lastChange)),
                     Map.of(),
                     asAt,
                     changeCeiling,
-                    usageCeiling);
+                    usageCeiling,
+                    false);
         }
 
         final Pathway shown = wound(pathway, later);
         return new PathwayAsAt(
                 shown,
-                changesByUuid(shown, MutationCounts.of(mutations, cut)),
-                usageByUuid(usage, cut),
+                changesByUuid(shown, MutationCounts.of(mutations, lastChange)),
+                usageByUuid(usage, lastChange),
                 asAt,
                 changeCeiling,
-                usageCeiling);
+                usageCeiling,
+                false);
     }
 
     // When the change picked was taken in, so the drawing can say what moment it is showing.
@@ -595,10 +663,11 @@ public class ShardedPathwayReader {
         return at < window.getFrom() || at > window.getTo();
     }
 
-    private static List<PathwayMutation> after(final List<PathwayMutation> mutations, final long cut) {
+    private static List<PathwayMutation> after(final List<PathwayMutation> mutations,
+                                               final long lastChange) {
         final List<PathwayMutation> later = new ArrayList<>();
         for (final PathwayMutation mutation : mutations) {
-            if (mutation.getSequence() > cut) {
+            if (mutation.getSequence() > lastChange) {
                 later.add(mutation);
             }
         }
@@ -636,11 +705,12 @@ public class ShardedPathwayReader {
 
     // The reading kept at the moment being shown, which is the earliest taken at or after the change
     // picked. Empty for the model as it stands, where each node's own tally is what the drawing reads.
-    private static Map<String, NodeUsage> usageByUuid(final List<PathwayUsage> usage, final long cut) {
+    private static Map<String, NodeUsage> usageByUuid(final List<PathwayUsage> usage,
+                                                      final long lastChange) {
         final Map<String, NodeUsage> byUuid = new HashMap<>();
         PathwayUsage reading = null;
         for (final PathwayUsage candidate : usage) {
-            if (candidate.getSequence() >= cut
+            if (candidate.getSequence() >= lastChange
                 && (reading == null || candidate.getSequence() < reading.getSequence())) {
                 reading = candidate;
             }
@@ -688,61 +758,46 @@ public class ShardedPathwayReader {
     }
 
     /**
-     * What the window ending on a day was given, from wherever those days now are.
+     * One store's days for the window.
      *
      * <p>A day record starts life in the live shard and moves to the bucket for its week once the
-     * narrowing window has passed it. A window ending on a recent day is therefore all in the shard,
-     * one ending on an old day is all in buckets, and one on the boundary is split across both. All
-     * three have to be read the same way, because a fold that reads only the buckets answers a recent
-     * date from whatever was last archived and silently leaves out everything since.
-     *
-     * <p>What comes back is the days already merged into one, which is what {@link PathwayFold}
-     * takes.
+     * narrowing window has passed it. So a window ending on a recent day is all in the shard, one
+     * ending on an old day is all in buckets, and one ending near the move is split across both.
+     * They hold them the same way under the same keys, so one reading serves all three.
      */
-    DayRecord daysOfWindow(final PathwaysDoc doc,
-                           final int shard,
-                           final byte[] pathwayKey,
-                           final int oldestDay,
-                           final int newestDay) {
+    private DayRecord daysIn(final PathwaysDb db,
+                             final ByteBuffer prefix,
+                             final int oldestDay,
+                             final int newestDay) {
         final DayRecord[] folded = {DayRecord.empty()};
-        final EntryConsumer gather = (key, value) -> {
-            final int day = dayOfKey(key);
+        db.getObservedValues().iteratePrefix(prefix.duplicate(), (key, value) -> {
+            // The day is in the key, so one outside the window costs a comparison rather than a
+            // record read.
+            final int day = TraceProcessor.dayOf(key);
             if (day >= oldestDay && day <= newestDay) {
                 folded[0] = DayRecord.merge(folded[0], pathwaySerde.readObservedValues(value));
             }
-        };
-
-        final ByteBuffer prefix = dayPrefix(pathwayKey);
-        readShard(doc, shard, db -> {
-            db.getObservedValues().iteratePrefix(prefix.duplicate(), gather);
-            return null;
         });
-        eachWeekIn(doc, shard, startOfDay(oldestDay), endOfDay(newestDay), db ->
-                db.getObservedValues().iteratePrefix(prefix.duplicate(), gather));
         return folded[0];
     }
 
-    /**
-     * The oldest day a window ending on the given day reaches back to.
-     *
-     * <p>Worked out by the same rule the narrowing uses, because the two have to agree. A day that
-     * aged out under one window and is folded under another is a day whose model depends on when it
-     * was looked at.
-     */
-    static int oldestDayOfWindow(final PathwaysDoc doc, final int day) {
-        return PathwayNarrower.oldestDayInWindow(doc, Instant.ofEpochMilli(endOfDay(day)));
+    private DayRecord bucketDays(final PathwaysDoc doc,
+                                 final int shard,
+                                 final ByteBuffer prefix,
+                                 final int oldestDay,
+                                 final int newestDay) {
+        final DayRecord[] folded = {DayRecord.empty()};
+        eachWeekIn(doc, shard, startOfDay(oldestDay), endOfDay(newestDay), db ->
+                folded[0] = DayRecord.merge(folded[0], daysIn(db, prefix, oldestDay, newestDay)));
+        return folded[0];
     }
 
-    // A day record is keyed by the pathway, a zero byte and then the day, so one pathway's days sit
-    // together and a prefix covers all of them.
-    private static ByteBuffer dayPrefix(final byte[] pathwayKey) {
-        final ByteBuffer prefix = ByteBuffer.allocateDirect(pathwayKey.length + 1);
-        prefix.put(pathwayKey).put((byte) 0).flip();
-        return prefix;
+    private static int oldestDayOfWindow(final PathwaysDoc doc, final long asAtMs) {
+        return PathwayNarrower.oldestDayInWindow(doc, dayOf(asAtMs));
     }
 
-    private static int dayOfKey(final ByteBuffer key) {
-        return key.getInt(key.limit() - Integer.BYTES);
+    private static int dayOf(final long millis) {
+        return (int) (millis / TraceProcessor.MILLIS_PER_DAY);
     }
 
     private static long startOfDay(final int day) {

@@ -151,6 +151,17 @@ public class PathwayNarrower {
         return (int) (oldest.toEpochMilli() / TraceProcessor.MILLIS_PER_DAY);
     }
 
+    /**
+     * The same thing for a window ending on a whole day rather than at a moment.
+     *
+     * <p>Here so that a fold and the narrowing settle the window by one rule. A day that aged out
+     * under one and is folded under another is a day whose model depends on when it was looked at.
+     */
+    static int oldestDayInWindow(final PathwaysDoc doc, final int day) {
+        final long endOfDay = ((day + 1L) * TraceProcessor.MILLIS_PER_DAY) - 1L;
+        return oldestDayInWindow(doc, Instant.ofEpochMilli(endOfDay));
+    }
+
     // Returns whether anything changed, which is what decides whether the shard is worth pushing back.
     // Not private so that what it does to a shard can be tested without a cluster lock and a document
     // store standing behind it.
@@ -331,11 +342,11 @@ public class PathwayNarrower {
         final Map<String, Integer> droppedBy = new LinkedHashMap<>();
         db.iterate(writer.getWriteTxn(), (key, value) -> {
             final String owner = ownerOf(key);
-            if (dayOf(key) < oldestDay) {
+            if (TraceProcessor.dayOf(key) < oldestDay) {
                 // Keyed by the week the day falls in, which is the bucket it belongs to. Both
                 // halves of the row are kept: a bucket is written from them, not from a re-read of a
                 // row already gone.
-                expired.computeIfAbsent(weekOf(dayOf(key)), week -> new ArrayList<>())
+                expired.computeIfAbsent(weekOf(TraceProcessor.dayOf(key)), week -> new ArrayList<>())
                         .add(new Row(copyOf(key), copyOf(value)));
                 droppedBy.merge(owner, 1, Integer::sum);
                 return;
@@ -369,10 +380,6 @@ public class PathwayNarrower {
         final byte[] bytes = new byte[key.remaining() - 1 - Integer.BYTES];
         key.duplicate().get(bytes);
         return asText(bytes);
-    }
-
-    private static int dayOf(final ByteBuffer key) {
-        return key.getInt(key.limit() - Integer.BYTES);
     }
 
     // The bucket a day belongs to, named the way Plan B names its own so the two sit side by side in

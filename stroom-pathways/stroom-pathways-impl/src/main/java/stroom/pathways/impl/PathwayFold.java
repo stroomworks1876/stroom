@@ -25,15 +25,17 @@ import stroom.pathways.shared.pathway.PathStep;
 import stroom.pathways.shared.pathway.PathUse;
 import stroom.pathways.shared.pathway.Paths;
 import stroom.pathways.shared.pathway.Pathway;
+import stroom.planb.impl.serde.trace.HexStringUtil;
 
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
-import java.util.HashMap;
+import java.util.Arrays;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.TreeMap;
 
 /**
  * A model built from what a window of days was given, for a date the change history does not reach.
@@ -52,21 +54,18 @@ import java.util.Map;
  */
 final class PathwayFold {
 
-    private final DayRecord folded;
-    private final Map<List<String>, Node> nodes = new LinkedHashMap<>();
-    private final List<String> rootPath;
+    private final Paths paths;
+    private final List<Node> all = new ArrayList<>();
+    private final Node[] byPosition;
+    private final Node root;
 
     /**
      * Everything the model and the usage both need, worked out once.
      *
      * @param folded every day in the window, already merged into one by {@link DayRecord#merge}
      */
-    static PathwayFold of(final DayRecord folded) {
-        return new PathwayFold(folded);
-    }
-
-    private PathwayFold(final DayRecord folded) {
-        this.folded = folded;
+    PathwayFold(final DayRecord folded) {
+        this.paths = folded.paths();
 
         // A node is named by the path of span names that reaches it, and that is the only stable
         // thing about it - a day record's own stand-in means nothing outside the record that wrote
@@ -74,37 +73,45 @@ final class PathwayFold {
         // and an identity ends up in markup where a space ends the reference. So the identity is a
         // hash of the path, and the path itself travels beside it on the node.
         //
-        // Held in the order the record holds them, because a drawing is laid out by walking the tree
-        // and an order of someone else's choosing moves the picture about between readings.
-        final Map<String, Node> byStandIn = new HashMap<>();
-        folded.nodes().forEach((path, seen) -> {
-            final Node node = new Node(identity(path), seen);
-            nodes.put(path, node);
-            if (seen.nodeUuid() != null) {
-                byStandIn.put(seen.nodeUuid(), node);
-            }
-        });
+        // Held in path order, because a drawing is laid out by walking the tree and an order of
+        // someone else's choosing moves the picture about between readings. Not the order the record
+        // hands them over in: a day record is written in path order but DayRecord.merge appends the
+        // nodes a later day saw first to the end, so a window would lay its siblings out by which
+        // day each of them first appeared, and two overlapping windows would disagree.
+        final Map<List<String>, Node> byPath = new TreeMap<>(PathwaySerde::byPath);
+        folded.nodes().forEach((path, seen) -> byPath.put(path, new Node(path, identity(path), seen)));
+        all.addAll(byPath.values());
 
-        List<String> root = null;
-        for (final List<String> path : nodes.keySet()) {
-            if (path.size() == 1) {
-                root = path;
+        Node top = null;
+        for (final Node node : all) {
+            if (node.path.size() == 1) {
+                top = node;
             } else {
                 // A node's parent is its path less the last step.
-                final Node above = nodes.get(path.subList(0, path.size() - 1));
+                final Node above = byPath.get(node.path.subList(0, node.path.size() - 1));
                 if (above != null) {
-                    above.children.add(path);
+                    above.children.add(node);
                 }
             }
         }
-        rootPath = root;
+        root = top;
 
-        // A day record counts the spans folded into each node but never says when any of them ran.
-        // The paths do: each carries when it was last taken and names the nodes it goes through, so
-        // a node was last used whenever the latest path through it was taken.
-        for (final PathUse use : folded.paths().getPaths()) {
-            walk(use.getRoot(), byStandIn, use.getLastUsedTime());
+        // The paths refer to their nodes by position in one list, so holding the nodes the same way
+        // is all it takes to read one: no name to look up, and the same array answers what a step
+        // points at and what each position should be called once the model is built.
+        final List<String> standIns = paths.getNodes();
+        byPosition = new Node[standIns.size()];
+        final Map<String, Node> byStandIn = new LinkedHashMap<>();
+        all.forEach(node -> {
+            if (node.seen.nodeUuid() != null) {
+                byStandIn.put(node.seen.nodeUuid(), node);
+            }
+        });
+        for (int i = 0; i < standIns.size(); i++) {
+            byPosition[i] = byStandIn.get(standIns.get(i));
         }
+
+        stampLastUsed();
     }
 
     /** The model those days add up to. */
@@ -113,7 +120,7 @@ final class PathwayFold {
         // than learnt, and a made-up instant would put an arrival time in a field that says when
         // work ran.
         return new Pathway(name, null, null, latestUse(), spansUsed(), 0L, pathKey,
-                tree(rootPath), renamedPaths());
+                tree(root), renamedPaths());
     }
 
     /**
@@ -124,43 +131,53 @@ final class PathwayFold {
      */
     Map<String, NodeUsage> usage() {
         final Map<String, NodeUsage> usage = new LinkedHashMap<>();
-        nodes.values().forEach(node -> usage.put(node.identity,
+        all.forEach(node -> usage.put(node.identity,
                 new NodeUsage(node.identity, node.seen.timesUsed(), node.lastUsed)));
         return usage;
     }
 
-    private void walk(final int step, final Map<String, Node> byStandIn, final NanoTime takenAt) {
-        final List<PathStep> steps = folded.paths().getSteps();
-        if (step < 0 || step >= steps.size()) {
+    // A day record counts the spans folded into each node but never says when any of them ran. The
+    // paths do: each carries when it was last taken and names the nodes it goes through, so a node
+    // was last used whenever the latest path through it was taken.
+    //
+    // Taken latest path first, so the first walk to reach a step already carries the latest time of
+    // anything through it and the rest can stop there. The steps are a shared structure rather than
+    // a tree - one subtree stands for every path that takes it - so without that a path is expanded
+    // once per path that reaches it, which is what PathRecorder.merge guards against for the same
+    // reason.
+    private void stampLastUsed() {
+        final List<PathUse> latestFirst = new ArrayList<>(paths.getPaths());
+        latestFirst.sort((first, second) ->
+                Times.compare(second.getLastUsedTime(), first.getLastUsedTime()));
+        final boolean[] stamped = new boolean[paths.getSteps().size()];
+        latestFirst.forEach(use -> walk(use.getRoot(), use.getLastUsedTime(), stamped));
+    }
+
+    private void walk(final int step, final NanoTime takenAt, final boolean[] stamped) {
+        if (step < 0 || step >= stamped.length || stamped[step]) {
             return;
         }
-        final PathStep here = steps.get(step);
-        final Node node = byStandIn.get(nameAt(here.getNode()));
-        if (node != null && Times.compare(node.lastUsed, takenAt) < 0) {
-            node.lastUsed = takenAt;
+        stamped[step] = true;
+        final PathStep here = paths.getSteps().get(step);
+        final int position = here.getNode();
+        if (position >= 0 && position < byPosition.length) {
+            final Node node = byPosition[position];
+            if (node != null && Times.compare(node.lastUsed, takenAt) < 0) {
+                node.lastUsed = takenAt;
+            }
         }
-        for (final Integer child : here.getSteps()) {
-            walk(child, byStandIn, takenAt);
-        }
+        here.getSteps().forEach(child -> walk(child, takenAt, stamped));
     }
 
-    private String nameAt(final int index) {
-        final List<String> named = folded.paths().getNodes();
-        return index < 0 || index >= named.size()
-                ? null
-                : named.get(index);
-    }
-
-    private PathNode tree(final List<String> path) {
-        if (path == null) {
+    private PathNode tree(final Node node) {
+        if (node == null) {
             return null;
         }
-        final Node node = nodes.get(path);
         final List<PathNode> below = new ArrayList<>(node.children.size());
         node.children.forEach(child -> below.add(tree(child)));
         // Nothing is retired, because retiring is what the narrowing does to a learnt model, and
         // nothing has changed until the differences between days exist to count.
-        return new PathNode(node.identity, path.get(path.size() - 1), path, below,
+        return new PathNode(node.identity, node.path.get(node.path.size() - 1), node.path, below,
                 constraints(node), node.seen.timesUsed(), 0L, node.lastUsed, null);
     }
 
@@ -173,25 +190,22 @@ final class PathwayFold {
         return constraints;
     }
 
-    // The paths name their nodes by the stand-in the record chose. Rewriting that one list to hold
-    // the identities instead leaves every index in the structure pointing where it did, so the steps
-    // and the paths themselves carry over untouched.
+    // The paths name their nodes by position in one list of stand-ins. Writing the identities into
+    // that list in the same order leaves every index in the structure pointing where it did, so the
+    // steps and the paths themselves carry over untouched.
     private Paths renamedPaths() {
-        final Map<String, String> identities = new HashMap<>();
-        nodes.values().forEach(node -> {
-            if (node.seen.nodeUuid() != null) {
-                identities.put(node.seen.nodeUuid(), node.identity);
-            }
-        });
-        final Paths paths = folded.paths();
-        final List<String> named = new ArrayList<>(paths.getNodes().size());
-        paths.getNodes().forEach(standIn -> named.add(identities.getOrDefault(standIn, standIn)));
+        final List<String> named = new ArrayList<>(byPosition.length);
+        for (int i = 0; i < byPosition.length; i++) {
+            named.add(byPosition[i] == null
+                    ? paths.getNodes().get(i)
+                    : byPosition[i].identity);
+        }
         return new Paths(named, paths.getSteps(), paths.getPaths(), paths.getSources());
     }
 
     private long spansUsed() {
         long total = 0L;
-        for (final Node node : nodes.values()) {
+        for (final Node node : all) {
             total += node.seen.timesUsed();
         }
         return total;
@@ -199,7 +213,7 @@ final class PathwayFold {
 
     private NanoTime latestUse() {
         NanoTime latest = null;
-        for (final Node node : nodes.values()) {
+        for (final Node node : all) {
             if (Times.compare(latest, node.lastUsed) < 0) {
                 latest = node.lastUsed;
             }
@@ -215,13 +229,9 @@ final class PathwayFold {
                 // So that ["a", "bc"] and ["ab", "c"] do not hash alike.
                 digest.update((byte) 0);
             }
-            final byte[] hash = digest.digest();
-            final StringBuilder sb = new StringBuilder(16);
-            for (int i = 0; i < 8; i++) {
-                sb.append(Character.forDigit((hash[i] >> 4) & 0xF, 16));
-                sb.append(Character.forDigit(hash[i] & 0xF, 16));
-            }
-            return sb.toString();
+            // Eight bytes is far more than a model's hundred-odd nodes need to stay apart, and short
+            // enough to read in a drawing's markup.
+            return HexStringUtil.encode(Arrays.copyOf(digest.digest(), 8));
         } catch (final NoSuchAlgorithmException e) {
             throw new IllegalStateException("SHA-256 is not available", e);
         }
@@ -230,12 +240,15 @@ final class PathwayFold {
     // One node, with everything worked out about it in one place rather than in a map each.
     private static final class Node {
 
+        private final List<String> path;
         private final String identity;
         private final DayRecord.ObservedNode seen;
-        private final List<List<String>> children = new ArrayList<>();
+        private final List<Node> children = new ArrayList<>();
         private NanoTime lastUsed;
 
-        private Node(final String identity, final DayRecord.ObservedNode seen) {
+        private Node(final List<String> path, final String identity,
+                     final DayRecord.ObservedNode seen) {
+            this.path = path;
             this.identity = identity;
             this.seen = seen;
         }
