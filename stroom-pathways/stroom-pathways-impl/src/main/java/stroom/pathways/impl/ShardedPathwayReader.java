@@ -727,8 +727,22 @@ public class ShardedPathwayReader {
         final PathwayFold fold = new PathwayFold(DayRecord.merge(fromTheShard,
                 bucketDays(doc, shard, prefix, oldestDayOfWindow(doc, asAtMs), day)));
         final Pathway model = fold.model(pathway.getPathKey(), pathway.getName());
-        final Map<String, NodeChange> changes =
-                shapeChanges(doc, shard, prefix, oldestDayOfWindow(doc, asAtMs), day);
+
+        // Every day record either answer needs, read once. The window's days say how much each node
+        // changed shape, and every described day says what the drawing is laid out from.
+        final int windowStart = oldestDayOfWindow(doc, asAtMs);
+        final int firstDescribed = oldestArchivedDay(doc, shard);
+        final int lastDescribed = lastDayBeforeTheModel(pathway);
+        final boolean described = firstDescribed <= lastDescribed;
+        final int from = described
+                ? Math.min(PathwayNarrower.oldestDayInWindow(doc, windowStart - 1), firstDescribed)
+                : PathwayNarrower.oldestDayInWindow(doc, windowStart - 1);
+        final int to = described
+                ? Math.max(day, lastDescribed)
+                : day;
+        final Map<Integer, DayRecord> byDay = dayRecordsIn(doc, shard, prefix, from, to);
+
+        final Map<String, NodeChange> changes = shapeChanges(doc, byDay, windowStart, day);
         // Scaled against its own window rather than against the learnt model's lifetime. The learnt
         // figures mean nothing here: a folded node has never been through the learner, so it has no
         // count of its own, and the uses a day record carries are that day's rather than every day's.
@@ -738,7 +752,10 @@ public class ShardedPathwayReader {
                 NanoTime.ofMillis(asAtMs),
                 most(changes),
                 mostUsed(model.getRoot()),
-                true);
+                true,
+                described
+                        ? union(byDay, firstDescribed, lastDescribed, pathway)
+                        : null);
     }
 
     /**
@@ -752,18 +769,10 @@ public class ShardedPathwayReader {
      * <p>Named the way the folded model names its nodes, which is a stand-in worked out from the
      * span path. Keyed any other way the drawing finds nothing and comes out empty.
      */
-    private Map<String, NodeChange> shapeChanges(final PathwaysDoc doc,
-                                                 final int shard,
-                                                 final ByteBuffer prefix,
-                                                 final int firstDay,
-                                                 final int lastDay) {
-        // Every record the folds will need, read once. Each day's fold reaches back a window, and the
-        // day before the first has a window of its own, so this goes back two of them. Read a day at
-        // a time instead, a week-long window would open the shard and its buckets nine times over to
-        // draw one picture.
-        final Map<Integer, DayRecord> byDay = dayRecordsIn(doc, shard, prefix,
-                PathwayNarrower.oldestDayInWindow(doc, firstDay - 1), lastDay);
-
+    private static Map<String, NodeChange> shapeChanges(final PathwaysDoc doc,
+                                                        final Map<Integer, DayRecord> byDay,
+                                                        final int firstDay,
+                                                        final int lastDay) {
         final Map<String, long[]> counted = new HashMap<>();
         final Map<String, NanoTime> moved = new HashMap<>();
         DayRecord before = foldFrom(doc, byDay, firstDay - 1);
@@ -788,6 +797,29 @@ public class ShardedPathwayReader {
         counted.forEach((uuid, count) ->
                 changes.put(uuid, new NodeChange(count[0], moved.get(uuid))));
         return changes;
+    }
+
+    /**
+     * Every node any described day has, as one model.
+     *
+     * <p>What the drawing is laid out from. A folded model holds only the nodes its own day was
+     * given, so laying each day out from itself means every step draws a different set of nodes and
+     * the drawing is built afresh rather than moved. Laid out from this, each day draws the same set
+     * and a step changes how a node looks rather than where it is. A node a day did not have is
+     * drawn as absent, which is what the learnt half already does for a node not yet learnt.
+     */
+    private static PathNode union(final Map<Integer, DayRecord> byDay,
+                                  final int firstDay,
+                                  final int lastDay,
+                                  final Pathway pathway) {
+        DayRecord all = DayRecord.empty();
+        for (int day = firstDay; day <= lastDay; day++) {
+            final DayRecord record = byDay.get(day);
+            if (record != null) {
+                all = DayRecord.merge(all, record);
+            }
+        }
+        return new PathwayFold(all).model(pathway.getPathKey(), pathway.getName()).getRoot();
     }
 
     /**
@@ -1022,7 +1054,8 @@ public class ShardedPathwayReader {
                     timeOf(mutations, toSequence),
                     changeCeiling,
                     usageCeiling,
-                    false);
+                    false,
+                    null);
         }
 
         if (asAtMs == null) {
@@ -1033,7 +1066,8 @@ public class ShardedPathwayReader {
                     null,
                     changeCeiling,
                     usageCeiling,
-                    false);
+                    false,
+                    null);
         }
 
         final NanoTime asAt = NanoTime.ofMillis(asAtMs);
@@ -1050,7 +1084,8 @@ public class ShardedPathwayReader {
                     asAt,
                     changeCeiling,
                     usageCeiling,
-                    false);
+                    false,
+                    null);
         }
 
         // Nothing to undo means the time asked for is now, however the range was written - so the
@@ -1069,7 +1104,8 @@ public class ShardedPathwayReader {
                     asAt,
                     changeCeiling,
                     usageCeiling,
-                    false);
+                    false,
+                    null);
         }
 
         final Pathway shown = wound(pathway, later);
@@ -1080,7 +1116,8 @@ public class ShardedPathwayReader {
                 asAt,
                 changeCeiling,
                 usageCeiling,
-                false);
+                false,
+                null);
     }
 
     // When the change picked was taken in, so the drawing can say what moment it is showing.

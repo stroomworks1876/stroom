@@ -26,6 +26,7 @@ import stroom.pathways.shared.pathway.DifferenceType;
 import stroom.pathways.shared.pathway.HistoryBar;
 import stroom.pathways.shared.pathway.NamePathKey;
 import stroom.pathways.shared.pathway.NodeChange;
+import stroom.pathways.shared.pathway.PathNode;
 import stroom.pathways.shared.pathway.Pathway;
 import stroom.pathways.shared.pathway.PathwayDifference;
 import stroom.pathways.shared.pathway.PathwayMutation;
@@ -49,6 +50,7 @@ import stroom.planb.shared.TraceSettings;
 import stroom.query.api.TimeRange;
 import stroom.query.api.TimeRanges;
 import stroom.util.io.SimplePathCreator;
+import stroom.util.shared.NullSafe;
 import stroom.util.shared.PageRequest;
 import stroom.util.shared.time.SimpleDuration;
 import stroom.util.shared.time.TimeUnit;
@@ -64,6 +66,7 @@ import java.nio.file.Path;
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -343,6 +346,53 @@ class TestLoadingOldTraces {
         assertThat(change.getCount())
                 .as("the arrival on the first day and nothing for the duration widening on the second")
                 .isEqualTo(1L);
+    }
+
+    @Test
+    void everyDescribedDayIsLaidOutFromTheSameTree() throws IOException {
+        // The drawing moves its nodes from one step to the next only where the step wants the same
+        // set of them. A folded model holds the nodes its own day was given, so laid out from itself
+        // each day is a different set and the picture is built again rather than moved.
+        final Instant first = daysAgo(40);
+        load(first, 1);
+        load(first.plus(1, ChronoUnit.DAYS), 1);
+        load(Instant.now(), 1);
+
+        final PathNode one = fetchAt(first).getLayout();
+        final PathNode two = fetchAt(first.plus(1, ChronoUnit.DAYS)).getLayout();
+
+        assertThat(nodeIdentities(one))
+                .as("the same tree whichever described day is asked for")
+                .isEqualTo(nodeIdentities(two))
+                .isNotEmpty();
+        assertThat(nodeIdentities(one))
+                .as("and it holds the day's own nodes, so the drawing has somewhere to put them")
+                .containsAll(nodeIdentities(fetchAt(first).getPathway().getRoot()));
+    }
+
+    @Test
+    void aWoundBackModelCarriesNoLayoutOfItsOwn() throws IOException {
+        load(Instant.now(), 2);
+
+        assertThat(reader().fetchPathwayAsAt(doc, OPERATION, null, null).orElseThrow().getLayout())
+                .as("it is laid out from the model as it stands, which the browser already holds")
+                .isNull();
+    }
+
+    private static Set<String> nodeIdentities(final PathNode root) {
+        final Set<String> found = new HashSet<>();
+        collectIdentities(root, found);
+        return found;
+    }
+
+    private static void collectIdentities(final PathNode node, final Set<String> found) {
+        if (node == null) {
+            return;
+        }
+        found.add(node.getUuid());
+        for (final PathNode child : NullSafe.list(node.getChildren())) {
+            collectIdentities(child, found);
+        }
     }
 
     private PathwayAsAt fetchAt(final Instant when) {

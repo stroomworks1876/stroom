@@ -599,8 +599,13 @@ public class PathwayEditPresenter
         // back from anything, so there are no gaps to hold open. And it can hold nodes the learnt
         // model never had, from history loaded after the fact, which the layout would leave out.
         final boolean folded = NullSafe.isTrue(asAt, PathwayAsAt::isFolded);
+        // A folded model is laid out from the tree the server sends with it, which holds every node
+        // any described day has. Laid out from the day on show instead, each day is a different set
+        // of nodes and the drawing is built again at every step rather than moved.
+        final PathNode foldedLayout = NullSafe.get(asAt, PathwayAsAt::getLayout);
         pathwayTreePresenter.setLayout(folded
-                ? NullSafe.get(shown, Pathway::getRoot)
+                ? NullSafe.getOrElse(foldedLayout, layout -> layout,
+                        NullSafe.get(shown, Pathway::getRoot))
                 : pathway.getRoot());
         pathwayTreePresenter.setFigures(asAt);
         pathwayTreePresenter.setAsAt(NullSafe.get(asAt, PathwayAsAt::getAsAt),

@@ -19,6 +19,7 @@ package stroom.pathways.shared;
 import stroom.pathways.shared.otel.trace.NanoTime;
 import stroom.pathways.shared.pathway.NodeChange;
 import stroom.pathways.shared.pathway.NodeUsage;
+import stroom.pathways.shared.pathway.PathNode;
 import stroom.pathways.shared.pathway.Pathway;
 
 import com.fasterxml.jackson.annotation.JsonCreator;
@@ -70,6 +71,17 @@ public class PathwayAsAt {
     @JsonProperty
     private final boolean folded;
 
+    /**
+     * The tree the drawing lays its nodes out from, or null where the model on show is its own.
+     *
+     * <p>A folded model holds only the nodes that day was given, so every day would be laid out from
+     * a different tree and the drawing would be built afresh at every step rather than moved. This
+     * covers every node any described day has, so each of them draws the same set and a step is a
+     * change of appearance rather than a new picture.
+     */
+    @JsonProperty
+    private final PathNode layout;
+
     @JsonCreator
     public PathwayAsAt(@JsonProperty("pathway") final Pathway pathway,
                        @JsonProperty("changes") final Map<String, NodeChange> changes,
@@ -77,8 +89,10 @@ public class PathwayAsAt {
                        @JsonProperty("asAt") final NanoTime asAt,
                        @JsonProperty("changeCeiling") final long changeCeiling,
                        @JsonProperty("usageCeiling") final long usageCeiling,
-                       @JsonProperty("folded") final boolean folded) {
+                       @JsonProperty("folded") final boolean folded,
+                       @JsonProperty("layout") final PathNode layout) {
         this.folded = folded;
+        this.layout = layout;
         this.pathway = pathway;
         this.changes = changes == null
                 ? Collections.emptyMap()
@@ -126,6 +140,10 @@ public class PathwayAsAt {
 
     public long getChangeCeiling() {
         return changeCeiling;
+    }
+
+    public PathNode getLayout() {
+        return layout;
     }
 
     public long getUsageCeiling() {
