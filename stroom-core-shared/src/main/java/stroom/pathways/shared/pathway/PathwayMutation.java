@@ -37,7 +37,7 @@ import java.util.function.Function;
  * {@link ConstraintValue} already carries it.
  */
 @JsonInclude(Include.NON_NULL)
-public class PathwayMutation {
+public class PathwayMutation implements HistoryRow {
 
     // The names the grid sorts by, shared so the column clicked and the field ordered on cannot drift.
     public static final String FIELD_TIME = "Applied";
@@ -204,24 +204,37 @@ public class PathwayMutation {
         return time;
     }
 
+    @Override
     public String getNodeUuid() {
         return nodeUuid;
     }
 
+    @Override
     public String getTraceId() {
         return traceId;
     }
 
+    @Override
     public String getSpanId() {
         return spanId;
     }
 
+    @Override
     public List<String> getNodePath() {
         return nodePath;
     }
 
+    @Override
     public String getConstraint() {
         return constraint;
+    }
+
+
+    @Override
+    public String getTypeDisplayValue() {
+        return type == null
+                ? null
+                : type.getDisplayValue();
     }
 
     public MutationType getType() {
@@ -232,10 +245,12 @@ public class PathwayMutation {
         return optional;
     }
 
+    @Override
     public ConstraintValue getOldValue() {
         return oldValue;
     }
 
+    @Override
     public ConstraintValue getNewValue() {
         return newValue;
     }

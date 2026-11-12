@@ -27,9 +27,11 @@ import stroom.pathways.shared.TraceHistogram;
 import stroom.pathways.shared.otel.trace.NanoTime;
 import stroom.pathways.shared.pathway.AbstractRange;
 import stroom.pathways.shared.pathway.ConstraintValue;
+import stroom.pathways.shared.pathway.HistoryRow;
 import stroom.pathways.shared.pathway.MutationCounts;
 import stroom.pathways.shared.pathway.MutationType;
 import stroom.pathways.shared.pathway.PathNode;
+import stroom.pathways.shared.pathway.PathwayDifference;
 import stroom.pathways.shared.pathway.PathwayMutation;
 import stroom.preferences.client.DateTimeFormatter;
 import stroom.svg.client.SvgPresets;
@@ -51,11 +53,14 @@ import com.gwtplatform.mvp.client.MyPresenterWidget;
 
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.Comparator;
 import java.util.HashSet;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
+import java.util.TreeMap;
 import java.util.function.Function;
 
 /**
@@ -89,7 +94,7 @@ public class PathwayMutationListPresenter extends MyPresenterWidget<PagerView> {
     private Column<MutationRow, Expander> expanderColumn;
     // The whole history, which the rows are built from every time the list is drawn. Held apart from
     // the rows because a trace opening or closing changes the rows and not the history.
-    private List<PathwayMutation> mutations = new ArrayList<>();
+    private List<HistoryRow> mutations = new ArrayList<>();
     // Where the traces that taught this model are kept, or null where nothing keeps them.
     private List<String> sources = List.of();
     // What the button says when there is a filter to take off. It says nothing else, because it is
@@ -180,10 +185,27 @@ public class PathwayMutationListPresenter extends MyPresenterWidget<PagerView> {
     private Long windowFrom;
     private Long windowTo;
 
+    /**
+     * The change rows among what the table is showing.
+     *
+     * <p>The plot and the selection are both about what the learner did, and a difference is not
+     * that: it is two days compared, with no trace behind it and no place in the numbered history.
+     * Differences reach the plot in their own right, as bars a day wide, which is not built yet.
+     */
+    private List<PathwayMutation> changes() {
+        final List<PathwayMutation> changes = new ArrayList<>(mutations.size());
+        for (final HistoryRow row : mutations) {
+            if (row instanceof final PathwayMutation change) {
+                changes.add(change);
+            }
+        }
+        return changes;
+    }
+
     private TraceHistogram bars() {
         long from = Long.MAX_VALUE;
         long to = Long.MIN_VALUE;
-        for (final PathwayMutation mutation : mutations) {
+        for (final PathwayMutation mutation : changes()) {
             final NanoTime time = mutation.getTime();
             // Only what the table is showing, so that narrowing the list narrows the plot over it
             // rather than leaving the bars saying something the rows no longer do.
@@ -229,7 +251,7 @@ public class PathwayMutationListPresenter extends MyPresenterWidget<PagerView> {
         final long width = Math.max(1L, ((span + BUCKETS) - 1) / BUCKETS);
         final List<Long> counts = new ArrayList<>(Collections.nCopies(BUCKETS, 0L));
         final Set<String> counted = new HashSet<>();
-        for (final PathwayMutation mutation : mutations) {
+        for (final PathwayMutation mutation : changes()) {
             final NanoTime time = mutation.getTime();
             // One bar unit per thing that changed the model rather than per change, so a trace that
             // taught it twenty things counts the same as one that taught it one. The narrowing is
@@ -290,7 +312,7 @@ public class PathwayMutationListPresenter extends MyPresenterWidget<PagerView> {
         long best = Long.MAX_VALUE;
         long latest = Long.MIN_VALUE;
         for (final MutationRow row : dataProvider.getList()) {
-            if (row.isTrace() && row.getTime() != null) {
+            if (row.isParent() && row.getTime() != null) {
                 final long at = row.getTime().toEpochMillis();
                 latest = Math.max(latest, at);
                 final long away = Math.abs(at - ms);
@@ -349,13 +371,13 @@ public class PathwayMutationListPresenter extends MyPresenterWidget<PagerView> {
         // Nothing is picked out for the trace the pathway was created on. Those nodes were learnt on
         // that trace rather than changed by it, so marking them would say a change had been made
         // where the count beside them says none was.
-        final String creating = MutationCounts.creatingTrace(mutations);
+        final String creating = MutationCounts.creatingTrace(changes());
         if (creating != null && creating.equals(selected.getTraceId())) {
             return paths;
         }
 
-        for (final PathwayMutation mutation : mutations) {
-            final boolean mine = selected.isTrace()
+        for (final PathwayMutation mutation : changes()) {
+            final boolean mine = selected.isParent()
                     ? Objects.equals(selected.getGroup(), MutationRow.groupOf(mutation))
                     : mutation.getSequence() == selected.getSequence();
             if (mine && !paths.contains(mutation.getNodePath())) {
@@ -382,13 +404,13 @@ public class PathwayMutationListPresenter extends MyPresenterWidget<PagerView> {
 
         // Nothing is picked out for the trace the pathway was created on, for the same reason the
         // nodes are not: what that trace did was the model being learnt rather than changed.
-        final String creating = MutationCounts.creatingTrace(mutations);
+        final String creating = MutationCounts.creatingTrace(changes());
         if (creating != null && creating.equals(selected.getTraceId())) {
             return names;
         }
 
-        for (final PathwayMutation mutation : mutations) {
-            final boolean mine = selected.isTrace()
+        for (final PathwayMutation mutation : changes()) {
+            final boolean mine = selected.isParent()
                     ? Objects.equals(selected.getGroup(), MutationRow.groupOf(mutation))
                     : mutation.getSequence() == selected.getSequence();
             if (mine && mutation.getConstraint() != null && path.equals(mutation.getNodePath())) {
@@ -424,7 +446,7 @@ public class PathwayMutationListPresenter extends MyPresenterWidget<PagerView> {
 
         MutationRow next = null;
         for (final MutationRow row : rows) {
-            if (row.isTrace()
+            if (row.isParent()
                 && row.getSequence() > after
                 && (next == null || row.getSequence() < next.getSequence())) {
                 next = row;
@@ -468,12 +490,16 @@ public class PathwayMutationListPresenter extends MyPresenterWidget<PagerView> {
     }
 
     /**
-     * The point in the history being looked at, or null where nothing is selected. A trace answers
-     * with the last change it made, so selecting one shows the model as that trace left it.
+     * The point in the history being looked at, or null where there is none. A trace answers with the
+     * last change it made, so selecting one shows the model as that trace left it. A day answers with
+     * none, because the days described this way came before the model did.
      */
     public Long getSelectedSequence() {
         final MutationRow selected = selectionModel.getSelected();
-        return selected == null
+        // Null for a day as well as for nothing picked. A day has no place in the history, so asking
+        // to be shown the model just after it would wind every change there has ever been off the
+        // model. Its date is what it asks by.
+        return selected == null || selected.getSequence() == MutationRow.NO_SEQUENCE
                 ? null
                 : selected.getSequence();
     }
@@ -483,7 +509,7 @@ public class PathwayMutationListPresenter extends MyPresenterWidget<PagerView> {
      * already holds the whole history so it can wind the model back without asking the server, and one
      * copy means the grid and the model on show cannot disagree.
      */
-    public void setData(final List<PathwayMutation> mutations) {
+    public void setData(final List<HistoryRow> mutations) {
         setData(mutations, null, null);
     }
 
@@ -491,7 +517,7 @@ public class PathwayMutationListPresenter extends MyPresenterWidget<PagerView> {
      * The same, with the span these rows were asked for, resolved. The plot over them is drawn across
      * that span rather than out to now, so it covers what was picked.
      */
-    public void setData(final List<PathwayMutation> mutations,
+    public void setData(final List<HistoryRow> mutations,
                         final Long windowFrom,
                         final Long windowTo) {
         this.windowFrom = windowFrom;
@@ -602,7 +628,7 @@ public class PathwayMutationListPresenter extends MyPresenterWidget<PagerView> {
     }
 
     private int indexOfSource(final String traceId) {
-        for (final PathwayMutation mutation : mutations) {
+        for (final PathwayMutation mutation : changes()) {
             if (Objects.equals(traceId, mutation.getTraceId())) {
                 return mutation.getSource();
             }
@@ -611,7 +637,7 @@ public class PathwayMutationListPresenter extends MyPresenterWidget<PagerView> {
     }
 
     private Long whenMade(final String traceId) {
-        for (final PathwayMutation mutation : mutations) {
+        for (final PathwayMutation mutation : changes()) {
             if (Objects.equals(traceId, mutation.getTraceId())) {
                 return NullSafe.get(mutation.getTraceTime(), NanoTime::toEpochMillis);
             }
@@ -632,26 +658,39 @@ public class PathwayMutationListPresenter extends MyPresenterWidget<PagerView> {
         collapseAllButton.setEnabled(open > 0);
     }
 
-    // First appearance first, so what the buttons act on is the order the list is built in.
+    // First appearance first, so what the buttons act on is the order the list is built in. Days as
+    // well as traces: a day that opening everything left shut is a row the button says it has
+    // already opened.
     private Set<String> groups() {
         final Set<String> groups = new LinkedHashSet<>();
-        for (final PathwayMutation mutation : mutations) {
-            groups.add(MutationRow.groupOf(mutation));
+        for (final HistoryRow row : mutations) {
+            if (row instanceof final PathwayMutation change) {
+                groups.add(MutationRow.groupOf(change));
+            }
+        }
+        for (final HistoryRow row : mutations) {
+            if (row instanceof final PathwayDifference difference) {
+                groups.add(MutationRow.groupOfDay(difference.getDay()));
+            }
         }
         return groups;
     }
 
     /**
-     * A row per thing that changed the model — a trace, or one run of the narrowing — each holding
-     * the changes it made.
+     * A row per thing the rows beneath it belong to: a trace, one run of the narrowing, or a day.
      *
-     * <p>Everything one of them taught the model is written in one go, so its changes are always next
-     * to each other in the history and grouping them is a walk rather than a sort. They are grouped in
-     * the order they were made and the result turned round afterwards, so which way the list is sorted
-     * cannot split one in two.
+     * <p>Everything a trace taught the model is written in one go, so its changes are always next to
+     * each other in the history and grouping them is a walk rather than a sort. They are grouped in
+     * the order they were made and the result turned round afterwards, so which way the list is
+     * sorted cannot split one in two.
+     *
+     * <p>Days come last, because every one of them is older than the first change - a model comes
+     * into being with that change, and a day is only described this way where there is none - and
+     * this list is newest first.
      */
     private List<MutationRow> buildRows() {
-        final List<PathwayMutation> oldestFirst = new ArrayList<>(mutations);
+        final List<MutationRow> rows = new ArrayList<>();
+        final List<PathwayMutation> oldestFirst = new ArrayList<>(changes());
         oldestFirst.sort(PathwayMutation.comparator(PathwayMutation.FIELD_TIME, false));
 
         final List<List<PathwayMutation>> groups = new ArrayList<>();
@@ -667,7 +706,6 @@ public class PathwayMutationListPresenter extends MyPresenterWidget<PagerView> {
 
         Collections.reverse(groups);
 
-        final List<MutationRow> rows = new ArrayList<>();
         for (final List<PathwayMutation> group : groups) {
             // A trace stands where any one of its changes is one the table is showing, and then shows
             // only those — so narrowing to a node never breaks a change away from the thing that made
@@ -692,6 +730,28 @@ public class PathwayMutationListPresenter extends MyPresenterWidget<PagerView> {
                 }
             }
         }
+        rows.addAll(dayRows());
+        return rows;
+    }
+
+    // The days that had no change history of their own, newest first like everything else, each
+    // holding what moved between it and the day before.
+    private List<MutationRow> dayRows() {
+        final Map<Integer, List<PathwayDifference>> byDay = new TreeMap<>(Comparator.reverseOrder());
+        for (final HistoryRow row : mutations) {
+            if (row instanceof final PathwayDifference difference) {
+                byDay.computeIfAbsent(difference.getDay(), day -> new ArrayList<>()).add(difference);
+            }
+        }
+
+        final List<MutationRow> rows = new ArrayList<>();
+        byDay.forEach((day, differences) -> {
+            final boolean expanded = treeAction.isExpanded(MutationRow.groupOfDay(day));
+            rows.add(MutationRow.day(day, expanded));
+            if (expanded) {
+                differences.forEach(difference -> rows.add(MutationRow.difference(difference)));
+            }
+        });
         return rows;
     }
 
@@ -725,24 +785,23 @@ public class PathwayMutationListPresenter extends MyPresenterWidget<PagerView> {
         // so a row still says which trace made it when the list is copied out of the grid.
         addTraceIdColumn();
         addColumn(PathwayMutation.FIELD_SPAN_ID,
-                row -> ofChange(row, PathwayMutation::getSpanId),
+                row -> ofRow(row, HistoryRow::getSpanId),
                 SPAN_ID_COL);
 
         addColumn(PathwayMutation.FIELD_PATH,
-                row -> ofChange(row, mutation -> String.join(" / ", NullSafe.list(mutation.getNodePath()))),
+                row -> ofRow(row, value -> String.join(" / ", NullSafe.list(value.getNodePath()))),
                 400);
         addColumn(PathwayMutation.FIELD_CONSTRAINT,
-                row -> ofChange(row, PathwayMutation::getConstraint),
+                row -> ofRow(row, HistoryRow::getConstraint),
                 ColumnSizeConstants.MEDIUM_COL);
         addColumn(PathwayMutation.FIELD_TYPE,
-                row -> ofChange(row, mutation ->
-                        NullSafe.get(mutation.getType(), MutationType::getDisplayValue)),
+                row -> ofRow(row, HistoryRow::getTypeDisplayValue),
                 CHANGE_COL);
         addColumn(PathwayMutation.FIELD_OLD_VALUE,
-                row -> ofChange(row, mutation -> text(mutation, mutation.getOldValue())),
+                row -> ofRow(row, value -> text(value, value.getOldValue())),
                 ColumnSizeConstants.MEDIUM_COL);
         addColumn(PathwayMutation.FIELD_NEW_VALUE,
-                row -> ofChange(row, mutation -> text(mutation, mutation.getNewValue())),
+                row -> ofRow(row, value -> text(value, value.getNewValue())),
                 ColumnSizeConstants.MEDIUM_COL);
     }
 
@@ -762,11 +821,11 @@ public class PathwayMutationListPresenter extends MyPresenterWidget<PagerView> {
 
     // The columns below the trace describe one change, so a trace leaves them empty rather than
     // repeating itself across a row that stands for many.
-    private static String ofChange(final MutationRow row,
-                                   final Function<PathwayMutation, String> value) {
-        return row.isTrace()
+    private static String ofRow(final MutationRow row,
+                                final Function<HistoryRow, String> value) {
+        return row.isParent()
                 ? ""
-                : value.apply(row.getMutation());
+                : value.apply(row.getRow());
     }
 
     private Column<MutationRow, String> addColumn(final String name,
@@ -782,7 +841,19 @@ public class PathwayMutationListPresenter extends MyPresenterWidget<PagerView> {
     // A trace carries one value, so it can only push out one end of a range. Showing the whole range
     // reads as though the end that stayed put had moved as well. Where the constraint held a single
     // value before, that value was itself the end that moved, so it is shown as it stands.
-    private static String text(final PathwayMutation mutation, final ConstraintValue value) {
+    private static String text(final HistoryRow row, final ConstraintValue value) {
+        // Only a change says which end of a range it moved, so only a change shows that end on its
+        // own. A difference is two days compared and says what the whole bound was either side.
+        final PathwayMutation mutation = row instanceof final PathwayMutation change
+                ? change
+                : null;
+        if (mutation == null) {
+            return NullSafe.toString(value);
+        }
+        return textOfChange(mutation, value);
+    }
+
+    private static String textOfChange(final PathwayMutation mutation, final ConstraintValue value) {
         if (value instanceof AbstractRange) {
             final AbstractRange<?> range = (AbstractRange<?>) value;
             final Object end;

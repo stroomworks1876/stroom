@@ -221,7 +221,15 @@ final class PathwayFold {
         return latest;
     }
 
-    private static String identity(final List<String> path) {
+    /**
+     * What a model built from day records calls a node.
+     *
+     * <p>Shared rather than private because the differences between two days name their nodes the
+     * same way. A row that named a node differently from the drawing beside it could not pick it
+     * out, which is the whole reason this is worked out from the path rather than taken from a day
+     * record's own stand-in - that means nothing outside the record that wrote it.
+     */
+    static String identity(final List<String> path) {
         try {
             final MessageDigest digest = MessageDigest.getInstance("SHA-256");
             for (final String step : path) {

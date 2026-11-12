@@ -202,6 +202,32 @@ class TestReadingArchivedChanges {
     }
 
     @Test
+    void aChangePickedOutOfTheListIsStillFoundOnceItHasMovedToABucket() throws IOException {
+        // The table lists changes from the buckets as well as from the shard, so a row can be picked
+        // whose change the narrowing has already taken away. Winding back to it has to find it where
+        // it now lives. Where it does not, every change still in the shard counts as later than the
+        // one asked for and comes off the model, which leaves a drawing with nothing on it.
+        apply(trace("a", 10));
+        apply(trace("b", 20));
+        apply(trace("c", 30));
+        final long asAtMs = secondOfTheAppliedTimes();
+        final Long sequence = ShardedPathwayReader.lastChangeBy(liveChanges(), asAtMs);
+        final PathwayAsAt before =
+                reader.fetchPathwayAsAt(doc, OPERATION, range(asAtMs), sequence).orElseThrow();
+
+        archiveChanges();
+
+        final PathwayAsAt after =
+                reader.fetchPathwayAsAt(doc, OPERATION, range(asAtMs), sequence).orElseThrow();
+        assertThat(nodePaths(after))
+                .as("the same model, wound back through changes read out of the bucket")
+                .isEqualTo(nodePaths(before));
+        assertThat(changeCounts(after))
+                .as("and how busy each node was by then, which is how it is sized and coloured")
+                .isEqualTo(changeCounts(before));
+    }
+
+    @Test
     void theModelAsItStandsIsAnsweredWithoutOpeningABucket() throws IOException {
         apply(trace("a", 10));
         final Object asItStands = durationOf(asAt(null));
@@ -224,10 +250,10 @@ class TestReadingArchivedChanges {
         archiveChanges();
 
         final PathwayMutationResultPage after = changesListed();
-        assertThat(after.getValues().stream().map(PathwayMutation::getSequence))
+        assertThat(after.getValues().stream().map(row -> ((PathwayMutation) row).getSequence()))
                 .as("every change is still listed once, from wherever it now lives")
                 .containsExactlyElementsOf(before.getValues().stream()
-                        .map(PathwayMutation::getSequence)
+                        .map(row -> ((PathwayMutation) row).getSequence())
                         .toList());
         assertThat(after.getPageResponse().getTotal())
                 .as("and the total counts the joined list, not the live shard")

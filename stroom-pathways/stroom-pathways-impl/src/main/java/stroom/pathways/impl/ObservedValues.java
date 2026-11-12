@@ -87,15 +87,43 @@ final class ObservedValues {
             return strings(seen, observed);
         }
         if (seen instanceof BooleanValue || seen instanceof AnyBoolean) {
-            // Two different booleans is both of them, and there are only two. Anything else is a type
-            // change, which this gives up on the same way round as every other.
-            return observed instanceof BooleanValue
+            // Two different booleans is both of them, and there are only two. Either side may already
+            // be both, and folding that with one of them is still both - asked the other way round it
+            // would otherwise give up on the type, and a day would then depend on which of two
+            // accounts was read first. Anything that is not a boolean at all is a type change, which
+            // this gives up on the same way round as every other.
+            return observed instanceof BooleanValue || observed instanceof AnyBoolean
                     ? new AnyBoolean()
                     : new AnyTypeValue();
         }
         // Already says there was too much to list, or is a type this does not summarise. Either way
         // one more account tells it nothing it does not already admit.
         return seen;
+    }
+
+    /**
+     * Whether two values are the same kind of thing, in the sense {@link #add} groups them.
+     *
+     * <p>Here rather than with the caller because it is this method's own dispatch being described:
+     * a string and a set of strings are one kind, and so are a number, a set of them and a range of
+     * them. Telling that apart matters because {@code add} answers with "admits anything" for two
+     * reasons - the two were of different kinds, or there were simply too many to list - and only
+     * the first of those is a type changing.
+     */
+    static boolean sameKind(final ConstraintValue first, final ConstraintValue second) {
+        return first != null && second != null && kind(first) == kind(second);
+    }
+
+    private static int kind(final ConstraintValue value) {
+        return switch (value.valueType()) {
+            case DURATION_VALUE, DURATION_RANGE, DURATION_AT_LEAST, DURATION_AT_MOST -> 1;
+            case INTEGER, INTEGER_SET, INTEGER_RANGE -> 2;
+            case LONG, LONG_SET, LONG_RANGE -> 3;
+            case DOUBLE, DOUBLE_SET, DOUBLE_RANGE -> 4;
+            case STRING, STRING_SET, REGEX -> 5;
+            case BOOLEAN, ANY_BOOLEAN -> 6;
+            case ANY -> 7;
+        };
     }
 
     private static ConstraintValue times(final ConstraintValue a, final ConstraintValue b) {

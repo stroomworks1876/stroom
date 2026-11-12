@@ -1002,8 +1002,10 @@ public class NodeMutatorImpl {
                         final boolean optional) {
         final Constraint was = constraints.get(name);
         if (!(NullSafe.get(was, Constraint::getValue) instanceof AnyTypeValue)) {
-            // Not through put(): AnyTypeValue defines no equals, so every trace would look like a
-            // change. Recorded once, and thereafter only the count moves.
+            // Not through put(): that would work out what kind of change this was from the two
+            // values and call it a type conflict, when what happened is that the configuration
+            // names this one as not to be learnt. Recorded once, and thereafter only the count
+            // moves.
             record(pathNode, MutationType.CONSTRAINT_IGNORED, name, optional,
                     NullSafe.get(was, Constraint::getValue), new AnyTypeValue());
         }

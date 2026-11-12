@@ -34,6 +34,7 @@ import stroom.pathways.shared.PathwaysDoc;
 import stroom.pathways.shared.PathwaysResource;
 import stroom.pathways.shared.UpdatePathway;
 import stroom.pathways.shared.otel.trace.NanoTime;
+import stroom.pathways.shared.pathway.HistoryRow;
 import stroom.pathways.shared.pathway.PathNode;
 import stroom.pathways.shared.pathway.PathUse;
 import stroom.pathways.shared.pathway.Paths;
@@ -50,6 +51,7 @@ import stroom.util.shared.NullSafe;
 import stroom.util.shared.PageRequest;
 import stroom.util.shared.PageResponse;
 import stroom.widget.button.client.ButtonView;
+import stroom.widget.customdatebox.client.ClientDateUtil;
 import stroom.widget.menu.client.presenter.IconMenuItem;
 import stroom.widget.menu.client.presenter.Item;
 import stroom.widget.menu.client.presenter.ShowMenuEvent;
@@ -107,6 +109,9 @@ public class PathwayEditPresenter
     // where a row is clicked, so that a selection cleared without an event — which is how switching
     // tabs starts afresh — leaves nothing stale here to be compared against.
     private Long drawnChange;
+    // The moment the drawing was asked for. Kept beside the change because a day has no change, so
+    // two different days would otherwise read as the same position and the second would draw nothing.
+    private NanoTime drawnAt;
     private PathUse drawnPath;
     private DocRef docRef;
     // The name the pathway was opened under, which is what it is saved back against. Held rather than
@@ -121,7 +126,7 @@ public class PathwayEditPresenter
     // Whether the split between the drawing and the constraints has been set. Once only, so that
     // reading something else and coming back does not undo wherever the reader dragged it to.
     private boolean split;
-    private List<PathwayMutation> history = Collections.emptyList();
+    private List<HistoryRow> history = Collections.emptyList();
     // The span the tab is showing, and what the server sent back for it. One field rather than one
     // per reader, so the toolbar, the tables and the drawing cannot disagree about what is on screen.
     // Held as it was picked: a range is written as expressions, and resolving them happens where the
@@ -244,8 +249,10 @@ public class PathwayEditPresenter
         // same model back against a later clock, and a node is coloured by how long since it last
         // changed — so the whole drawing would come back older without anything having been learnt.
         registerHandler(mutationListPresenter.getSelectionModel().addSelectionHandler(e -> {
-            if (!Objects.equals(drawnChange, mutationListPresenter.getSelectedSequence())) {
-                showAtChange(mutationListPresenter.getSelectedSequence());
+            if (!Objects.equals(drawnChange, mutationListPresenter.getSelectedSequence())
+                || !Objects.equals(drawnAt, mutationListPresenter.getSelectedTime())) {
+                showAtPosition(mutationListPresenter.getSelectedTime(),
+                        mutationListPresenter.getSelectedSequence());
             }
         }));
         registerHandler(pathListPresenter.getSelectionModel().addSelectionHandler(e -> {
@@ -561,6 +568,7 @@ public class PathwayEditPresenter
         }
 
         drawnChange = mutationListPresenter.getSelectedSequence();
+        drawnAt = mutationListPresenter.getSelectedTime();
         drawnPath = pathListPresenter.getSelectionModel().getSelected();
 
         // Set before the model is read, because the nodes are picked out as the drawing is built. The
@@ -753,16 +761,24 @@ public class PathwayEditPresenter
         fetch(FetchPathwayRequest.over(docRef, name, wanted), this::show);
     }
 
-    // A change picked out of the table, or null to go back to the model as it stands. Only the
-    // drawing moves: the row picked is still a row of the same table, so rebuilding it would take
-    // the selection away and send the histogram back to where it started.
-    private void showAtChange(final Long sequence) {
-        if (sequence == null) {
+    // A row picked out of the table, or null to go back to the model as it stands. Only the drawing
+    // moves: the row picked is still a row of the same table, so rebuilding it would take the
+    // selection away and send the histogram back to where it started.
+    private void showAtPosition(final NanoTime time, final Long sequence) {
+        if (time == null && sequence == null) {
             // Nothing picked out, which is the range's own model - already fetched and still here.
             showPosition(rangeAsAt);
             return;
         }
-        fetch(FetchPathwayRequest.atChange(docRef, name, sequence), this::showPosition);
+        // The moment as well as the change. The change says which one of the several a single trace
+        // taught the model, and the moment says which week to look in for the ones that have moved
+        // out of the shard. A day has only the moment, and is folded rather than wound back. A change
+        // with no moment on it is still asked for by number, the way it was before either carried a
+        // moment at all.
+        final TimeRange at = time == null
+                ? null
+                : new TimeRange(null, null, ClientDateUtil.toISOString(time.toEpochMillis()));
+        fetch(FetchPathwayRequest.atChange(docRef, name, at, sequence), this::showPosition);
     }
 
     private void fetch(final FetchPathwayRequest request, final Consumer<PathwayAsAt> onSuccess) {

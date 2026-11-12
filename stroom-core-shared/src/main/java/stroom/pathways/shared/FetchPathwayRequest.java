@@ -83,10 +83,23 @@ public class FetchPathwayRequest {
         return new FetchPathwayRequest(pathwaysDocRef, name, timeRange, null);
     }
 
+    /**
+     * A row picked out of the changes list: the moment it sits at, and the change it is where it is
+     * one.
+     *
+     * <p>Both, because the number says which change and the moment says where to look for it. The
+     * narrowing moves changes the window has passed into the bucket for their week, and those are
+     * listed beside the ones still in the shard - so a wind-back given only a number would not find
+     * an archived change and would take every change it did find off the model instead.
+     *
+     * <p>A day has no change of its own, so it passes the moment and no number, and the model for it
+     * is folded rather than wound back.
+     */
     public static FetchPathwayRequest atChange(final DocRef pathwaysDocRef,
                                                final String name,
+                                               final TimeRange timeRange,
                                                final Long toSequence) {
-        return new FetchPathwayRequest(pathwaysDocRef, name, null, toSequence);
+        return new FetchPathwayRequest(pathwaysDocRef, name, timeRange, toSequence);
     }
 
     public DocRef getPathwaysDocRef() {

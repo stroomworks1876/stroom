@@ -22,6 +22,20 @@ import com.fasterxml.jackson.annotation.JsonInclude.Include;
 @JsonInclude(Include.NON_NULL)
 public final class AnyTypeValue implements ConstraintValue {
 
+    // Two of these say the same thing - admits anything, whatever its type - so they are the same
+    // value. Every other kind of value here compares by what it holds, through AbstractRange,
+    // AbstractSet or its own equals; this one holds nothing, so without this it would compare by
+    // identity and a value read back off disk would never equal the one it was written from.
+    @Override
+    public boolean equals(final Object o) {
+        return o instanceof AnyTypeValue;
+    }
+
+    @Override
+    public int hashCode() {
+        return AnyTypeValue.class.hashCode();
+    }
+
     @Override
     public String toString() {
         return "?";

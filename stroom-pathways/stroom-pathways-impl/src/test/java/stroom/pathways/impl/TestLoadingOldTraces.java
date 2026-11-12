@@ -18,10 +18,15 @@ package stroom.pathways.impl;
 
 import stroom.bytebuffer.impl6.ByteBufferFactoryImpl;
 import stroom.bytebuffer.impl6.ByteBuffers;
+import stroom.pathways.shared.FindPathwayMutationCriteria;
 import stroom.pathways.shared.PathwayAsAt;
+import stroom.pathways.shared.PathwayMutationResultPage;
 import stroom.pathways.shared.PathwaysDoc;
+import stroom.pathways.shared.pathway.DifferenceType;
 import stroom.pathways.shared.pathway.NamePathKey;
 import stroom.pathways.shared.pathway.Pathway;
+import stroom.pathways.shared.pathway.PathwayDifference;
+import stroom.pathways.shared.pathway.PathwayMutation;
 import stroom.planb.impl.PlanBConstants;
 import stroom.planb.impl.PlanBPaths;
 import stroom.planb.impl.dao.trace.NanoTimeUtil;
@@ -40,7 +45,9 @@ import stroom.planb.shared.SharedFileStoreSettings;
 import stroom.planb.shared.StateType;
 import stroom.planb.shared.TraceSettings;
 import stroom.query.api.TimeRange;
+import stroom.query.api.TimeRanges;
 import stroom.util.io.SimplePathCreator;
+import stroom.util.shared.PageRequest;
 import stroom.util.shared.time.SimpleDuration;
 import stroom.util.shared.time.TimeUnit;
 
@@ -299,6 +306,114 @@ class TestLoadingOldTraces {
     private PathwayAsAt fetchAt(final Instant when) {
         return reader().fetchPathwayAsAt(doc, OPERATION,
                 new TimeRange(null, null, null, when.toString()), null).orElseThrow();
+    }
+
+    @Test
+    void aRangeBeforeTheModelExistedListsWhatMovedBetweenItsDays() throws IOException {
+        // The point of the whole step. Those days have no change rows, so the table would be empty;
+        // what it lists instead is how each day's model differed from the day before's.
+        load(daysAgo(30), 1);
+        load(daysAgo(20), 2);
+        load(Instant.now(), 1);
+
+        final PathwayMutationResultPage listed = reader().findMutations(doc,
+                new FindPathwayMutationCriteria(new PageRequest(0, 1000), List.of(), null, OPERATION,
+                        new TimeRange(null, null, daysAgo(31).toString(), daysAgo(19).toString())));
+
+        assertThat(listed.getValues())
+                .as("rows for days the change history does not reach")
+                .isNotEmpty()
+                .allMatch(row -> row instanceof PathwayDifference);
+        assertThat(listed.getValues().stream()
+                .map(row -> ((PathwayDifference) row).getType())
+                .distinct())
+                .as("the nodes those days first carried")
+                .contains(DifferenceType.NODE_ARRIVED);
+    }
+
+    @Test
+    void todayStillListsWhatTheLearnerDid() throws IOException {
+        load(Instant.now(), 2);
+
+        final PathwayMutationResultPage listed = reader().findMutations(doc,
+                new FindPathwayMutationCriteria(new PageRequest(0, 1000), List.of(), null, OPERATION,
+                        null));
+
+        assertThat(listed.getValues())
+                .as("changes, because the history reaches today")
+                .isNotEmpty()
+                .allMatch(row -> row instanceof PathwayMutation);
+    }
+
+    @Test
+    void aRangeLeftOpenAtItsStartDoesNotFoldEveryDaySinceTheEpoch() {
+        // An open start resolves to the epoch. Nothing before the oldest bucket can hold a record,
+        // so folding back to 1970 would be fifty thousand shard reads for nothing.
+        final long started = System.currentTimeMillis();
+        final PathwayMutationResultPage listed = reader().findMutations(doc,
+                new FindPathwayMutationCriteria(new PageRequest(0, 1000), List.of(), null, OPERATION,
+                        new TimeRange(null, null, null, Instant.now().toString())));
+
+        assertThat(listed.getValues()).isEmpty();
+        assertThat(System.currentTimeMillis() - started)
+                .as("bounded by what exists, not by how far back the range reaches")
+                .isLessThan(10_000L);
+    }
+
+    @Test
+    void openingTheListWithNoRangeShowsTheOlderDaysToo() throws IOException {
+        // No range means the whole history, which is how the table is first opened. The days before
+        // the model existed are part of that history, so they are listed with everything else.
+        load(daysAgo(30), 2);
+        load(Instant.now(), 1);
+
+        final PathwayMutationResultPage listed = reader().findMutations(doc,
+                new FindPathwayMutationCriteria(new PageRequest(0, 1000), List.of(), null, OPERATION,
+                        null));
+
+        assertThat(listed.getValues())
+                .as("both kinds, because nothing was asked to be left out")
+                .anyMatch(row -> row instanceof PathwayDifference)
+                .anyMatch(row -> row instanceof PathwayMutation);
+    }
+
+    @Test
+    void aDayGivenNothingOfItsOwnIsNotDescribed() throws IOException {
+        // A day's model is a window of days folded together, so the day the oldest of them falls out
+        // behind the window's edge holds less than the day before it. Nothing happened on that day
+        // and it is not listed: a row there reads as the work having stopped when all it did was age
+        // out of the window.
+        load(daysAgo(30), 2);
+        load(Instant.now(), 1);
+
+        final PathwayMutationResultPage listed = reader().findMutations(doc,
+                new FindPathwayMutationCriteria(new PageRequest(0, 1000), List.of(), null, OPERATION,
+                        null));
+
+        assertThat(listed.getValues().stream()
+                .filter(row -> row instanceof PathwayDifference)
+                .map(row -> ((PathwayDifference) row).getDay())
+                .distinct())
+                .as("the day the traces ran, and no other")
+                .containsExactly(dayOf(daysAgo(30)));
+    }
+
+    @Test
+    void theAllTimeRangeShowsTheOlderDaysToo() throws IOException {
+        // All time is a range with both ends left open, not an absent one, and an open end resolves
+        // to the largest time there is. Counted in days that is more than the count will hold, so
+        // the end of the range has to be kept at the end rather than wrapping round to the start.
+        load(daysAgo(30), 2);
+        load(Instant.now(), 1);
+
+        final PathwayMutationResultPage listed = reader().findMutations(doc,
+                new FindPathwayMutationCriteria(new PageRequest(0, 1000), List.of(), null, OPERATION,
+                        TimeRanges.ALL_TIME));
+
+        assertThat(listed.getValues())
+                .as("both kinds, the same as asking with no range at all")
+                .anyMatch(row -> row instanceof PathwayDifference)
+                .anyMatch(row -> row instanceof PathwayMutation);
     }
 
     private ShardedPathwayReader reader() {

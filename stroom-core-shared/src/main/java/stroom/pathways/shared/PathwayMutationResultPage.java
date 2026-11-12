@@ -16,7 +16,7 @@
 
 package stroom.pathways.shared;
 
-import stroom.pathways.shared.pathway.PathwayMutation;
+import stroom.pathways.shared.pathway.HistoryRow;
 import stroom.util.shared.PageResponse;
 import stroom.util.shared.ResultPage;
 
@@ -25,7 +25,7 @@ import com.fasterxml.jackson.annotation.JsonProperty;
 
 import java.util.List;
 
-public class PathwayMutationResultPage extends ResultPage<PathwayMutation> {
+public class PathwayMutationResultPage extends ResultPage<HistoryRow> {
 
     /**
      * The span these rows were asked for, resolved, or null where none was asked for.
@@ -40,7 +40,7 @@ public class PathwayMutationResultPage extends ResultPage<PathwayMutation> {
     private final Long windowTo;
 
     @JsonCreator
-    public PathwayMutationResultPage(@JsonProperty("values") final List<PathwayMutation> values,
+    public PathwayMutationResultPage(@JsonProperty("values") final List<HistoryRow> values,
                                      @JsonProperty("pageResponse") final PageResponse pageResponse,
                                      @JsonProperty("windowFrom") final Long windowFrom,
                                      @JsonProperty("windowTo") final Long windowTo) {
@@ -49,7 +49,7 @@ public class PathwayMutationResultPage extends ResultPage<PathwayMutation> {
         this.windowTo = windowTo;
     }
 
-    public PathwayMutationResultPage(final List<PathwayMutation> values,
+    public PathwayMutationResultPage(final List<HistoryRow> values,
                                      final PageResponse pageResponse) {
         this(values, pageResponse, null, null);
     }

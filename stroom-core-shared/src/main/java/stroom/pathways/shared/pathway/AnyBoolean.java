@@ -26,6 +26,20 @@ public final class AnyBoolean implements ConstraintValue {
         return true;
     }
 
+    // Two of these say the same thing - admits either boolean - so they are the same value. Every
+    // other kind of value here compares by what it holds, through AbstractRange, AbstractSet or its
+    // own equals; this one holds nothing, so without this it would compare by identity and a value
+    // read back off disk would never equal the one it was written from.
+    @Override
+    public boolean equals(final Object o) {
+        return o instanceof AnyBoolean;
+    }
+
+    @Override
+    public int hashCode() {
+        return AnyBoolean.class.hashCode();
+    }
+
     @Override
     public ConstraintValueType valueType() {
         return ConstraintValueType.ANY_BOOLEAN;

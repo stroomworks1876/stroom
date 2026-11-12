@@ -17,6 +17,8 @@
 package stroom.pathways.client.presenter;
 
 import stroom.pathways.shared.otel.trace.NanoTime;
+import stroom.pathways.shared.pathway.HistoryRow;
+import stroom.pathways.shared.pathway.PathwayDifference;
 import stroom.pathways.shared.pathway.PathwayMutation;
 import stroom.util.shared.Expander;
 import stroom.util.shared.NullSafe;
@@ -35,7 +37,7 @@ import java.util.Objects;
  */
 class MutationRow implements TreeRow {
 
-    private final PathwayMutation mutation;
+    private final HistoryRow row;
     private final String traceId;
     private final String group;
     private final NanoTime time;
@@ -43,14 +45,14 @@ class MutationRow implements TreeRow {
     private final long sequence;
     private final Expander expander;
 
-    private MutationRow(final PathwayMutation mutation,
+    private MutationRow(final HistoryRow row,
                         final String traceId,
                         final String group,
                         final NanoTime time,
                         final NanoTime ranAt,
                         final long sequence,
                         final Expander expander) {
-        this.mutation = mutation;
+        this.row = row;
         this.traceId = traceId;
         this.group = group;
         this.time = time;
@@ -76,6 +78,35 @@ class MutationRow implements TreeRow {
     }
 
     /**
+     * The row a day's differences sit under.
+     *
+     * <p>A day rather than a trace, because no trace made these: they are two days compared, and the
+     * day is the whole of where they sit in time. No sequence either - picking this shows the model
+     * as that day ended, which is what picking the date does, rather than a place in a history that
+     * has none for these days.
+     */
+    static MutationRow day(final int day, final boolean expanded) {
+        return new MutationRow(null, null, groupOfDay(day), NanoTime.ofMillis(endOfDay(day)), null,
+                NO_SEQUENCE, new Expander(0, expanded, false));
+    }
+
+    static MutationRow difference(final PathwayDifference difference) {
+        return new MutationRow(difference, difference.getTraceId(), groupOfDay(difference.getDay()),
+                NanoTime.ofMillis(endOfDay(difference.getDay())), difference.getRanAt(),
+                NO_SEQUENCE, new Expander(1, false, true));
+    }
+
+    static String groupOfDay(final int day) {
+        return "day:" + day;
+    }
+
+    // A date means the end of the day it names, which is the moment the model it stands for was
+    // folded at.
+    private static long endOfDay(final int day) {
+        return ((day + 1L) * 86_400_000L) - 1L;
+    }
+
+    /**
      * What ties a change to the row it sits under.
      *
      * <p>A trace writes everything it taught the model in one go, so its id names the group. The
@@ -90,15 +121,26 @@ class MutationRow implements TreeRow {
                 : "narrowed:" + NullSafe.get(mutation.getTime(), NanoTime::toEpochNanos);
     }
 
+    /** A row with no sequence, because nothing can be stepped to for the day it describes. */
+    static final long NO_SEQUENCE = -1L;
+
     /**
-     * The change this row shows, or null where the row is the trace that made them.
+     * What this row shows, or null where the row is the thing the rows beneath it sit under - the
+     * trace that made them, or the day they were found on.
      */
-    PathwayMutation getMutation() {
-        return mutation;
+    HistoryRow getRow() {
+        return row;
     }
 
-    boolean isTrace() {
-        return mutation == null;
+    /** The change this row shows, or null where it shows anything else. */
+    PathwayMutation getMutation() {
+        return row instanceof final PathwayMutation mutation
+                ? mutation
+                : null;
+    }
+
+    boolean isParent() {
+        return row == null;
     }
 
     String getTraceId() {
@@ -147,12 +189,16 @@ class MutationRow implements TreeRow {
         if (o == null || getClass() != o.getClass()) {
             return false;
         }
-        final MutationRow row = (MutationRow) o;
-        return sequence == row.sequence && isTrace() == row.isTrace();
+        final MutationRow other = (MutationRow) o;
+        // The group and the row itself as well as the sequence: a difference has no sequence, so
+        // every difference row would otherwise be the same row as every other.
+        return sequence == other.sequence
+               && Objects.equals(group, other.group)
+               && Objects.equals(row, other.row);
     }
 
     @Override
     public int hashCode() {
-        return Objects.hash(sequence, isTrace());
+        return Objects.hash(sequence, group, row);
     }
 }

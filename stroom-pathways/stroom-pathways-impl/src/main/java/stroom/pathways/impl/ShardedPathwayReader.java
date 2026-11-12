@@ -25,11 +25,13 @@ import stroom.pathways.shared.PathwayResultPage;
 import stroom.pathways.shared.PathwaySummary;
 import stroom.pathways.shared.PathwaysDoc;
 import stroom.pathways.shared.otel.trace.NanoTime;
+import stroom.pathways.shared.pathway.HistoryRow;
 import stroom.pathways.shared.pathway.MutationCounts;
 import stroom.pathways.shared.pathway.NodeChange;
 import stroom.pathways.shared.pathway.NodeUsage;
 import stroom.pathways.shared.pathway.PathNode;
 import stroom.pathways.shared.pathway.Pathway;
+import stroom.pathways.shared.pathway.PathwayDifference;
 import stroom.pathways.shared.pathway.PathwayMutation;
 import stroom.pathways.shared.pathway.PathwayReplay;
 import stroom.pathways.shared.pathway.PathwayUsage;
@@ -60,6 +62,9 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
+import java.util.SortedSet;
+import java.util.TreeSet;
 import java.util.function.Consumer;
 import java.util.function.Function;
 
@@ -210,7 +215,17 @@ public class ShardedPathwayReader {
         final int shard = ShardKeyRouter.computeShardIndex(name, shardCountOf(settings));
         final byte[] keyBytes = name.getBytes(StandardCharsets.UTF_8);
         final List<PathwayMutation> live = new ArrayList<>();
+        // The model's own row as well as its changes, because where the range reaches back past the
+        // moment it came into being there are no changes to list for those days and they have to be
+        // worked out instead.
+        final Pathway[] found = {null};
         readShard(doc, shard, db -> {
+            withKey(name, keyBuffer -> db.getPathways().get(keyBuffer, valueBuffer -> {
+                if (valueBuffer != null) {
+                    found[0] = pathwaySerde.readPathway(valueBuffer);
+                }
+                return null;
+            }));
             live.addAll(mutationLog.read(db.getMutations(), keyBytes));
             return null;
         });
@@ -237,10 +252,13 @@ public class ShardedPathwayReader {
             mutations.removeIf(mutation -> outside(mutation, window));
         }
 
-        mutations.sort(mutationComparator(criteria.getSortList()));
+        final List<HistoryRow> rows = new ArrayList<>(
+                differences(doc, shard, keyBytes, found[0], window));
+        rows.addAll(mutations);
+        rows.sort(rowComparator(criteria.getSortList()));
 
         final PageRequest pageRequest = criteria.getPageRequest();
-        final List<PathwayMutation> page = mutations.stream()
+        final List<HistoryRow> page = rows.stream()
                 .skip(pageRequest.getOffset())
                 .limit(pageRequest.getLength())
                 .toList();
@@ -248,7 +266,7 @@ public class ShardedPathwayReader {
                 .builder()
                 .offset(pageRequest.getOffset())
                 .length(page.size())
-                .total((long) mutations.size())
+                .total((long) rows.size())
                 .exact(true)
                 .build();
         // The span asked for, resolved, so the plot over these rows covers what was picked rather
@@ -256,6 +274,210 @@ public class ShardedPathwayReader {
         return new PathwayMutationResultPage(page, pageResponse,
                 bound(window, TimeFilter::getFrom, 0L),
                 bound(window, TimeFilter::getTo, Long.MAX_VALUE));
+    }
+
+    /**
+     * How each day in the range differed from the day before, for the days the change history does
+     * not reach.
+     *
+     * <p>Worked out here rather than stored. Only the days that were given traces of their own are
+     * described, and where two of those run together the first one's fold is handed on as the
+     * second one's "before" rather than being folded again.
+     *
+     * <p>Only days before the model came into being. From that day on there are change rows, and a
+     * day would otherwise be listed twice in two vocabularies.
+     */
+    private List<PathwayDifference> differences(final PathwaysDoc doc,
+                                                final int shard,
+                                                final byte[] keyBytes,
+                                                final Pathway pathway,
+                                                final TimeFilter window) {
+        if (pathway == null) {
+            return List.of();
+        }
+        // No range asked for means the whole history, the same as it does for the changes beside
+        // these - so every day the model existed before is described, not none of them.
+        final int lastDay = Math.min(window == null
+                        ? Integer.MAX_VALUE
+                        : dayOf(window.getTo()),
+                lastDayBeforeTheModel(pathway));
+        // Never further back than the oldest bucket. A range left open at its start resolves to the
+        // epoch, and folding every day since would be fifty thousand shard reads for an answer that
+        // is empty until the first bucket - a day before the model came into being can only have a
+        // record in a bucket, because the trace that made the model is the one that created it.
+        final int firstDay = Math.max(window == null
+                        ? Integer.MIN_VALUE
+                        : dayOf(window.getFrom()),
+                oldestArchivedDay(doc, shard));
+        if (lastDay < firstDay) {
+            return List.of();
+        }
+
+        final ByteBuffer prefix = TraceProcessor.observedValuesPrefix(keyBytes);
+        final List<PathwayDifference> differences = new ArrayList<>();
+        DayRecord carried = null;
+        int carriedDay = Integer.MIN_VALUE;
+        for (final int day : daysGiven(doc, shard, prefix, firstDay, lastDay)) {
+            // The day before, so the day reads as what it changed rather than as though everything
+            // on it arrived at once. Carried over where the days run together, because one day's
+            // fold is the next day's "before" and folding both ends of every day doubles the work.
+            final DayRecord before = carriedDay == day - 1
+                    ? carried
+                    : foldOf(doc, shard, prefix, day - 1);
+            final DayRecord after = foldOf(doc, shard, prefix, day);
+            differences.addAll(DayDifferences.between(before, after, day));
+            carried = after;
+            carriedDay = day;
+        }
+        return differences;
+    }
+
+    /**
+     * The days in the range that were given traces of their own, oldest first.
+     *
+     * <p>Only these are described. A day's model is a window of days folded together, so the day the
+     * oldest of them falls out behind the window's edge holds less than the day before it. Nothing
+     * happened on that day - the traces simply aged out - and a row saying the work had gone would
+     * be read as the work having stopped.
+     *
+     * <p>The day is in the key, so this reads no records and decodes nothing. It also decides how
+     * much folding there is to do: a range of a year where two days were given something costs two
+     * days of folding rather than three hundred and sixty five.
+     */
+    private SortedSet<Integer> daysGiven(final PathwaysDoc doc,
+                                         final int shard,
+                                         final ByteBuffer prefix,
+                                         final int firstDay,
+                                         final int lastDay) {
+        final SortedSet<Integer> days = new TreeSet<>();
+        readShard(doc, shard, db -> {
+            daysOf(db, prefix, firstDay, lastDay, days);
+            return null;
+        });
+        eachWeekIn(doc, shard, startOfDay(firstDay), endOfDay(lastDay), db ->
+                daysOf(db, prefix, firstDay, lastDay, days));
+        return days;
+    }
+
+    private static void daysOf(final PathwaysDb db,
+                               final ByteBuffer prefix,
+                               final int firstDay,
+                               final int lastDay,
+                               final Set<Integer> days) {
+        db.getObservedValues().iteratePrefix(prefix.duplicate(), (key, value) -> {
+            final int day = TraceProcessor.dayOf(key);
+            if (day >= firstDay && day <= lastDay) {
+                days.add(day);
+            }
+        });
+    }
+
+    /**
+     * The first day any bucket could hold a record for, or a day after the end of time where there
+     * are none.
+     *
+     * <p>One directory listing. The buckets are named for the week they cover, so the oldest name is
+     * the oldest day that can have anything in it.
+     */
+    private int oldestArchivedDay(final PathwaysDoc doc, final int shard) {
+        final List<String> weeks;
+        try {
+            weeks = shardStore.archivedWeeks(doc, shard);
+        } catch (final IOException | RuntimeException e) {
+            LOGGER.error(() -> "Could not list the buckets of shard " + shard + " of " + doc.getName()
+                               + ", so no day before the model came into being is described: "
+                               + e.getMessage(), e);
+            return Integer.MAX_VALUE;
+        }
+        int oldest = Integer.MAX_VALUE;
+        for (final String week : weeks) {
+            final BucketGranularity granularity = BucketGranularityUtil.detect(week);
+            final Instant start = granularity == null
+                    ? null
+                    : BucketGranularityUtil.bucketStart(granularity, week);
+            if (start != null) {
+                oldest = Math.min(oldest, dayOf(start.toEpochMilli()));
+            }
+        }
+        return oldest;
+    }
+
+    // The last day that has no change row of its own. A model comes into being with its first
+    // change, so everything before that day is answered by folding and everything after by the
+    // history itself.
+    private static int lastDayBeforeTheModel(final Pathway pathway) {
+        return pathway.getCreateTime() == null
+                ? Integer.MIN_VALUE
+                : dayOf(pathway.getCreateTime().toEpochMillis()) - 1;
+    }
+
+    private DayRecord foldOf(final PathwaysDoc doc,
+                             final int shard,
+                             final ByteBuffer prefix,
+                             final int day) {
+        final int oldestDay = PathwayNarrower.oldestDayInWindow(doc, day);
+        final DayRecord[] live = {DayRecord.empty()};
+        readShard(doc, shard, db -> {
+            live[0] = daysIn(db, prefix, oldestDay, day);
+            return null;
+        });
+        return DayRecord.merge(live[0], bucketDays(doc, shard, prefix, oldestDay, day));
+    }
+
+    /**
+     * How the table orders both kinds of row.
+     *
+     * <p>Sorting by time puts every difference before every change, because a model comes into being
+     * with its first change and a difference describes a day before that. Within the differences the
+     * day is the order; within the changes it is the sequence, because every change one trace made
+     * carries the same timestamp and ordering on that alone would shuffle changes that happened in a
+     * definite order. Sorting by anything else puts the two kinds among each other on the value of
+     * whichever column was picked, which is why they travel in one list.
+     */
+    private static Comparator<HistoryRow> rowComparator(final List<CriteriaFieldSort> sortList) {
+        Comparator<HistoryRow> comparator = null;
+        for (final CriteriaFieldSort sort : NullSafe.list(sortList)) {
+            final Comparator<HistoryRow> field = rowComparator(sort.getId(), sort.isDesc());
+            comparator = comparator == null
+                    ? field
+                    : comparator.thenComparing(field);
+        }
+        return comparator == null
+                ? rowComparator(PathwayMutation.FIELD_TIME, true)
+                : comparator;
+    }
+
+    private static Comparator<HistoryRow> rowComparator(final String field, final boolean descending) {
+        final Comparator<HistoryRow> comparator =
+                PathwayMutation.FIELD_TIME.equals(field) || PathwayMutation.FIELD_TRACE_TIME.equals(field)
+                        ? Comparator.comparingLong(ShardedPathwayReader::inOrder)
+                        : Comparator.comparing(row -> text(row, field),
+                                Comparator.nullsFirst(Comparator.naturalOrder()));
+        return descending
+                ? comparator.reversed()
+                : comparator;
+    }
+
+    // Where a row sits when the list is ordered by time. Differences first, by the day they describe;
+    // changes after, by their place in the history. Kept apart by the offset rather than by comparing
+    // a day against an instant, because the two are not on the same clock.
+    private static long inOrder(final HistoryRow row) {
+        return row instanceof final PathwayDifference difference
+                ? Long.MIN_VALUE + difference.getDay()
+                : ((PathwayMutation) row).getSequence();
+    }
+
+    private static String text(final HistoryRow row, final String field) {
+        return switch (field) {
+            case PathwayMutation.FIELD_TYPE -> row.getTypeDisplayValue();
+            case PathwayMutation.FIELD_PATH -> String.join(" / ", NullSafe.list(row.getNodePath()));
+            case PathwayMutation.FIELD_CONSTRAINT -> row.getConstraint();
+            case PathwayMutation.FIELD_OLD_VALUE -> NullSafe.toString(row.getOldValue());
+            case PathwayMutation.FIELD_NEW_VALUE -> NullSafe.toString(row.getNewValue());
+            case PathwayMutation.FIELD_TRACE_ID -> row.getTraceId();
+            case PathwayMutation.FIELD_SPAN_ID -> row.getSpanId();
+            default -> null;
+        };
     }
 
     // Ordered the way the view orders it, so the two cannot drift apart. Newest first where nothing
@@ -796,8 +1018,12 @@ public class ShardedPathwayReader {
         return PathwayNarrower.oldestDayInWindow(doc, dayOf(asAtMs));
     }
 
+    // The end of a range left open is Long.MAX_VALUE, which is more days than an int can hold. Left
+    // to wrap it comes out as a large negative day, and a range that asked for everything describes
+    // nothing. So the ends of the count stay at the ends.
     private static int dayOf(final long millis) {
-        return (int) (millis / TraceProcessor.MILLIS_PER_DAY);
+        final long day = millis / TraceProcessor.MILLIS_PER_DAY;
+        return (int) Math.max(Integer.MIN_VALUE, Math.min(Integer.MAX_VALUE, day));
     }
 
     private static long startOfDay(final int day) {
