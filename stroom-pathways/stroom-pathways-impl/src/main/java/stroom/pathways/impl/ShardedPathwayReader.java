@@ -25,6 +25,7 @@ import stroom.pathways.shared.PathwayResultPage;
 import stroom.pathways.shared.PathwaySummary;
 import stroom.pathways.shared.PathwaysDoc;
 import stroom.pathways.shared.otel.trace.NanoTime;
+import stroom.pathways.shared.pathway.DifferenceType;
 import stroom.pathways.shared.pathway.HistoryBar;
 import stroom.pathways.shared.pathway.HistoryRow;
 import stroom.pathways.shared.pathway.MutationCounts;
@@ -726,16 +727,138 @@ public class ShardedPathwayReader {
         final PathwayFold fold = new PathwayFold(DayRecord.merge(fromTheShard,
                 bucketDays(doc, shard, prefix, oldestDayOfWindow(doc, asAtMs), day)));
         final Pathway model = fold.model(pathway.getPathKey(), pathway.getName());
+        final Map<String, NodeChange> changes =
+                shapeChanges(doc, shard, prefix, oldestDayOfWindow(doc, asAtMs), day);
         // Scaled against its own window rather than against the learnt model's lifetime. The learnt
-        // figures mean nothing here: a folded node has no count of changes, and the uses a day
-        // record carries are that day's rather than every day's.
+        // figures mean nothing here: a folded node has never been through the learner, so it has no
+        // count of its own, and the uses a day record carries are that day's rather than every day's.
         return new PathwayAsAt(model,
-                Map.of(),
+                changes,
                 fold.usage(),
                 NanoTime.ofMillis(asAtMs),
-                mostChanged(model.getRoot()),
+                most(changes),
                 mostUsed(model.getRoot()),
                 true);
+    }
+
+    /**
+     * How much each node of a folded model changed shape over the window it was folded from, and
+     * when it last did.
+     *
+     * <p>The drawing sizes a node by how much it has changed and colours it by how long ago. A learnt
+     * node carries both because the learner raised them as it went. A folded node went through
+     * nothing, so they are worked out here by comparing each day in the window with the day before.
+     *
+     * <p>Named the way the folded model names its nodes, which is a stand-in worked out from the
+     * span path. Keyed any other way the drawing finds nothing and comes out empty.
+     */
+    private Map<String, NodeChange> shapeChanges(final PathwaysDoc doc,
+                                                 final int shard,
+                                                 final ByteBuffer prefix,
+                                                 final int firstDay,
+                                                 final int lastDay) {
+        // Every record the folds will need, read once. Each day's fold reaches back a window, and the
+        // day before the first has a window of its own, so this goes back two of them. Read a day at
+        // a time instead, a week-long window would open the shard and its buckets nine times over to
+        // draw one picture.
+        final Map<Integer, DayRecord> byDay = dayRecordsIn(doc, shard, prefix,
+                PathwayNarrower.oldestDayInWindow(doc, firstDay - 1), lastDay);
+
+        final Map<String, long[]> counted = new HashMap<>();
+        final Map<String, NanoTime> moved = new HashMap<>();
+        DayRecord before = foldFrom(doc, byDay, firstDay - 1);
+        for (int day = firstDay; day <= lastDay; day++) {
+            final DayRecord after = foldFrom(doc, byDay, day);
+            for (final PathwayDifference difference : DayDifferences.between(before, after, day)) {
+                if (!changedShape(difference.getType())) {
+                    continue;
+                }
+                counted.computeIfAbsent(difference.getNodeUuid(), uuid -> new long[1])[0]++;
+                if (difference.getRanAt() != null
+                    && (moved.get(difference.getNodeUuid()) == null
+                        || difference.getRanAt().toEpochMillis()
+                           > moved.get(difference.getNodeUuid()).toEpochMillis())) {
+                    moved.put(difference.getNodeUuid(), difference.getRanAt());
+                }
+            }
+            before = after;
+        }
+
+        final Map<String, NodeChange> changes = new HashMap<>(counted.size());
+        counted.forEach((uuid, count) ->
+                changes.put(uuid, new NodeChange(count[0], moved.get(uuid))));
+        return changes;
+    }
+
+    /**
+     * Whether a difference says the work itself changed, rather than a bound drifting.
+     *
+     * <p>A node is sized by these alone. Timing bounds move on nearly every node every day simply
+     * because runs vary - three quarters of everything the learner writes is that - so counting them
+     * would give every node much the same figure and the sizes would say nothing. What is left is a
+     * node or a constraint arriving or going, a value changing kind, and a constraint starting or
+     * stopping being allowed to be absent.
+     */
+    private static boolean changedShape(final DifferenceType type) {
+        return switch (type) {
+            case NODE_ARRIVED, NODE_LEFT, CONSTRAINT_ARRIVED, CONSTRAINT_LEFT, TYPE_CHANGED,
+                 BECAME_OPTIONAL, BECAME_REQUIRED -> true;
+            case WIDENED, NARROWED, SHIFTED -> false;
+        };
+    }
+
+    private static long most(final Map<String, NodeChange> changes) {
+        long most = 0L;
+        for (final NodeChange change : changes.values()) {
+            most = Math.max(most, change.getCount());
+        }
+        return most;
+    }
+
+    // Every day record of one pathway over a span, from wherever it lives, keyed by its day. Two days
+    // can hold a record apiece in the shard and in a bucket where a narrowing was interrupted between
+    // storing and dropping, so they are merged rather than one replacing the other.
+    private Map<Integer, DayRecord> dayRecordsIn(final PathwaysDoc doc,
+                                                 final int shard,
+                                                 final ByteBuffer prefix,
+                                                 final int fromDay,
+                                                 final int toDay) {
+        final Map<Integer, DayRecord> byDay = new HashMap<>();
+        readShard(doc, shard, db -> {
+            eachRecord(db, prefix, fromDay, toDay, byDay);
+            return null;
+        });
+        eachWeekIn(doc, shard, startOfDay(fromDay), endOfDay(toDay), db ->
+                eachRecord(db, prefix, fromDay, toDay, byDay));
+        return byDay;
+    }
+
+    private void eachRecord(final PathwaysDb db,
+                            final ByteBuffer prefix,
+                            final int fromDay,
+                            final int toDay,
+                            final Map<Integer, DayRecord> byDay) {
+        db.getObservedValues().iteratePrefix(prefix.duplicate(), (key, value) -> {
+            final int day = TraceProcessor.dayOf(key);
+            if (day >= fromDay && day <= toDay) {
+                byDay.merge(day, pathwaySerde.readObservedValues(value), DayRecord::merge);
+            }
+        });
+    }
+
+    // The model for one day, out of records already in hand. The same window the narrowing measures
+    // by, so a day aged out under one and folded under the other cannot disagree.
+    private static DayRecord foldFrom(final PathwaysDoc doc,
+                                      final Map<Integer, DayRecord> byDay,
+                                      final int day) {
+        DayRecord folded = DayRecord.empty();
+        for (int d = PathwayNarrower.oldestDayInWindow(doc, day); d <= day; d++) {
+            final DayRecord record = byDay.get(d);
+            if (record != null) {
+                folded = DayRecord.merge(folded, record);
+            }
+        }
+        return folded;
     }
 
     // The latest time the range covers, or null where it has no end - which is the model as it

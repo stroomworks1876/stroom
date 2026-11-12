@@ -25,6 +25,7 @@ import stroom.pathways.shared.PathwaysDoc;
 import stroom.pathways.shared.pathway.DifferenceType;
 import stroom.pathways.shared.pathway.HistoryBar;
 import stroom.pathways.shared.pathway.NamePathKey;
+import stroom.pathways.shared.pathway.NodeChange;
 import stroom.pathways.shared.pathway.Pathway;
 import stroom.pathways.shared.pathway.PathwayDifference;
 import stroom.pathways.shared.pathway.PathwayMutation;
@@ -297,11 +298,51 @@ class TestLoadingOldTraces {
                 .as("the busiest node over the window folded, not over the model's whole life")
                 .isEqualTo(3L);
         assertThat(asAt.getChangeCeiling())
-                .as("nothing folded has been through the learner, so nothing has changed")
-                .isZero();
+                .as("the most any node changed shape over the window, not over the model's life")
+                .isEqualTo(1L);
         assertThat(asAt.getUsage().keySet())
                 .as("named the way the model names its nodes, or the drawing finds neither")
                 .isEqualTo(Set.of(asAt.getPathway().getRoot().getUuid()));
+    }
+
+    @Test
+    void aFoldedNodeIsSizedByWhatChangedShape() throws IOException {
+        // The drawing sizes a node by how much it has changed and colours it by how long ago. A
+        // folded node went through the learner for neither, so both are worked out by comparing the
+        // days in its window.
+        final Instant old = daysAgo(400);
+        load(old, 1);
+        load(Instant.now(), 1);
+
+        final PathwayAsAt asAt = fetchAt(old);
+
+        assertThat(asAt.getChanges().keySet())
+                .as("named the way the folded model names its nodes, or the drawing finds nothing")
+                .isEqualTo(Set.of(asAt.getPathway().getRoot().getUuid()));
+        final NodeChange change = asAt.getChanges().get(asAt.getPathway().getRoot().getUuid());
+        assertThat(change.getCount())
+                .as("the node arrived that day, which is one change of shape")
+                .isEqualTo(1L);
+        assertThat(change.getLastUpdated())
+                .as("and when the trace that brought it ran, which is the colour")
+                .isNotNull();
+    }
+
+    @Test
+    void aBoundDriftingIsNotAChangeOfShape() throws IOException {
+        // Timing bounds move on nearly every node every day because runs vary. Counting those would
+        // give every node much the same figure and the sizes would say nothing.
+        final Instant first = daysAgo(400);
+        load(first, 1, 20L);
+        load(first.plus(1, ChronoUnit.DAYS), 1, 90L);
+        load(Instant.now(), 1);
+
+        final PathwayAsAt asAt = fetchAt(first.plus(1, ChronoUnit.DAYS));
+
+        final NodeChange change = asAt.getChanges().get(asAt.getPathway().getRoot().getUuid());
+        assertThat(change.getCount())
+                .as("the arrival on the first day and nothing for the duration widening on the second")
+                .isEqualTo(1L);
     }
 
     private PathwayAsAt fetchAt(final Instant when) {
@@ -510,6 +551,13 @@ class TestLoadingOldTraces {
     // Traces whose work ran at the given moment, written as a real queue item and handed to the real
     // processor the way the merge hands one over.
     private void load(final Instant ran, final int traceCount) throws IOException {
+        load(ran, traceCount, 20L);
+    }
+
+    // The duration is what a second day can move without changing the shape of anything, which is the
+    // whole of what a folded node's size leaves out.
+    private void load(final Instant ran, final int traceCount, final long durationMs)
+            throws IOException {
         final List<byte[]> traceIds = new ArrayList<>();
         try (final TraceDb bucket = TraceDb.create(
                 bucketDir, BYTE_BUFFERS, BYTE_BUFFER_FACTORY, tracesDoc, false)) {
@@ -526,7 +574,8 @@ class TestLoadingOldTraces {
                             SpanValue.builder()
                                     .name(OPERATION)
                                     .startTimeUnixNano(NanoTimeUtil.fromInstant(ran))
-                                    .endTimeUnixNano(NanoTimeUtil.fromInstant(ran.plusMillis(20)))
+                                    .endTimeUnixNano(
+                                            NanoTimeUtil.fromInstant(ran.plusMillis(durationMs)))
                                     .insertTime(NanoTimeUtil.fromInstant(Instant.now()))
                                     .build()));
                 }
