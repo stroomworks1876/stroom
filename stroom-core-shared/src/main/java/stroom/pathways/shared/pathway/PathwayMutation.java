@@ -135,6 +135,29 @@ public class PathwayMutation implements HistoryRow {
     }
 
     /**
+     * What ties a change to the thing that made it.
+     *
+     * <p>A trace writes everything it taught the model in one go, so its id names the group. The
+     * narrowing has no trace to name, and naming none would put every change it has ever made under
+     * one name: opening one run would open them all, and picking one out would pick out the lot.
+     * Every change a single run makes to a pathway is stamped with the same instant, so that names it
+     * instead.
+     *
+     * <p>Here rather than beside either caller because the view groups its rows by this and the
+     * reader counts the plot's bars by it, and two rules would have the bars disagree with the rows
+     * they stand over.
+     */
+    public static String groupOf(final PathwayMutation mutation) {
+        if (mutation.getTraceId() != null) {
+            return mutation.getTraceId();
+        }
+        final NanoTime time = mutation.getTime();
+        return "narrowed:" + (time == null
+                ? null
+                : time.toEpochNanos());
+    }
+
+    /**
      * Orders changes by one of the columns a grid offers, or by sequence where the name is not one of
      * them. Here rather than beside either caller because both the reader and the view sort by the
      * same names and must agree on what they mean.

@@ -17,6 +17,7 @@
 package stroom.pathways.client.presenter;
 
 import stroom.pathways.shared.TraceHistogram;
+import stroom.pathways.shared.pathway.HistoryBar;
 import stroom.preferences.client.DateTimeFormatter;
 import stroom.util.client.NumberUtil;
 import stroom.util.shared.ModelStringUtil;
@@ -33,6 +34,7 @@ import com.google.gwt.user.client.Event;
 import com.google.gwt.user.client.ui.Composite;
 import com.google.gwt.user.client.ui.HTML;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
 import java.util.function.BiConsumer;
@@ -47,7 +49,20 @@ public class HistogramWidget extends Composite {
 
     private final HTML panel = new HTML();
     private final DateTimeFormatter dateTimeFormatter;
+    // Held only for what a histogram knows beside its bars: whether a bucket is worth narrowing to,
+    // and the window limit the hint names. Null where the bars came from a pathway's history, which
+    // has neither.
     private TraceHistogram data;
+    // What is drawn, whichever of the two set it. Every bar gets the same room on screen, so a bar
+    // covering a whole day sits beside one covering a few minutes without either being squeezed.
+    // That makes the plot a run of bars rather than a clock, which is what laying them out by time
+    // would make it - and a clock would give a fortnight of described days the whole panel and the
+    // changes a sliver at the end.
+    private List<HistoryBar> bars = List.of();
+    // The last moment the plot covers. Not the last bar's own end: a histogram's buckets are rounded
+    // out past the window so the axis holds still between requests, and its label says where that
+    // rounding got to rather than a millisecond short of it.
+    private long spanEndMs;
     private boolean rendered;
     private BiConsumer<Long, Long> zoomHandler;
     // What to say when there is no histogram to draw. The default talks about narrowing a time range,
@@ -88,7 +103,7 @@ public class HistogramWidget extends Composite {
                 e.preventDefault();
                 return;
             }
-            if (zoomHandler == null || data == null || !data.isAvailable() || !drillable()
+            if (zoomHandler == null || bars.isEmpty() || !drillable()
                     || !MouseUtil.isPrimary(e.getNativeEvent())) {
                 return;
             }
@@ -97,10 +112,8 @@ public class HistogramWidget extends Composite {
                     element, el -> el.hasAttribute("data-bucket-index"), 5);
             if (bar != null) {
                 final int index = parseIndex(bar.getAttribute("data-bucket-index"));
-                if (index >= 0) {
-                    final long start = data.getFromMs() + (long) index * data.getBucketWidthMs();
-                    final long end = Math.min(data.getToMs(), start + data.getBucketWidthMs() - 1);
-                    zoomHandler.accept(start, end);
+                if (index >= 0 && index < bars.size()) {
+                    zoomHandler.accept(bars.get(index).getFromMs(), bars.get(index).getToMs() - 1);
                 }
             }
         });
@@ -198,13 +211,27 @@ public class HistogramWidget extends Composite {
                 ? scrubbedMs
                 : selectedMs;
         if (at == null
-            || data == null
-            || !data.isAvailable()
-            || at < data.getFromMs()
-            || at > data.getToMs()) {
+            || bars.isEmpty()
+            || at < bars.get(0).getFromMs()
+            || at > spanEndMs) {
             return -1D;
         }
-        return (at - data.getFromMs()) * 100D / Math.max(1L, data.getToMs() - data.getFromMs());
+        final double slotWidth = 100D / bars.size();
+        for (int i = 0; i < bars.size(); i++) {
+            final HistoryBar bar = bars.get(i);
+            if (at <= bar.getToMs()) {
+                // Before this bar begins means the moment fell between two of them, which happens
+                // where a stretch of days had nothing. The line stands at the near edge of the bar
+                // it ran up to rather than inside one it does not belong to.
+                final double across = at < bar.getFromMs()
+                        ? 0D
+                        : (at - bar.getFromMs())
+                          / (double) Math.max(1L, bar.getToMs() - bar.getFromMs());
+                return (i + across) * slotWidth;
+            }
+        }
+        // Past the last bar but inside the plot, which is the rounding the axis label names.
+        return 100D;
     }
 
     private Element marker() {
@@ -251,12 +278,18 @@ public class HistogramWidget extends Composite {
     // than the widget, so the labels down the side and along the bottom are not counted as part of it.
     private Long timeAt(final int x) {
         final Element plot = byClass(panel.getElement(), "histogram-plot");
-        if (plot == null || data == null || !data.isAvailable() || plot.getOffsetWidth() <= 0) {
+        if (plot == null || bars.isEmpty() || plot.getOffsetWidth() <= 0) {
             return null;
         }
         final double across = Math.max(0D, Math.min(1D,
                 (x - plot.getAbsoluteLeft()) / (double) plot.getOffsetWidth()));
-        return data.getFromMs() + Math.round(across * (data.getToMs() - data.getFromMs()));
+        // Which bar the pointer is over, and then where in that bar's own span. The plot is a run of
+        // bars rather than a clock, so the moment comes from the bar rather than from how far along
+        // the panel the pointer is.
+        final int i = Math.min(bars.size() - 1, (int) (across * bars.size()));
+        final HistoryBar bar = bars.get(i);
+        final double within = (across * bars.size()) - i;
+        return bar.getFromMs() + Math.round(within * (bar.getToMs() - bar.getFromMs()));
     }
 
     public void setData(final TraceHistogram data) {
@@ -267,6 +300,34 @@ public class HistogramWidget extends Composite {
             return;
         }
         this.data = data;
+        show(equalBars(data), data == null || !data.isAvailable()
+                ? 0L
+                : data.getToMs());
+    }
+
+    /**
+     * Bars worked out somewhere else, which may be of more than one width.
+     *
+     * <p>A pathway's history is of two kinds and the server says which each bar is, because only it
+     * knows where the change history runs out. There is nothing to narrow to here and no window
+     * limit to name, so this carries no histogram beside them.
+     */
+    public void setBars(final List<HistoryBar> bars) {
+        if (rendered && this.data == null && Objects.equals(this.bars, bars)) {
+            return;
+        }
+        this.data = null;
+        final List<HistoryBar> given = bars == null
+                ? List.<HistoryBar>of()
+                : bars;
+        show(given, given.isEmpty()
+                ? 0L
+                : given.get(given.size() - 1).getToMs());
+    }
+
+    private void show(final List<HistoryBar> bars, final long spanEndMs) {
+        this.bars = bars;
+        this.spanEndMs = spanEndMs;
         this.rendered = true;
         // Bars over a different stretch of time, so where the reader last left the line says nothing
         // about this one.
@@ -274,45 +335,75 @@ public class HistogramWidget extends Composite {
         render();
     }
 
+    // A histogram's equal buckets, as bars. Laying those out by slot and by clock comes to the same
+    // thing, because they are the same width and they touch, so the traces list is drawn exactly as
+    // it was before there were bars of two kinds.
+    private static List<HistoryBar> equalBars(final TraceHistogram data) {
+        if (data == null || !data.isAvailable() || data.getCounts() == null) {
+            return List.of();
+        }
+        final List<Long> counts = data.getCounts();
+        final List<HistoryBar> bars = new ArrayList<>(counts.size());
+        for (int i = 0; i < counts.size(); i++) {
+            final long start = data.getFromMs() + ((long) i * data.getBucketWidthMs());
+            // The end of the bucket, which is where the next one starts. A histogram's buckets abut,
+            // so this is what its tooltips named before the bars were a list, and a millisecond less
+            // would show every one of them ending on .999.
+            final long end = Math.min(data.getToMs(), start + data.getBucketWidthMs());
+            bars.add(new HistoryBar(start, end, counts.get(i) == null
+                    ? 0L
+                    : counts.get(i), false));
+        }
+        return bars;
+    }
+
     private void render() {
-        if (data == null || !data.isAvailable()) {
+        if (bars.isEmpty()) {
             panel.setHTML(hint());
             return;
         }
 
-        final List<Long> counts = data.getCounts();
-        long max = 1L;
-        for (final Long c : counts) {
-            if (c != null && c > max) {
-                max = c;
-            }
-        }
+        // Each side against its own tallest bar. A change bar counts traces and a day-wide one counts
+        // what moved, which are different quantities and run to different sizes - on one scale the
+        // smaller of the two would be flattened to a line, and standing them at one height would say
+        // they could be compared when they cannot. The hatching is what says so.
+        final long changeMax = tallest(false);
+        final long dayMax = tallest(true);
+        // The number beside the axis can only speak for one side, and it is the changes a reader is
+        // usually reading. Each day-wide bar gives its own figure when the pointer is over it.
+        // Never zero, so a plot nothing has landed in yet still says what its axis means.
+        final long labelled = Math.max(1L, changeMax > 0
+                ? changeMax
+                : dayMax);
 
-        final long finalMax = max;
-        final int n = counts.size();
+        final int n = bars.size();
         final double barWidthPct = 100D / n;
         final HtmlBuilder hb = new HtmlBuilder();
 
         hb.div(y -> {
-            y.div(NumberUtil.formatInt((int) finalMax), Attribute.className("histogram-ylabel"));
+            y.div(NumberUtil.formatInt((int) labelled), Attribute.className("histogram-ylabel"));
             y.div("0", Attribute.className("histogram-ylabel"));
         }, Attribute.className("histogram-yaxis"));
 
         hb.div(plot -> {
             for (int i = 0; i < n; i++) {
-                final long count = counts.get(i) == null ? 0L : counts.get(i);
-                final double leftPct = i * barWidthPct;
-                final double heightPct = count == 0 ? 0D : count * 100D / finalMax;
-                final long start = data.getFromMs() + (long) i * data.getBucketWidthMs();
-                final long end = Math.min(data.getToMs(), start + data.getBucketWidthMs());
-                final String title = dateTimeFormatter.format(start) + " – "
-                        + dateTimeFormatter.format(end) + ": " + count;
-                final String minHeight = count > 0 ? " min-height: 3px;" : "";
+                final HistoryBar bar = bars.get(i);
+                final long against = bar.isWholeDay()
+                        ? dayMax
+                        : changeMax;
+                final double heightPct = bar.getCount() == 0 || against <= 0
+                        ? 0D
+                        : (bar.getCount() * 100D) / against;
+                final String minHeight = bar.getCount() > 0
+                        ? " min-height: 3px;"
+                        : "";
                 plot.div("",
-                        Attribute.className("histogram-bar"),
-                        Attribute.title(title),
+                        Attribute.className(bar.isWholeDay()
+                                ? "histogram-bar histogram-bar--day"
+                                : "histogram-bar"),
+                        Attribute.title(titleOf(bar)),
                         new Attribute("data-bucket-index", String.valueOf(i)),
-                        Attribute.style("left: " + leftPct + "%; width: " + barWidthPct
+                        Attribute.style("left: " + (i * barWidthPct) + "%; width: " + barWidthPct
                                 + "%; height: " + heightPct + "%;" + minHeight));
             }
             // Last, so it stands over the bars rather than behind them. Always there, and put in its
@@ -328,14 +419,35 @@ public class HistogramWidget extends Composite {
                 ? "YYYY-MM-DD HH:mm:ss"
                 : "HH:mm:ss.SSS";
         hb.div(x -> {
-            x.div(dateTimeFormatter.format(data.getFromMs(), axisFormat),
+            x.div(dateTimeFormatter.format(bars.get(0).getFromMs(), axisFormat),
                     Attribute.className("histogram-xlabel"));
-            x.div(dateTimeFormatter.format(data.getToMs(), axisFormat),
+            x.div(dateTimeFormatter.format(spanEndMs, axisFormat),
                     Attribute.className("histogram-xlabel"));
         }, Attribute.className("histogram-xaxis"));
 
         panel.setHTML(hb.toSafeHtml());
         place(marker());
+    }
+
+    private long tallest(final boolean wholeDay) {
+        long most = 0L;
+        for (final HistoryBar bar : bars) {
+            if (bar.isWholeDay() == wholeDay && bar.getCount() > most) {
+                most = bar.getCount();
+            }
+        }
+        return most;
+    }
+
+    // A day names the day and what moved on it. A slice of the change history names both of its ends,
+    // because it is minutes or hours rather than something a date would identify.
+    private String titleOf(final HistoryBar bar) {
+        if (bar.isWholeDay()) {
+            return dateTimeFormatter.format(bar.getFromMs(), "YYYY-MM-DD")
+                   + ": " + bar.getCount() + " moved";
+        }
+        return dateTimeFormatter.format(bar.getFromMs()) + " – "
+               + dateTimeFormatter.format(bar.getToMs()) + ": " + bar.getCount();
     }
 
     private SafeHtml hint() {

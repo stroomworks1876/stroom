@@ -16,6 +16,7 @@
 
 package stroom.pathways.shared;
 
+import stroom.pathways.shared.pathway.HistoryBar;
 import stroom.pathways.shared.pathway.HistoryRow;
 import stroom.util.shared.PageResponse;
 import stroom.util.shared.ResultPage;
@@ -38,20 +39,34 @@ public class PathwayMutationResultPage extends ResultPage<HistoryRow> {
     private final Long windowFrom;
     @JsonProperty
     private final Long windowTo;
+    /**
+     * The plot over these rows, oldest bar first.
+     *
+     * <p>Built here rather than in the browser for two reasons. Bars are not all the same width, and
+     * only this end knows where the change history runs out. And the rows are capped, so a plot drawn
+     * from the page would quietly under-count a pathway with more history than the cap.
+     *
+     * <p>Counted over every row the range covers, not over the page, and before any node filter the
+     * browser puts on the table.
+     */
+    @JsonProperty
+    private final List<HistoryBar> bars;
 
     @JsonCreator
     public PathwayMutationResultPage(@JsonProperty("values") final List<HistoryRow> values,
                                      @JsonProperty("pageResponse") final PageResponse pageResponse,
                                      @JsonProperty("windowFrom") final Long windowFrom,
-                                     @JsonProperty("windowTo") final Long windowTo) {
+                                     @JsonProperty("windowTo") final Long windowTo,
+                                     @JsonProperty("bars") final List<HistoryBar> bars) {
         super(values, pageResponse);
         this.windowFrom = windowFrom;
         this.windowTo = windowTo;
+        this.bars = bars;
     }
 
     public PathwayMutationResultPage(final List<HistoryRow> values,
                                      final PageResponse pageResponse) {
-        this(values, pageResponse, null, null);
+        this(values, pageResponse, null, null, List.of());
     }
 
     public Long getWindowFrom() {
@@ -60,5 +75,9 @@ public class PathwayMutationResultPage extends ResultPage<HistoryRow> {
 
     public Long getWindowTo() {
         return windowTo;
+    }
+
+    public List<HistoryBar> getBars() {
+        return bars;
     }
 }

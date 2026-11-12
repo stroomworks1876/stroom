@@ -61,6 +61,41 @@ class TestDayDifferences {
     }
 
     @Test
+    void anArrivingNodeNamesTheTraceThatBroughtIt() {
+        // The histogram counts the traces these rows name, and the Changes table shows them. A day
+        // record holds no trace against a node, so the earliest trace behind one of its bounds is
+        // the one that first reached it.
+        final Node arriving = nodeSeenAt(List.of(ROOT, "Commit"), Map.of(
+                "duration", seen(new IntegerValue(7), "c".repeat(32), "d".repeat(16), 1_760_000_000_500L),
+                "rows", seen(new IntegerValue(3), "e".repeat(32), "f".repeat(16), 1_760_000_000_100L)));
+
+        final List<PathwayDifference> moved = DayDifferences.between(
+                day(node(ROOT)),
+                day(node(ROOT), arriving),
+                DAY);
+
+        assertThat(kinds(moved)).containsExactly(DifferenceType.NODE_ARRIVED);
+        assertThat(moved.get(0).getTraceId())
+                .as("the earlier of the two bounds, not whichever is listed first")
+                .isEqualTo("e".repeat(32));
+        assertThat(moved.get(0).getSpanId()).isEqualTo("f".repeat(16));
+        assertThat(moved.get(0).getRanAt()).isEqualTo(NanoTime.ofMillis(1_760_000_000_100L));
+    }
+
+    @Test
+    void anArrivingNodeWithNothingLearntFromNamesNoTrace() {
+        // Every bound of the node was configured to be ignored, so nothing was observed and there is
+        // no trace to take. The row still stands, because the node did arrive.
+        final List<PathwayDifference> moved = DayDifferences.between(
+                day(node(ROOT)),
+                day(node(ROOT), node(ROOT, "Commit")),
+                DAY);
+
+        assertThat(kinds(moved)).containsExactly(DifferenceType.NODE_ARRIVED);
+        assertThat(moved.get(0).getTraceId()).isNull();
+    }
+
+    @Test
     void aNodeTheWindowHasPassedLeaves() {
         // Not a retirement. A day's model is the fold of a window, so a node leaves it when the last
         // day carrying it falls out behind the window's edge.
@@ -279,6 +314,20 @@ class TestDayDifferences {
 
     private static Node node(final String root, final Map<String, ConstraintValue> constraints) {
         return node(List.of(root), constraints, false);
+    }
+
+    private static Node nodeSeenAt(final List<String> path,
+                                   final Map<String, DayRecord.ObservedConstraint> constraints) {
+        return new Node(path, new DayRecord.ObservedNode(
+                String.join("/", path), 1L, new LinkedHashMap<>(constraints)));
+    }
+
+    private static DayRecord.ObservedConstraint seen(final ConstraintValue value,
+                                                     final String traceId,
+                                                     final String spanId,
+                                                     final long ranAtMs) {
+        return new DayRecord.ObservedConstraint(value, false, traceId,
+                NanoTime.ofMillis(ranAtMs), spanId);
     }
 
     private static Node node(final List<String> path,

@@ -16,6 +16,7 @@
 
 package stroom.pathways.impl;
 
+import stroom.pathways.shared.otel.trace.NanoTime;
 import stroom.pathways.shared.pathway.AnyTypeValue;
 import stroom.pathways.shared.pathway.ConstraintValue;
 import stroom.pathways.shared.pathway.DifferenceType;
@@ -61,8 +62,7 @@ final class DayDifferences {
         after.nodes().forEach((path, now) -> {
             final DayRecord.ObservedNode was = before.nodes().get(path);
             if (was == null) {
-                differences.add(new PathwayDifference(day, path, PathwayFold.identity(path), null,
-                        DifferenceType.NODE_ARRIVED, null, null, null, null, null));
+                differences.add(nodeArrived(day, path, now));
             } else {
                 constraints(day, path, was, now, differences);
             }
@@ -155,6 +155,50 @@ final class DayDifferences {
         return grew
                 ? DifferenceType.WIDENED
                 : DifferenceType.NARROWED;
+    }
+
+    /**
+     * A node the day before did not have, named with the trace that brought it.
+     *
+     * <p>A day record holds no trace against a node, and it does not need to. A node and its bounds
+     * are given by the same traces, so the earliest trace behind any of its bounds is the one that
+     * first reached it that day. The histogram's day-wide bars are counted from the traces these
+     * rows name, so a row without one is a day that reads as empty.
+     *
+     * <p>Unnamed only where the node has no bound that was learnt from at all, which today means
+     * every one of them was configured to be ignored.
+     */
+    private static PathwayDifference nodeArrived(final int day,
+                                                 final List<String> path,
+                                                 final DayRecord.ObservedNode node) {
+        final DayRecord.ObservedConstraint first = firstSeen(node);
+        return new PathwayDifference(day, path, PathwayFold.identity(path), null,
+                DifferenceType.NODE_ARRIVED, null, null,
+                first == null
+                        ? null
+                        : first.traceId(),
+                first == null
+                        ? null
+                        : first.spanId(),
+                first == null
+                        ? null
+                        : first.ranAt());
+    }
+
+    private static DayRecord.ObservedConstraint firstSeen(final DayRecord.ObservedNode node) {
+        DayRecord.ObservedConstraint first = null;
+        for (final DayRecord.ObservedConstraint seen : node.constraints().values()) {
+            if (first == null || earlier(seen.ranAt(), first.ranAt())) {
+                first = seen;
+            }
+        }
+        return first;
+    }
+
+    // A bound with no time on it never wins, so a node whose times are all missing keeps the first
+    // bound it holds rather than the last.
+    private static boolean earlier(final NanoTime candidate, final NanoTime held) {
+        return candidate != null && (held == null || candidate.compareTo(held) < 0);
     }
 
     private static PathwayDifference constraint(final int day,

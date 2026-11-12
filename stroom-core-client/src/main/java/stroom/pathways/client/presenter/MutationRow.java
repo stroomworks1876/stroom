@@ -21,7 +21,6 @@ import stroom.pathways.shared.pathway.HistoryRow;
 import stroom.pathways.shared.pathway.PathwayDifference;
 import stroom.pathways.shared.pathway.PathwayMutation;
 import stroom.util.shared.Expander;
-import stroom.util.shared.NullSafe;
 import stroom.util.shared.TreeRow;
 
 import java.util.Objects;
@@ -43,6 +42,7 @@ class MutationRow implements TreeRow {
     private final NanoTime time;
     private final NanoTime ranAt;
     private final long sequence;
+    private final long position;
     private final Expander expander;
 
     private MutationRow(final HistoryRow row,
@@ -51,6 +51,7 @@ class MutationRow implements TreeRow {
                         final NanoTime time,
                         final NanoTime ranAt,
                         final long sequence,
+                        final long position,
                         final Expander expander) {
         this.row = row;
         this.traceId = traceId;
@@ -58,6 +59,7 @@ class MutationRow implements TreeRow {
         this.time = time;
         this.ranAt = ranAt;
         this.sequence = sequence;
+        this.position = position;
         this.expander = expander;
     }
 
@@ -68,13 +70,15 @@ class MutationRow implements TreeRow {
     static MutationRow trace(final PathwayMutation last,
                              final NanoTime time,
                              final boolean expanded) {
-        return new MutationRow(null, last.getTraceId(), groupOf(last), time, last.getTraceTime(),
-                last.getSequence(), new Expander(0, expanded, false));
+        return new MutationRow(null, last.getTraceId(), PathwayMutation.groupOf(last), time,
+                last.getTraceTime(), last.getSequence(), last.getSequence(),
+                new Expander(0, expanded, false));
     }
 
     static MutationRow change(final PathwayMutation mutation) {
-        return new MutationRow(mutation, mutation.getTraceId(), groupOf(mutation), mutation.getTime(),
-                mutation.getTraceTime(), mutation.getSequence(), new Expander(1, false, true));
+        return new MutationRow(mutation, mutation.getTraceId(), PathwayMutation.groupOf(mutation),
+                mutation.getTime(), mutation.getTraceTime(), mutation.getSequence(),
+                mutation.getSequence(), new Expander(1, false, true));
     }
 
     /**
@@ -87,38 +91,30 @@ class MutationRow implements TreeRow {
      */
     static MutationRow day(final int day, final boolean expanded) {
         return new MutationRow(null, null, groupOfDay(day), NanoTime.ofMillis(endOfDay(day)), null,
-                NO_SEQUENCE, new Expander(0, expanded, false));
+                NO_SEQUENCE, positionOfDay(day), new Expander(0, expanded, false));
     }
 
     static MutationRow difference(final PathwayDifference difference) {
         return new MutationRow(difference, difference.getTraceId(), groupOfDay(difference.getDay()),
                 NanoTime.ofMillis(endOfDay(difference.getDay())), difference.getRanAt(),
-                NO_SEQUENCE, new Expander(1, false, true));
+                NO_SEQUENCE, positionOfDay(difference.getDay()), new Expander(1, false, true));
     }
 
     static String groupOfDay(final int day) {
         return "day:" + day;
     }
 
+    // Days stand before every change, because a model comes into being with its first change and
+    // these are the days before that. Far enough before that no sequence can reach them, which is
+    // the same offset the reader orders the two kinds by.
+    private static long positionOfDay(final int day) {
+        return Long.MIN_VALUE + day;
+    }
+
     // A date means the end of the day it names, which is the moment the model it stands for was
     // folded at.
     private static long endOfDay(final int day) {
         return ((day + 1L) * 86_400_000L) - 1L;
-    }
-
-    /**
-     * What ties a change to the row it sits under.
-     *
-     * <p>A trace writes everything it taught the model in one go, so its id names the group. The
-     * narrowing has no trace to name, and naming none would put every change it has ever made under
-     * one row: opening one run would open them all, and picking one out would pick out the lot. Every
-     * change a single run makes to a pathway is stamped with the same instant, so that names it
-     * instead.
-     */
-    static String groupOf(final PathwayMutation mutation) {
-        return mutation.getTraceId() != null
-                ? mutation.getTraceId()
-                : "narrowed:" + NullSafe.get(mutation.getTime(), NanoTime::toEpochNanos);
     }
 
     /** A row with no sequence, because nothing can be stepped to for the day it describes. */
@@ -172,6 +168,17 @@ class MutationRow implements TreeRow {
      */
     long getSequence() {
         return sequence;
+    }
+
+    /**
+     * Where this row stands when the model's whole life is walked from its beginning.
+     *
+     * <p>Not the sequence. A day has none, and every day described this way came before the first
+     * change, so stepping has to put them first and then walk the changes. Within the days the day
+     * itself is the order, within the changes it is the sequence.
+     */
+    long getPosition() {
+        return position;
     }
 
     @Override

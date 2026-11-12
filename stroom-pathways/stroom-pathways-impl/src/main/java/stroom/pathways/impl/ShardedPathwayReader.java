@@ -25,6 +25,7 @@ import stroom.pathways.shared.PathwayResultPage;
 import stroom.pathways.shared.PathwaySummary;
 import stroom.pathways.shared.PathwaysDoc;
 import stroom.pathways.shared.otel.trace.NanoTime;
+import stroom.pathways.shared.pathway.HistoryBar;
 import stroom.pathways.shared.pathway.HistoryRow;
 import stroom.pathways.shared.pathway.MutationCounts;
 import stroom.pathways.shared.pathway.NodeChange;
@@ -59,11 +60,13 @@ import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.SortedSet;
+import java.util.TreeMap;
 import java.util.TreeSet;
 import java.util.function.Consumer;
 import java.util.function.Function;
@@ -86,6 +89,15 @@ public class ShardedPathwayReader {
             Comparator.comparing(PathwaySummary::getName, Comparator.nullsFirst(Comparator.naturalOrder()));
 
     private static final LambdaLogger LOGGER = LambdaLoggerFactory.getLogger(ShardedPathwayReader.class);
+
+    /**
+     * How many slices the stretch the change history reaches is cut into.
+     *
+     * <p>A count rather than a width, because the plot gives every bar the same room on screen, so
+     * this is also how much of that room the changes get beside the days. Sixty against a handful of
+     * days leaves the days clearly marked without burying them.
+     */
+    private static final int CHANGE_BARS = 60;
 
     private final PathwaysShardStore shardStore;
     private final PathwaySerde pathwaySerde;
@@ -273,7 +285,8 @@ public class ShardedPathwayReader {
         // than running on to now. Null where an end was left open.
         return new PathwayMutationResultPage(page, pageResponse,
                 bound(window, TimeFilter::getFrom, 0L),
-                bound(window, TimeFilter::getTo, Long.MAX_VALUE));
+                bound(window, TimeFilter::getTo, Long.MAX_VALUE),
+                bars(rows, window));
     }
 
     /**
@@ -422,6 +435,101 @@ public class ShardedPathwayReader {
             return null;
         });
         return DayRecord.merge(live[0], bucketDays(doc, shard, prefix, oldestDay, day));
+    }
+
+    /**
+     * The plot over these rows, oldest bar first.
+     *
+     * <p>Of two kinds, because the rows are. A day the change history does not reach gets one bar
+     * covering the whole of it. The stretch the history does reach is cut into equal slices, which
+     * are minutes or hours where a day is a day. The plot gives every bar the same width on screen
+     * and hatches the day-wide ones, so the two are never read against each other.
+     *
+     * <p>The two sides do not count the same thing and cannot. A change bar counts distinct traces,
+     * one counting once however much it taught, and a run of the narrowing counts as one because it
+     * is a row in the table with no trace of its own. A day has no trace to count by: its record
+     * keeps one trace per bound, so counting those would give about five however many ran. A day bar
+     * counts what moved instead, which is the number of rows opening that day shows. The plot scales
+     * each side against its own tallest bar and hatches the day-wide ones, because a count of traces
+     * and a count of things that moved put on one scale would flatten whichever is smaller.
+     *
+     * <p>Counted over every row the range covers rather than over the page, so turning a page leaves
+     * the plot where it was.
+     */
+    private static List<HistoryBar> bars(final List<HistoryRow> rows, final TimeFilter window) {
+        final List<HistoryBar> bars = new ArrayList<>(dayBars(rows));
+        bars.addAll(changeBars(rows, window));
+        return bars;
+    }
+
+    // Everything that moved that day, which is what opening the day in the table shows. Worked out
+    // from the fold rather than counted as traces arrive, so loading the same history twice leaves
+    // the bar where it was.
+    private static List<HistoryBar> dayBars(final List<HistoryRow> rows) {
+        final Map<Integer, Long> byDay = new TreeMap<>();
+        for (final HistoryRow row : rows) {
+            if (row instanceof final PathwayDifference difference) {
+                byDay.merge(difference.getDay(), 1L, Long::sum);
+            }
+        }
+        final List<HistoryBar> bars = new ArrayList<>(byDay.size());
+        byDay.forEach((day, moved) ->
+                bars.add(new HistoryBar(startOfDay(day), endOfDay(day), moved, true)));
+        return bars;
+    }
+
+    private static List<HistoryBar> changeBars(final List<HistoryRow> rows, final TimeFilter window) {
+        long first = Long.MAX_VALUE;
+        long last = Long.MIN_VALUE;
+        for (final HistoryRow row : rows) {
+            final Long at = appliedAt(row);
+            if (at != null) {
+                first = Math.min(first, at);
+                last = Math.max(last, at);
+            }
+        }
+        if (first > last) {
+            return List.of();
+        }
+        // Out to the end asked for, or to now where the range was left open. A model nothing has
+        // taught for an hour then reads as an hour of quiet rather than as one busy to the last bar.
+        final long to = window == null || window.getTo() == Long.MAX_VALUE
+                ? Math.max(last, System.currentTimeMillis())
+                : window.getTo();
+
+        // Always the same number of slices, however little time the changes cover. Fitting the
+        // slices to the history instead would leave a model taught by a single trace with one bar
+        // across the whole of its side, which reads as a model changing steadily throughout when
+        // what happened was one change at one moment.
+        final long span = Math.max(1L, (to - first) + 1);
+        final long width = Math.max(1L, ((span + CHANGE_BARS) - 1) / CHANGE_BARS);
+        final List<Set<String>> counted = new ArrayList<>(CHANGE_BARS);
+        for (int i = 0; i < CHANGE_BARS; i++) {
+            counted.add(new HashSet<>());
+        }
+        for (final HistoryRow row : rows) {
+            final Long at = appliedAt(row);
+            if (at != null) {
+                final int i = (int) Math.min(CHANGE_BARS - 1, (at - first) / width);
+                counted.get(i).add(PathwayMutation.groupOf((PathwayMutation) row));
+            }
+        }
+        final List<HistoryBar> bars = new ArrayList<>(CHANGE_BARS);
+        for (int i = 0; i < CHANGE_BARS; i++) {
+            final long start = first + ((long) i * width);
+            bars.add(new HistoryBar(start, (start + width) - 1, counted.get(i).size(), false));
+        }
+        return bars;
+    }
+
+    // When the learner took a change in, or null for anything that is not a change. The plot runs on
+    // that clock because the list does, and because it is the only order a model can be wound back
+    // along.
+    private static Long appliedAt(final HistoryRow row) {
+        if (row instanceof final PathwayMutation mutation && mutation.getTime() != null) {
+            return mutation.getTime().toEpochMillis();
+        }
+        return null;
     }
 
     /**

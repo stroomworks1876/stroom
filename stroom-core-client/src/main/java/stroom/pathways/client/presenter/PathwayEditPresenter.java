@@ -160,7 +160,7 @@ public class PathwayEditPresenter
     private final Timer stepper = new Timer() {
         @Override
         public void run() {
-            if (!mutationListPresenter.selectNextTrace()) {
+            if (!mutationListPresenter.selectNextStop()) {
                 // The end of the list. Nothing left to step to, so it stops rather than sitting there
                 // firing at a selection that cannot move.
                 stop();
@@ -480,7 +480,7 @@ public class PathwayEditPresenter
                     }
                     history = result.getValues();
                     mutationListPresenter.setData(history,
-                            result.getWindowFrom(), result.getWindowTo());
+                            result.getWindowFrom(), result.getWindowTo(), result.getBars());
                     historyArrived = true;
                     drawWhenReady();
                 })
@@ -508,18 +508,20 @@ public class PathwayEditPresenter
         }
     }
 
-    // Steps to the next trace every second and a half, so the model can be watched changing rather
-    // than having to be clicked through — long enough to take in what moved between one trace and
-    // the next, which is the point of watching it.
+    // Steps on every second and a half, so the model can be watched changing rather than having to
+    // be clicked through — long enough to take in what moved between one stop and the next, which is
+    // the point of watching it. A trace where the change history reaches, a whole day where it does
+    // not.
     private void play() {
-        if (!mutationListPresenter.selectNextTrace()) {
+        if (!mutationListPresenter.selectNextStop()) {
             // Nothing after the one picked, which is where a replay ends and where the top of the list
             // starts. Pressing play there means watch it again, so it goes back to the beginning
             // rather than doing nothing. Cleared without telling anyone: the step taken straight after
             // draws the model, and announcing the clearing first would draw it twice.
             mutationListPresenter.getSelectionModel().clear(false);
-            if (!mutationListPresenter.selectNextTrace()) {
-                // No trace taught this model anything, so there is nothing to watch.
+            if (!mutationListPresenter.selectNextStop()) {
+                // Nothing ever taught this model and no day was given anything, so there is
+                // nothing to watch.
                 return;
             }
         }

@@ -725,6 +725,30 @@
     background-color: rgba(144, 202, 249, 1);
 }
 
+/* A bar covering a whole day, where the change history does not reach and the model for that day is
+   folded out of its records instead. Hatched because it counts something else: a change bar counts
+   the traces that taught the model in minutes or hours, and this counts what moved between one day
+   and the day before. The two are scaled separately and must never be read against each other. */
+.histogram-bar--day {
+    background-color: transparent;
+    background-image: repeating-linear-gradient(
+        45deg,
+        rgba(100, 181, 246, 0.95) 0 2px,
+        transparent 2px 5px
+    );
+    border-left: 1px solid rgba(100, 181, 246, 0.95);
+    border-right: 1px solid rgba(100, 181, 246, 0.95);
+}
+
+.histogram-bar--day:hover {
+    background-color: transparent;
+    background-image: repeating-linear-gradient(
+        45deg,
+        rgba(144, 202, 249, 1) 0 2px,
+        transparent 2px 5px
+    );
+}
+
 /* Where the row being looked at falls. A line across the bars rather than a bar painted differently,
    so it says the moment itself rather than the slice the moment landed in, and so it slides from one
    row to the next instead of jumping a bar at a time.

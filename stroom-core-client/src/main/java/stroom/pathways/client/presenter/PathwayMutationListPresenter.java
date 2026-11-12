@@ -23,10 +23,10 @@ import stroom.data.client.presenter.HasContextMenusCell;
 import stroom.data.grid.client.MyDataGrid;
 import stroom.data.grid.client.PagerView;
 import stroom.entity.client.presenter.TreeRowHandler;
-import stroom.pathways.shared.TraceHistogram;
 import stroom.pathways.shared.otel.trace.NanoTime;
 import stroom.pathways.shared.pathway.AbstractRange;
 import stroom.pathways.shared.pathway.ConstraintValue;
+import stroom.pathways.shared.pathway.HistoryBar;
 import stroom.pathways.shared.pathway.HistoryRow;
 import stroom.pathways.shared.pathway.MutationCounts;
 import stroom.pathways.shared.pathway.MutationType;
@@ -79,8 +79,6 @@ public class PathwayMutationListPresenter extends MyPresenterWidget<PagerView> {
     private static final int TRACE_ID_COL = 270;
     private static final int SPAN_ID_COL = 150;
     private static final int CHANGE_COL = 170;
-    // Enough bars to show where the model was busy without any of them being too thin to see.
-    private static final int BUCKETS = 60;
 
     private final PagerView pagerView;
     private final DateTimeFormatter dateTimeFormatter;
@@ -184,6 +182,8 @@ public class PathwayMutationListPresenter extends MyPresenterWidget<PagerView> {
     // expressions and only it can read those. Null where an end was left open.
     private Long windowFrom;
     private Long windowTo;
+    // The plot over the rows, as the server counted it.
+    private List<HistoryBar> bars = List.of();
 
     /**
      * The change rows among what the table is showing.
@@ -200,70 +200,6 @@ public class PathwayMutationListPresenter extends MyPresenterWidget<PagerView> {
             }
         }
         return changes;
-    }
-
-    private TraceHistogram bars() {
-        long from = Long.MAX_VALUE;
-        long to = Long.MIN_VALUE;
-        for (final PathwayMutation mutation : changes()) {
-            final NanoTime time = mutation.getTime();
-            // Only what the table is showing, so that narrowing the list narrows the plot over it
-            // rather than leaving the bars saying something the rows no longer do.
-            if (time != null && shown(mutation)) {
-                from = Math.min(from, time.toEpochMillis());
-                to = Math.max(to, time.toEpochMillis());
-            }
-        }
-        if (from > to) {
-            return new TraceHistogram(false, 0, 0, 0, 0, Collections.emptyList(), false);
-        }
-
-        // The span picked is the span plotted. Taken from the rows instead, a range ending an hour ago
-        // would still be drawn out to now, with its bars squeezed into whatever part of the panel the
-        // range happened to occupy.
-        if (windowFrom != null) {
-            from = windowFrom;
-        }
-        if (windowTo != null) {
-            to = windowTo;
-        } else {
-            // Nothing picked, so up to now rather than up to the last change: a model nothing has
-            // taught for an hour reads as an hour of quiet rather than as one busy to the edge of the
-            // panel. How long ago a model last moved is the thing worth seeing, and ending at its last
-            // change is the one way of drawing it that cannot show that at all.
-            //
-            // Still the later of the two, because a change made on another node can carry a clock a
-            // little ahead of this one, and a panel ending before its own last bar would be worse than
-            // one ending a moment early.
-            to = Math.max(to, System.currentTimeMillis());
-        }
-
-        // Always the same number of slices, however little time the history covers. Fitting the
-        // slices to the history instead would leave a model taught by a single trace with one slice,
-        // drawn as a bar across the whole panel — which reads as a model changing steadily throughout
-        // when what happened was one change at one moment. Sixty slices put that change where it
-        // belongs: one bar at the left and the rest of the panel empty.
-        //
-        // Rounded up, so the slices between them cover at least the whole history and the last change
-        // falls inside the last of them rather than past it. The range given back is the slices rather
-        // than the history, so the labels along the bottom say what the bars actually show.
-        final long span = Math.max(1L, (to - from) + 1);
-        final long width = Math.max(1L, ((span + BUCKETS) - 1) / BUCKETS);
-        final List<Long> counts = new ArrayList<>(Collections.nCopies(BUCKETS, 0L));
-        final Set<String> counted = new HashSet<>();
-        for (final PathwayMutation mutation : changes()) {
-            final NanoTime time = mutation.getTime();
-            // One bar unit per thing that changed the model rather than per change, so a trace that
-            // taught it twenty things counts the same as one that taught it one. The narrowing is
-            // counted the same way, a run at a time, which is what its group names.
-            if (time != null && shown(mutation) && counted.add(MutationRow.groupOf(mutation))) {
-                final int at = (int) Math.min(BUCKETS - 1, (time.toEpochMillis() - from) / width);
-                counts.set(at, counts.get(at) + 1);
-            }
-        }
-        // Not drillable: narrowing the window is the traces list's answer to a crowded bar, and there
-        // is no window here to narrow — this is the whole history, however long it took.
-        return new TraceHistogram(true, from, from + (width * BUCKETS) - 1, width, 0, counts, false);
     }
 
     /**
@@ -378,7 +314,7 @@ public class PathwayMutationListPresenter extends MyPresenterWidget<PagerView> {
 
         for (final PathwayMutation mutation : changes()) {
             final boolean mine = selected.isParent()
-                    ? Objects.equals(selected.getGroup(), MutationRow.groupOf(mutation))
+                    ? Objects.equals(selected.getGroup(), PathwayMutation.groupOf(mutation))
                     : mutation.getSequence() == selected.getSequence();
             if (mine && !paths.contains(mutation.getNodePath())) {
                 paths.add(mutation.getNodePath());
@@ -411,7 +347,7 @@ public class PathwayMutationListPresenter extends MyPresenterWidget<PagerView> {
 
         for (final PathwayMutation mutation : changes()) {
             final boolean mine = selected.isParent()
-                    ? Objects.equals(selected.getGroup(), MutationRow.groupOf(mutation))
+                    ? Objects.equals(selected.getGroup(), PathwayMutation.groupOf(mutation))
                     : mutation.getSequence() == selected.getSequence();
             if (mine && mutation.getConstraint() != null && path.equals(mutation.getNodePath())) {
                 names.add(mutation.getConstraint());
@@ -421,34 +357,39 @@ public class PathwayMutationListPresenter extends MyPresenterWidget<PagerView> {
     }
 
     /**
-     * Moves the selection on to the next trace, so the model can be watched changing a trace at a
-     * time. Starts at the first where nothing is selected yet.
+     * Moves the selection on to the next stop forward, so the model can be watched changing one step
+     * at a time. Starts at the oldest where nothing is selected yet.
      *
-     * <p>Traces rather than every row: one trace is one thing that happened to the model, and its
-     * changes were all made at once.
+     * <p>A stop is a trace or a whole day, never one of the rows beneath either. One trace is one
+     * thing that happened to the model and its changes were all made at once. A day is one model, the
+     * whole of that day folded, so there is nothing within it to stop at.
      *
-     * @return whether there was another trace to move on to.
+     * @return whether there was another stop to move on to.
      */
-    public boolean selectNextTrace() {
+    public boolean selectNextStop() {
         final List<MutationRow> rows = dataProvider.getList();
         if (NullSafe.isEmptyCollection(rows)) {
             return false;
         }
 
-        // The next trace forward in time, not the next row down. Which way the list happens to be
+        // The next stop forward in time, not the next row down. Which way the list happens to be
         // sorted is how the reader wants to read it; it says nothing about which way a model grew, so
         // stepping follows the history rather than the order the rows are in. On a list newest first
         // that walks up it rather than down.
+        //
+        // By position rather than by sequence, because a day has no sequence. The days come first and
+        // are walked one at a time, which is all a day offers: there is nothing within one to stop at,
+        // the model for a day being the whole of it folded.
         final MutationRow selected = selectionModel.getSelected();
         final long after = selected == null
                 ? Long.MIN_VALUE
-                : selected.getSequence();
+                : selected.getPosition();
 
         MutationRow next = null;
         for (final MutationRow row : rows) {
             if (row.isParent()
-                && row.getSequence() > after
-                && (next == null || row.getSequence() < next.getSequence())) {
+                && row.getPosition() > after
+                && (next == null || row.getPosition() < next.getPosition())) {
                 next = row;
             }
         }
@@ -510,18 +451,23 @@ public class PathwayMutationListPresenter extends MyPresenterWidget<PagerView> {
      * copy means the grid and the model on show cannot disagree.
      */
     public void setData(final List<HistoryRow> mutations) {
-        setData(mutations, null, null);
+        setData(mutations, null, null, List.of());
     }
 
     /**
-     * The same, with the span these rows were asked for, resolved. The plot over them is drawn across
-     * that span rather than out to now, so it covers what was picked.
+     * The same, with the span these rows were asked for and the plot over them.
+     *
+     * <p>The bars are worked out where the rows are, because they are of two widths and only that
+     * end knows where the change history runs out - and because the rows are capped, so a plot
+     * counted from them would quietly say less than the truth about a pathway with a long history.
      */
     public void setData(final List<HistoryRow> mutations,
                         final Long windowFrom,
-                        final Long windowTo) {
+                        final Long windowTo,
+                        final List<HistoryBar> bars) {
         this.windowFrom = windowFrom;
         this.windowTo = windowTo;
+        this.bars = NullSafe.list(bars);
         // Whatever was selected belonged to the list being replaced, and the view around this one asks
         // what is selected to decide which model to show.
         selectionModel.clear();
@@ -533,7 +479,7 @@ public class PathwayMutationListPresenter extends MyPresenterWidget<PagerView> {
         setFilter(Filter.OFF);
         this.mutations = new ArrayList<>(NullSafe.list(mutations));
         order();
-        histogram.setData(bars());
+        histogram.setBars(bars);
         histogram.setSelectedTime(selectedMs());
     }
 
@@ -580,7 +526,10 @@ public class PathwayMutationListPresenter extends MyPresenterWidget<PagerView> {
                 ? FILTER_ON_TITLE
                 : FILTER_OFF_TITLE);
         order();
-        histogram.setData(bars());
+        // The plot is not touched. It covers the range, and the range has not changed - narrowing to
+        // one node narrows the table beneath it. The bars are counted over every row the range
+        // holds, which is more rows than are listed here, so they cannot be re-counted from what is
+        // in hand anyway.
     }
 
     public Filter getFilter() {
@@ -665,7 +614,7 @@ public class PathwayMutationListPresenter extends MyPresenterWidget<PagerView> {
         final Set<String> groups = new LinkedHashSet<>();
         for (final HistoryRow row : mutations) {
             if (row instanceof final PathwayMutation change) {
-                groups.add(MutationRow.groupOf(change));
+                groups.add(PathwayMutation.groupOf(change));
             }
         }
         for (final HistoryRow row : mutations) {
@@ -697,7 +646,7 @@ public class PathwayMutationListPresenter extends MyPresenterWidget<PagerView> {
         List<PathwayMutation> current = null;
         for (final PathwayMutation mutation : oldestFirst) {
             if (current == null
-                || !Objects.equals(MutationRow.groupOf(current.get(0)), MutationRow.groupOf(mutation))) {
+                || !Objects.equals(PathwayMutation.groupOf(current.get(0)), PathwayMutation.groupOf(mutation))) {
                 current = new ArrayList<>();
                 groups.add(current);
             }
@@ -717,7 +666,7 @@ public class PathwayMutationListPresenter extends MyPresenterWidget<PagerView> {
             // round.
             final PathwayMutation last = group.get(group.size() - 1);
             final MutationRow groupRow = MutationRow.trace(last, group.get(0).getTime(),
-                    treeAction.isExpanded(MutationRow.groupOf(last)));
+                    treeAction.isExpanded(PathwayMutation.groupOf(last)));
             rows.add(groupRow);
 
             if (groupRow.getExpander().isExpanded()) {

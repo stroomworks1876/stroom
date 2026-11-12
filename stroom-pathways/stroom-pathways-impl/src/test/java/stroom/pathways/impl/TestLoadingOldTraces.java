@@ -23,6 +23,7 @@ import stroom.pathways.shared.PathwayAsAt;
 import stroom.pathways.shared.PathwayMutationResultPage;
 import stroom.pathways.shared.PathwaysDoc;
 import stroom.pathways.shared.pathway.DifferenceType;
+import stroom.pathways.shared.pathway.HistoryBar;
 import stroom.pathways.shared.pathway.NamePathKey;
 import stroom.pathways.shared.pathway.Pathway;
 import stroom.pathways.shared.pathway.PathwayDifference;
@@ -414,6 +415,75 @@ class TestLoadingOldTraces {
                 .as("both kinds, the same as asking with no range at all")
                 .anyMatch(row -> row instanceof PathwayDifference)
                 .anyMatch(row -> row instanceof PathwayMutation);
+    }
+
+    @Test
+    void thePlotHasABarPerDescribedDayAndSlicesForTheChanges() throws IOException {
+        // The point of the bars: a range crossing the start of the history carries both kinds, and
+        // only this end knows where that boundary falls.
+        load(daysAgo(30), 2);
+        load(daysAgo(20), 1);
+        load(Instant.now(), 1);
+
+        final List<HistoryBar> bars = reader().findMutations(doc,
+                new FindPathwayMutationCriteria(new PageRequest(0, 1000), List.of(), null, OPERATION,
+                        null)).getBars();
+
+        assertThat(bars.stream().filter(HistoryBar::isWholeDay).map(HistoryBar::getFromMs))
+                .as("one bar for each day that was given traces, oldest first")
+                .containsExactly(startOfDay(dayOf(daysAgo(30))), startOfDay(dayOf(daysAgo(20))));
+        assertThat(bars.stream().filter(HistoryBar::isWholeDay))
+                .as("each covering the whole of its day and nothing more")
+                .allMatch(bar -> (bar.getToMs() - bar.getFromMs()) + 1 == TraceProcessor.MILLIS_PER_DAY);
+        assertThat(bars.stream().filter(bar -> !bar.isWholeDay()))
+                .as("and the changes cut into slices of their own")
+                .isNotEmpty()
+                .allMatch(bar -> (bar.getToMs() - bar.getFromMs()) + 1 < TraceProcessor.MILLIS_PER_DAY);
+    }
+
+    @Test
+    void aDaysBarSaysHowMuchMovedThatDay() throws IOException {
+        // Not how many traces ran. A day record keeps one trace against each bound whatever ran, so
+        // counting traces would give about five on the busiest day there has ever been. The bar is
+        // what opening the day in the table shows, so the two always agree.
+        load(daysAgo(30), 2);
+        load(daysAgo(20), 1);
+        load(Instant.now(), 1);
+
+        final PathwayMutationResultPage listed = reader().findMutations(doc,
+                new FindPathwayMutationCriteria(new PageRequest(0, 1000), List.of(), null,
+                        OPERATION, null));
+
+        for (final HistoryBar bar : listed.getBars()) {
+            if (bar.isWholeDay()) {
+                final long rows = listed.getValues().stream()
+                        .filter(row -> row instanceof PathwayDifference)
+                        .filter(row -> startOfDay(((PathwayDifference) row).getDay()) == bar.getFromMs())
+                        .count();
+                assertThat(bar.getCount())
+                        .as("the rows that day opens to, for the day starting " + bar.getFromMs())
+                        .isEqualTo(rows);
+                assertThat(rows).isGreaterThan(0L);
+            }
+        }
+    }
+
+    @Test
+    void aPathwayWithNoDescribedDaysHasOnlyChangeBars() throws IOException {
+        load(Instant.now(), 2);
+
+        final List<HistoryBar> bars = reader().findMutations(doc,
+                new FindPathwayMutationCriteria(new PageRequest(0, 1000), List.of(), null, OPERATION,
+                        null)).getBars();
+
+        assertThat(bars).isNotEmpty().noneMatch(HistoryBar::isWholeDay);
+        assertThat(bars.stream().mapToLong(HistoryBar::getCount).sum())
+                .as("every trace that taught the model stands in one bar or another")
+                .isEqualTo(1L);
+    }
+
+    private static long startOfDay(final int day) {
+        return (long) day * TraceProcessor.MILLIS_PER_DAY;
     }
 
     private ShardedPathwayReader reader() {
