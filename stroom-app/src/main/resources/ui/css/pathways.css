@@ -662,6 +662,21 @@
     color: var(--text-color--red);
 }
 
+/* The Changes table's Applied Time heading, saying the rows are ordered by it, newest first. The
+   grid draws its own mark only on a heading it will also let the reader click, and this order cannot
+   be changed: the only order that means anything here is the one the changes were made in. So the
+   icon is written beside the name, laid out the way the grid lays out a sortable heading but without
+   the pointer cursor and the hover underline that would offer a click there is nothing behind. */
+.pathway-sorted-header {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+}
+
+.pathway-sorted-header .svgIcon {
+    opacity: 0.7;
+}
+
 /* ---- Trace histogram ---- */
 
 .trace-histogram {

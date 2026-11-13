@@ -40,8 +40,8 @@ import java.util.function.Function;
 public class PathwayMutation implements HistoryRow {
 
     // The names the grid sorts by, shared so the column clicked and the field ordered on cannot drift.
-    public static final String FIELD_TIME = "Applied";
-    public static final String FIELD_TRACE_TIME = "Trace time";
+    public static final String FIELD_TIME = "Applied Time";
+    public static final String FIELD_TRACE_TIME = "Trace Time";
     public static final String FIELD_TYPE = "Change";
     public static final String FIELD_PATH = "Node";
     public static final String FIELD_CONSTRAINT = "Constraint";

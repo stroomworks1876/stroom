@@ -41,11 +41,18 @@ import stroom.util.shared.Expander;
 import stroom.util.shared.NullSafe;
 import stroom.widget.button.client.ButtonView;
 import stroom.widget.button.client.InlineSvgToggleButton;
+import stroom.widget.util.client.HtmlBuilder;
+import stroom.widget.util.client.HtmlBuilder.Attribute;
 import stroom.widget.util.client.MultiSelectionModelImpl;
+import stroom.widget.util.client.SvgImageUtil;
 
 import com.google.gwt.dom.client.Document;
 import com.google.gwt.dom.client.Element;
+import com.google.gwt.safehtml.shared.SafeHtml;
 import com.google.gwt.user.cellview.client.Column;
+import com.google.gwt.user.cellview.client.Header;
+import com.google.gwt.user.cellview.client.SafeHtmlHeader;
+import com.google.gwt.user.cellview.client.SortIcon;
 import com.google.gwt.user.client.ui.InsertPanel;
 import com.google.inject.Inject;
 import com.google.web.bindery.event.shared.EventBus;
@@ -720,7 +727,10 @@ public class PathwayMutationListPresenter extends MyPresenterWidget<PagerView> {
                 .textColumnBuilder((MutationRow row) -> NullSafe.get(row.getTime(),
                         value -> dateTimeFormatter.format(value.toEpochMillis())))
                 .build();
-        dataGrid.addResizableColumn(timeColumn, PathwayMutation.FIELD_TIME,
+        // Marked as the order the list is in. Not a sortable column: the only order that means
+        // anything here is the one the changes were made in, so the mark says how the rows are
+        // arranged rather than offering to rearrange them.
+        dataGrid.addResizableColumn(timeColumn, sortedHeader(PathwayMutation.FIELD_TIME),
                 ColumnSizeConstants.DATE_COL);
         dataGrid.addResizableColumn(DataGridUtil
                         .textColumnBuilder((MutationRow row) -> NullSafe.get(row.getRanAt(),
@@ -752,6 +762,22 @@ public class PathwayMutationListPresenter extends MyPresenterWidget<PagerView> {
         addColumn(PathwayMutation.FIELD_NEW_VALUE,
                 row -> ofRow(row, value -> text(value, value.getNewValue())),
                 ColumnSizeConstants.MEDIUM_COL);
+    }
+
+    // A column heading that says the rows are ordered by it, newest first. The grid's own icon, so it
+    // reads as the same thing it means everywhere else, but written here rather than taken from the
+    // grid's sorting, which draws its mark only on a heading it will also let the reader click. None
+    // of the classes it would use come with it either: they carry a pointer cursor and an underline
+    // on hover, which would offer a click there is nothing behind.
+    private static Header<SafeHtml> sortedHeader(final String name) {
+        final HtmlBuilder hb = new HtmlBuilder();
+        hb.div(outer -> {
+            outer.span(span -> span.append(name));
+            // The same classes a sortable heading gives it, so it comes out at the same size there
+            // and here rather than at a size of its own.
+            outer.append(SvgImageUtil.toSafeHtml(SvgImage.FIELDS_SORT_DESCENDING, "svgIcon"));
+        }, Attribute.className("pathway-sorted-header"), Attribute.title(SortIcon.SORT_DESCENDING));
+        return new SafeHtmlHeader(hb.toSafeHtml());
     }
 
     private void addExpanderColumn() {
