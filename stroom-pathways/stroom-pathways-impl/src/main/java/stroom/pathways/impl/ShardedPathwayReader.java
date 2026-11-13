@@ -64,6 +64,7 @@ import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.NavigableMap;
 import java.util.Optional;
 import java.util.Set;
 import java.util.SortedSet;
@@ -287,7 +288,7 @@ public class ShardedPathwayReader {
         return new PathwayMutationResultPage(page, pageResponse,
                 bound(window, TimeFilter::getFrom, 0L),
                 bound(window, TimeFilter::getTo, Long.MAX_VALUE),
-                bars(rows, window));
+                bars(rows, window, lastDayBeforeTheModel(found[0])));
     }
 
     /**
@@ -420,6 +421,11 @@ public class ShardedPathwayReader {
     // change, so everything before that day is answered by folding and everything after by the
     // history itself.
     private static int lastDayBeforeTheModel(final Pathway pathway) {
+        // No model row at all, which is a pathway whose traces are all old history. Nothing is
+        // described, because there is nothing for a described day to come before.
+        if (pathway == null) {
+            return Integer.MIN_VALUE;
+        }
         return pathway.getCreateTime() == null
                 ? Integer.MIN_VALUE
                 : dayOf(pathway.getCreateTime().toEpochMillis()) - 1;
@@ -457,25 +463,46 @@ public class ShardedPathwayReader {
      * <p>Counted over every row the range covers rather than over the page, so turning a page leaves
      * the plot where it was.
      */
-    private static List<HistoryBar> bars(final List<HistoryRow> rows, final TimeFilter window) {
-        final List<HistoryBar> bars = new ArrayList<>(dayBars(rows));
+    private static List<HistoryBar> bars(final List<HistoryRow> rows,
+                                         final TimeFilter window,
+                                         final int lastDescribed) {
+        final List<HistoryBar> bars = new ArrayList<>(dayBars(rows, lastDescribed));
         bars.addAll(changeBars(rows, window));
         return bars;
     }
 
-    // Everything that moved that day, which is what opening the day in the table shows. Worked out
-    // from the fold rather than counted as traces arrive, so loading the same history twice leaves
-    // the bar where it was.
-    private static List<HistoryBar> dayBars(final List<HistoryRow> rows) {
-        final Map<Integer, Long> byDay = new TreeMap<>();
+    /**
+     * A bar for every day from the first that was given something to the day before the model came
+     * into being, counting what moved on each.
+     *
+     * <p>The height is everything that moved that day, which is what opening the day in the table
+     * shows. Worked out from the fold rather than counted as traces arrive, so loading the same
+     * history twice leaves the bar where it was.
+     *
+     * <p>A day that was given nothing gets a bar of no height rather than no bar. Every bar takes the
+     * same room on screen, so leaving the quiet days out would stand a day in October next to one in
+     * November and say the work ran on both and on nothing in between.
+     *
+     * <p>It starts at the first day that has something, not at the oldest bucket. A model whose
+     * records begin a year before it did would otherwise be drawn as a year of empty bars with the
+     * changes crushed into the end of the panel.
+     */
+    private static List<HistoryBar> dayBars(final List<HistoryRow> rows, final int lastDescribed) {
+        final NavigableMap<Integer, Long> byDay = new TreeMap<>();
         for (final HistoryRow row : rows) {
             if (row instanceof final PathwayDifference difference) {
                 byDay.merge(difference.getDay(), 1L, Long::sum);
             }
         }
-        final List<HistoryBar> bars = new ArrayList<>(byDay.size());
-        byDay.forEach((day, moved) ->
-                bars.add(new HistoryBar(startOfDay(day), endOfDay(day), moved, true)));
+        if (byDay.isEmpty()) {
+            return List.of();
+        }
+        final int lastDay = Math.max(lastDescribed, byDay.lastKey());
+        final List<HistoryBar> bars = new ArrayList<>((lastDay - byDay.firstKey()) + 1);
+        for (int day = byDay.firstKey(); day <= lastDay; day++) {
+            bars.add(new HistoryBar(startOfDay(day), endOfDay(day),
+                    byDay.getOrDefault(day, 0L), true));
+        }
         return bars;
     }
 

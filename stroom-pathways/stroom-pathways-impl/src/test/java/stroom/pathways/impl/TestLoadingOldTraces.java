@@ -521,8 +521,13 @@ class TestLoadingOldTraces {
                         null)).getBars();
 
         assertThat(bars.stream().filter(HistoryBar::isWholeDay).map(HistoryBar::getFromMs))
-                .as("one bar for each day that was given traces, oldest first")
-                .containsExactly(startOfDay(dayOf(daysAgo(30))), startOfDay(dayOf(daysAgo(20))));
+                .as("one bar a day from the first that was given something, with no days skipped")
+                .startsWith(startOfDay(dayOf(daysAgo(30))))
+                .contains(startOfDay(dayOf(daysAgo(25))), startOfDay(dayOf(daysAgo(20))))
+                .isSorted();
+        assertThat(bars.stream().filter(HistoryBar::isWholeDay).count())
+                .as("every day from the first given something to the day before the model existed")
+                .isEqualTo((dayOf(Instant.now()) - dayOf(daysAgo(30))));
         assertThat(bars.stream().filter(HistoryBar::isWholeDay))
                 .as("each covering the whole of its day and nothing more")
                 .allMatch(bar -> (bar.getToMs() - bar.getFromMs()) + 1 == TraceProcessor.MILLIS_PER_DAY);
@@ -545,6 +550,7 @@ class TestLoadingOldTraces {
                 new FindPathwayMutationCriteria(new PageRequest(0, 1000), List.of(), null,
                         OPERATION, null));
 
+        long described = 0L;
         for (final HistoryBar bar : listed.getBars()) {
             if (bar.isWholeDay()) {
                 final long rows = listed.getValues().stream()
@@ -554,9 +560,42 @@ class TestLoadingOldTraces {
                 assertThat(bar.getCount())
                         .as("the rows that day opens to, for the day starting " + bar.getFromMs())
                         .isEqualTo(rows);
-                assertThat(rows).isGreaterThan(0L);
+                described += rows > 0
+                        ? 1L
+                        : 0L;
             }
         }
+        assertThat(described)
+                .as("the two days that were given traces, the rest standing empty between them")
+                .isEqualTo(2L);
+    }
+
+    @Test
+    void aDayGivenNothingStandsEmptyRatherThanBeingLeftOut() throws IOException {
+        // Every bar takes the same room on screen, so a day left out would stand one in October next
+        // to one in November and say the work ran on both and on nothing in between.
+        // Ten days apart, which is wider than the window the days are folded over. Closer together
+        // than that, the second day's fold still holds the first day's traces and nothing moved.
+        load(daysAgo(30), 1);
+        load(daysAgo(20), 1);
+        load(Instant.now(), 1);
+
+        final List<HistoryBar> days = reader().findMutations(doc,
+                        new FindPathwayMutationCriteria(new PageRequest(0, 1000), List.of(), null,
+                                OPERATION, null))
+                .getBars().stream()
+                .filter(HistoryBar::isWholeDay)
+                .toList();
+
+        assertThat(countOn(days, dayOf(daysAgo(30))))
+                .as("the first day that was given something")
+                .isEqualTo(1L);
+        assertThat(countOn(days, dayOf(daysAgo(29))))
+                .as("the quiet day after it still has a bar, of no height")
+                .isZero();
+        assertThat(countOn(days, dayOf(daysAgo(20))))
+                .as("and the next day that was given something stands ten bars along")
+                .isEqualTo(1L);
     }
 
     @Test
@@ -571,6 +610,15 @@ class TestLoadingOldTraces {
         assertThat(bars.stream().mapToLong(HistoryBar::getCount).sum())
                 .as("every trace that taught the model stands in one bar or another")
                 .isEqualTo(1L);
+    }
+
+    // What the plot says moved on one day, or nothing where that day has no bar at all.
+    private static long countOn(final List<HistoryBar> days, final int day) {
+        return days.stream()
+                .filter(bar -> bar.getFromMs() == startOfDay(day))
+                .mapToLong(HistoryBar::getCount)
+                .findFirst()
+                .orElse(-1L);
     }
 
     private static long startOfDay(final int day) {
