@@ -94,6 +94,7 @@ class TestLoadingOldTraces {
     private static final ByteBuffers BYTE_BUFFERS = new ByteBuffers(BYTE_BUFFER_FACTORY);
     private static final String OPERATION = "GET /orders";
     private static final String ROOT_SPAN = "0f3a000000000001";
+    private static final String CHILD_SPAN = "0f3a000000000002";
 
     @TempDir
     Path tempDir;
@@ -373,21 +374,28 @@ class TestLoadingOldTraces {
         // The drawing moves its nodes from one step to the next only where the step wants the same
         // set of them. A folded model holds the nodes its own day was given, so laid out from itself
         // each day is a different set and the picture is built again rather than moved.
+        // The two days must differ, or the trees come out the same however they are worked out and
+        // this says nothing. The second day runs a node the first never did.
         final Instant first = daysAgo(40);
+        final Instant second = first.plus(1, ChronoUnit.DAYS);
         load(first, 1);
-        load(first.plus(1, ChronoUnit.DAYS), 1);
+        load(second, 1, 20L, "Commit");
         load(Instant.now(), 1);
 
-        final PathNode one = fetchAt(first).getLayout();
-        final PathNode two = fetchAt(first.plus(1, ChronoUnit.DAYS)).getLayout();
+        final PathwayAsAt day = fetchAt(first);
+        final PathNode one = day.getLayout();
+        final PathNode two = fetchAt(second).getLayout();
 
         assertThat(nodeIdentities(one))
                 .as("the same tree whichever described day is asked for")
                 .isEqualTo(nodeIdentities(two))
                 .isNotEmpty();
         assertThat(nodeIdentities(one))
-                .as("and it holds the day's own nodes, so the drawing has somewhere to put them")
-                .containsAll(nodeIdentities(fetchAt(first).getPathway().getRoot()));
+                .as("holding what both days ran, not just the day being looked at")
+                .hasSizeGreaterThan(nodeIdentities(day.getPathway().getRoot()).size());
+        assertThat(nodeIdentities(one))
+                .as("and the day's own nodes among them, so the drawing has somewhere to put them")
+                .containsAll(nodeIdentities(day.getPathway().getRoot()));
     }
 
     @Test
@@ -805,6 +813,17 @@ class TestLoadingOldTraces {
     // whole of what a folded node's size leaves out.
     private void load(final Instant ran, final int traceCount, final long durationMs)
             throws IOException {
+        load(ran, traceCount, durationMs, null);
+    }
+
+    // The child span's name, or null for a trace that is a root and nothing else. A day given a
+    // child has a node the days either side of it do not, which is what tells a drawing laid out
+    // from one day apart from one laid out from the whole range.
+    private void load(final Instant ran,
+                      final int traceCount,
+                      final long durationMs,
+                      final String child)
+            throws IOException {
         final List<byte[]> traceIds = new ArrayList<>();
         try (final TraceDb bucket = TraceDb.create(
                 bucketDir, BYTE_BUFFERS, BYTE_BUFFER_FACTORY, tracesDoc, false)) {
@@ -825,6 +844,22 @@ class TestLoadingOldTraces {
                                             NanoTimeUtil.fromInstant(ran.plusMillis(durationMs)))
                                     .insertTime(NanoTimeUtil.fromInstant(Instant.now()))
                                     .build()));
+                    if (child != null) {
+                        bucket.insert(writer, new SpanKV(
+                                SpanKey.builder()
+                                        .traceId(traceId)
+                                        .spanId(CHILD_SPAN)
+                                        .parentSpanId(ROOT_SPAN)
+                                        .build(),
+                                SpanValue.builder()
+                                        .name(child)
+                                        .startTimeUnixNano(
+                                                NanoTimeUtil.fromInstant(ran.plusMillis(1L)))
+                                        .endTimeUnixNano(
+                                                NanoTimeUtil.fromInstant(ran.plusMillis(2L)))
+                                        .insertTime(NanoTimeUtil.fromInstant(Instant.now()))
+                                        .build()));
+                    }
                 }
             });
             final Path queue = Files.createDirectories(tempDir.resolve("queue"));

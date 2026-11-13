@@ -405,6 +405,18 @@ public class ShardedPathwayReader {
      * the oldest day that can have anything in it.
      */
     private int oldestArchivedDay(final PathwaysDoc doc, final int shard) {
+        return archivedDays(doc, shard)[0];
+    }
+
+    private int newestArchivedDay(final PathwaysDoc doc, final int shard) {
+        return archivedDays(doc, shard)[1];
+    }
+
+    // The first and last day the buckets of one shard could hold anything for, read off their names
+    // without opening any of them. Both are the whole of what is known about where a pathway's
+    // records begin and end before any of them are read, and neither depends on what is being
+    // looked at - which is what lets a range of days share one answer.
+    private int[] archivedDays(final PathwaysDoc doc, final int shard) {
         final List<String> weeks;
         try {
             weeks = shardStore.archivedWeeks(doc, shard);
@@ -412,19 +424,24 @@ public class ShardedPathwayReader {
             LOGGER.error(() -> "Could not list the buckets of shard " + shard + " of " + doc.getName()
                                + ", so no day before the model came into being is described: "
                                + e.getMessage(), e);
-            return Integer.MAX_VALUE;
+            return new int[]{Integer.MAX_VALUE, Integer.MIN_VALUE};
         }
         int oldest = Integer.MAX_VALUE;
+        int newest = Integer.MIN_VALUE;
         for (final String week : weeks) {
             final BucketGranularity granularity = BucketGranularityUtil.detect(week);
-            final Instant start = granularity == null
-                    ? null
-                    : BucketGranularityUtil.bucketStart(granularity, week);
-            if (start != null) {
-                oldest = Math.min(oldest, dayOf(start.toEpochMilli()));
+            if (granularity != null) {
+                final Instant start = BucketGranularityUtil.bucketStart(granularity, week);
+                final Instant end = BucketGranularityUtil.bucketEnd(granularity, week);
+                if (start != null) {
+                    oldest = Math.min(oldest, dayOf(start.toEpochMilli()));
+                }
+                if (end != null) {
+                    newest = Math.max(newest, dayOf(end.toEpochMilli() - 1));
+                }
             }
         }
-        return oldest;
+        return new int[]{oldest, newest};
     }
 
     // The last day that has no change row of its own. A model comes into being with its first
@@ -795,9 +812,16 @@ public class ShardedPathwayReader {
         // changed shape, and every described day says what the drawing is laid out from.
         final int windowStart = oldestDayOfWindow(doc, asAtMs);
         final int firstDescribed = oldestArchivedDay(doc, shard);
-        // Never past the date being looked at where no model came into being. The largest day there
-        // is would read every bucket from the oldest record up to now to draw one picture.
-        final int lastDescribed = Math.min(lastDayBeforeTheModel(pathway), Math.max(day, firstDescribed));
+        // The same for every day in the range, never the day being looked at. The tree below is
+        // what the drawing is laid out from, and a tree that changed with the date would be a
+        // different set of nodes at every step - which is a drawing built again rather than moved.
+        //
+        // Where no model came into being the day before it did says nothing, so the newest day the
+        // buckets could hold anything for stands in. Read off their names, so it costs no more than
+        // the oldest day already does and does not read every bucket up to now.
+        final int lastDescribed = Pathway.hasModel(pathway)
+                ? lastDayBeforeTheModel(pathway)
+                : newestArchivedDay(doc, shard);
         final boolean described = firstDescribed <= lastDescribed;
         final int from = described
                 ? Math.min(PathwayNarrower.oldestDayInWindow(doc, windowStart - 1), firstDescribed)
