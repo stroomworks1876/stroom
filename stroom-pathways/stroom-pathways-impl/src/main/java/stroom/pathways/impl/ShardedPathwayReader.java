@@ -298,7 +298,7 @@ public class ShardedPathwayReader {
         return new PathwayMutationResultPage(page, pageResponse,
                 bound(window, TimeFilter::getFrom, 0L),
                 bound(window, TimeFilter::getTo, Long.MAX_VALUE),
-                bars(rows, window, lastDayBeforeTheModel(found[0])));
+                bars(rows, window, found[0]));
     }
 
     /**
@@ -431,14 +431,17 @@ public class ShardedPathwayReader {
     // change, so everything before that day is answered by folding and everything after by the
     // history itself.
     private static int lastDayBeforeTheModel(final Pathway pathway) {
-        // No model row at all, which is a pathway whose traces are all old history. Nothing is
-        // described, because there is nothing for a described day to come before.
-        if (pathway == null) {
-            return Integer.MIN_VALUE;
-        }
-        return pathway.getCreateTime() == null
-                ? Integer.MIN_VALUE
-                : dayOf(pathway.getCreateTime().toEpochMillis()) - 1;
+        // No row at all. Nothing is described, because there is nothing for a described day to come
+        // before.
+        //
+        // A row with no model behind it answers the largest day there is: no model came into being,
+        // so no day is left to the change history. That is a bound to narrow, never one to count up
+        // to - every caller meets it with something of its own.
+        return Pathway.hasModel(pathway)
+                ? dayOf(pathway.getCreateTime().toEpochMillis()) - 1
+                : pathway == null
+                        ? Integer.MIN_VALUE
+                        : Integer.MAX_VALUE;
     }
 
     private DayRecord foldOf(final PathwaysDoc doc,
@@ -475,8 +478,8 @@ public class ShardedPathwayReader {
      */
     private static List<HistoryBar> bars(final List<HistoryRow> rows,
                                          final TimeFilter window,
-                                         final int lastDescribed) {
-        final List<HistoryBar> bars = new ArrayList<>(dayBars(rows, lastDescribed));
+                                         final Pathway pathway) {
+        final List<HistoryBar> bars = new ArrayList<>(dayBars(rows, pathway));
         bars.addAll(changeBars(rows, window));
         return bars;
     }
@@ -503,7 +506,7 @@ public class ShardedPathwayReader {
      * is what the traces histogram needs because its span runs to {@code now()} and creeps. This span
      * is pinned at both ends by the records themselves, so there is nothing to hold still.
      */
-    private static List<HistoryBar> dayBars(final List<HistoryRow> rows, final int lastDescribed) {
+    private static List<HistoryBar> dayBars(final List<HistoryRow> rows, final Pathway pathway) {
         final NavigableMap<Integer, Long> byDay = new TreeMap<>();
         for (final HistoryRow row : rows) {
             if (row instanceof final PathwayDifference difference) {
@@ -514,7 +517,11 @@ public class ShardedPathwayReader {
             return List.of();
         }
         final int firstDay = byDay.firstKey();
-        final int lastDay = Math.max(lastDescribed, byDay.lastKey());
+        // Where a model came into being, the quiet days run up to the day before it did. Where none
+        // did there is nothing for them to run up to, so they stop at the newest day with a record.
+        final int lastDay = Pathway.hasModel(pathway)
+                ? Math.max(lastDayBeforeTheModel(pathway), byDay.lastKey())
+                : byDay.lastKey();
         final int days = (lastDay - firstDay) + 1;
         final int perBar = Math.max(1, ((days + DAY_BARS) - 1) / DAY_BARS);
 
@@ -752,12 +759,15 @@ public class ShardedPathwayReader {
     // Whether the change history reaches a moment, which is the whole test for which of the two
     // answers a date gets. A pathway comes into being with its first change, so nothing before that
     // can be wound back to. The time is on the row already in hand and nothing ever moves it
-    // backwards - a trace whose work ran before the window writes no change row and creates no
-    // pathway. Where a model is too old to carry the time, this says it reaches and the wind-back
-    // route finds out for itself.
+    // backwards - a trace whose work ran before the window writes no change row and teaches no
+    // model.
+    //
+    // No time at all means the row carries a name and nothing else, written so a pathway given only
+    // old traces can be found. There is no history to wind back through, so every date is answered
+    // by folding that date's days.
     private static boolean reaches(final Pathway pathway, final long asAtMs) {
-        final NanoTime createTime = pathway.getCreateTime();
-        return createTime == null || createTime.toEpochMillis() <= asAtMs;
+        return Pathway.hasModel(pathway)
+               && pathway.getCreateTime().toEpochMillis() <= asAtMs;
     }
 
     /**
@@ -785,7 +795,9 @@ public class ShardedPathwayReader {
         // changed shape, and every described day says what the drawing is laid out from.
         final int windowStart = oldestDayOfWindow(doc, asAtMs);
         final int firstDescribed = oldestArchivedDay(doc, shard);
-        final int lastDescribed = lastDayBeforeTheModel(pathway);
+        // Never past the date being looked at where no model came into being. The largest day there
+        // is would read every bucket from the oldest record up to now to draw one picture.
+        final int lastDescribed = Math.min(lastDayBeforeTheModel(pathway), Math.max(day, firstDescribed));
         final boolean described = firstDescribed <= lastDescribed;
         final int from = described
                 ? Math.min(PathwayNarrower.oldestDayInWindow(doc, windowStart - 1), firstDescribed)

@@ -352,6 +352,13 @@ public class PathwaysProcessor implements MergeStrategy {
                     // Once the hold's traces are in, before the commit that ends it. The day records
                     // go in with that commit rather than here.
                     traceProcessor.writeHistories(writer, pathwaysDb);
+                    // The names of pathways given only old traces, with them. One row per pathway
+                    // rather than one write per trace, which a year of history would make of it.
+                    // Counted here rather than in the loop above: whether a name is worth a row is
+                    // only known once the shard has been asked, and a shard left unpushed throws
+                    // the row away with the rest of the local copy.
+                    traceProcessor.writeNames(writer, pathwaysDb);
+                    counts.changed |= traceProcessor.wroteToTheShard();
                     writer.commit();
                     // The days whose traces ran before the window go to their buckets, never to the
                     // shard. After the commit, because a bucket is on the shared store and a failure
@@ -402,11 +409,12 @@ public class PathwaysProcessor implements MergeStrategy {
                         messageReceiver,
                         reader.getSource(),
                         oldestDayInWindow);
-                // Not whether the item was dealt with: a trace whose work ran before the window is
-                // dealt with and moves nothing here, and pushing the shard back for it would copy
-                // the whole model up to say nothing had changed.
+                // Not whether the item was dealt with, but whether anything reached the shard: a
+                // trace whose work ran before the window is dealt with and writes nothing here, and
+                // pushing the shard back for it would copy the whole model up to say nothing had
+                // changed.
                 counts.changed |= outcome == ApplyOutcome.APPLIED
-                                  && traceProcessor.movedTheModel();
+                                  && traceProcessor.wroteToTheShard();
                 allDealtWith[0] &= outcome != ApplyOutcome.NOT_APPLICABLE;
             });
         }

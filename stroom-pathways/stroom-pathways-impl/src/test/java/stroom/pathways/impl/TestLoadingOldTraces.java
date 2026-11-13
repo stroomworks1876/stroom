@@ -18,9 +18,11 @@ package stroom.pathways.impl;
 
 import stroom.bytebuffer.impl6.ByteBufferFactoryImpl;
 import stroom.bytebuffer.impl6.ByteBuffers;
+import stroom.pathways.shared.FindPathwayCriteria;
 import stroom.pathways.shared.FindPathwayMutationCriteria;
 import stroom.pathways.shared.PathwayAsAt;
 import stroom.pathways.shared.PathwayMutationResultPage;
+import stroom.pathways.shared.PathwaySummary;
 import stroom.pathways.shared.PathwaysDoc;
 import stroom.pathways.shared.pathway.DifferenceType;
 import stroom.pathways.shared.pathway.HistoryBar;
@@ -73,6 +75,7 @@ import java.util.Set;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.within;
 
 /**
  * Loading traces whose work ran long before the window, which is what the whole rebuild is for.
@@ -144,11 +147,15 @@ class TestLoadingOldTraces {
     }
 
     @Test
-    void oldTracesLeaveNothingInTheLiveShard() throws IOException {
+    void oldTracesLeaveNothingInTheLiveShardButTheName() throws IOException {
         load(daysAgo(400), 3);
 
         assertThat(liveShard(db -> count(db, db.getPathways())))
-                .as("no model: it would have been narrowed straight back out")
+                .as("one row per pathway, carrying its name so it can be found, and nothing else")
+                .isEqualTo(1L);
+        assertThat(liveShard(this::taughtRows))
+                .as("none of them has a model behind it: these traces would have been narrowed "
+                    + "straight back out")
                 .isZero();
         assertThat(liveShard(db -> count(db, db.getMutations())))
                 .as("no change rows either, because nothing changed")
@@ -159,6 +166,19 @@ class TestLoadingOldTraces {
         assertThat(liveShard(db -> count(db, db.getProcessingStatus())))
                 .as("no marker per trace - that is what makes loading a year affordable")
                 .isZero();
+    }
+
+    // How many rows in the live shard have been taught by a trace. One row per pathway is written so
+    // it can be found at all; a model behind that row is a different thing.
+    private long taughtRows(final PathwaysDb db) {
+        final PathwaySerde serde = new PathwaySerde(BYTE_BUFFER_FACTORY);
+        final long[] taught = {0L};
+        db.getPathways().iterate((key, value) -> {
+            if (Pathway.hasModel(serde.readPathway(value))) {
+                taught[0]++;
+            }
+        });
+        return taught[0];
     }
 
     @Test
@@ -393,6 +413,97 @@ class TestLoadingOldTraces {
         for (final PathNode child : NullSafe.list(node.getChildren())) {
             collectIdentities(child, found);
         }
+    }
+
+    @Test
+    void aPathwayGivenOnlyOldTracesCanStillBeFound() throws IOException {
+        // Nothing recent taught it, so it changes no model and has no row of its own. The list walks
+        // those rows, so without one it cannot be listed, cannot be opened, and none of what its
+        // days hold can be reached.
+        load(daysAgo(30), 1);
+
+        assertThat(reader().findPathways(doc, new FindPathwayCriteria(
+                        new PageRequest(0, 100), List.of(), null))
+                .getValues().stream().map(PathwaySummary::getName))
+                .as("listed by name, with no model behind it")
+                .containsExactly(OPERATION);
+    }
+
+    @Test
+    void aPathwayGivenOnlyOldTracesShowsWhatItHonestlyKnows() throws IOException {
+        // The two figures such a row can stand behind are about traces taking the path, which these
+        // did. The dates about a model are sent as nothing rather than as the epoch, which a reader
+        // would draw as a day in 1970.
+        final Instant first = daysAgo(400);
+        final Instant last = daysAgo(200);
+        load(first, 2);
+        load(last, 1);
+
+        final PathwaySummary summary = reader().findPathways(doc, new FindPathwayCriteria(
+                        new PageRequest(0, 100), List.of(), null))
+                .getValues().get(0);
+
+        assertThat(summary.getCreateTime())
+                .as("no model came into being, so there is no date to show")
+                .isNull();
+        assertThat(summary.getUpdateTime())
+                .as("and none was ever updated")
+                .isNull();
+        assertThat(summary.getTimesUsed())
+                .as("three traces took this path, whatever they taught")
+                .isEqualTo(3L);
+        assertThat(summary.getLastUsedTime().toEpochMillis())
+                .as("and the latest of them is when it was last used")
+                .isCloseTo(last.toEpochMilli(), within(1_000L));
+    }
+
+    @Test
+    void aPathwayGivenOnlyOldTracesAnswersADateByFolding() throws IOException {
+        load(daysAgo(30), 1);
+
+        final PathwayAsAt asAt = fetchAt(daysAgo(30));
+
+        assertThat(asAt.isFolded())
+                .as("there is no history to wind back through, so every date folds")
+                .isTrue();
+        assertThat(asAt.getPathway().getRoot())
+                .as("and the day's own model comes back")
+                .isNotNull();
+    }
+
+    @Test
+    void aPathwayGivenOnlyOldTracesDescribesAllItsDays() throws IOException {
+        load(daysAgo(30), 1);
+        load(daysAgo(20), 1);
+
+        final PathwayMutationResultPage listed = reader().findMutations(doc,
+                new FindPathwayMutationCriteria(new PageRequest(0, 1000), List.of(), null,
+                        OPERATION, null));
+
+        assertThat(listed.getValues().stream()
+                .filter(row -> row instanceof PathwayDifference)
+                .map(row -> ((PathwayDifference) row).getDay())
+                .distinct())
+                .as("no model came into being, so no day is left to the change history")
+                .containsExactlyInAnyOrder(dayOf(daysAgo(30)), dayOf(daysAgo(20)));
+    }
+
+    @Test
+    void theFirstTraceToTeachItIsStillTheOneThatCreatedIt() throws IOException {
+        // The name was already in the shard, so the trace that finally teaches the model finds a row
+        // where it would otherwise have found none. It has to be treated as the creating trace all
+        // the same, or the model has no moment it came into being and every date folds for ever.
+        load(daysAgo(30), 1);
+        load(Instant.now(), 1);
+
+        final PathwayAsAt asAt = reader().fetchPathwayAsAt(doc, OPERATION, null, null).orElseThrow();
+
+        assertThat(asAt.getPathway().getCreateTime())
+                .as("stamped by the trace that taught it, not left empty")
+                .isNotNull();
+        assertThat(asAt.isFolded())
+                .as("and a date now winds back where the history reaches it")
+                .isFalse();
     }
 
     private PathwayAsAt fetchAt(final Instant when) {

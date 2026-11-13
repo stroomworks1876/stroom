@@ -79,6 +79,32 @@ public class Pathway {
         return createTime;
     }
 
+    /**
+     * Whether a trace has ever taught this pathway anything.
+     *
+     * <p>False for a row carrying a name and nothing else, written so a pathway given only traces
+     * whose work ran before the window can be found at all. Those change no model, so without such a
+     * row nothing lists the pathway and nothing can open it.
+     *
+     * <p>Said with a create time of the epoch rather than none. The store writes a pathway's times
+     * without a flag for their absence, and giving them one would shift every field after the name
+     * in every row already on disk. No model came into being at the epoch, so the two cannot be
+     * confused. A reader never sees it: the row's summary sends no date at all where there is no
+     * model.
+     *
+     * <p>Here rather than beside either caller, so the reader deciding whether a date is folded or
+     * wound back and the processor deciding whether a trace brings a model into being cannot
+     * disagree about what the marker is.
+     */
+    public static boolean hasModel(final Pathway pathway) {
+        return pathway != null && hasModel(pathway.createTime);
+    }
+
+    /** The same, for a create time read loose rather than off a pathway. */
+    public static boolean hasModel(final NanoTime createTime) {
+        return createTime != null && !NanoTime.ZERO.equals(createTime);
+    }
+
     public NanoTime getUpdateTime() {
         return updateTime;
     }

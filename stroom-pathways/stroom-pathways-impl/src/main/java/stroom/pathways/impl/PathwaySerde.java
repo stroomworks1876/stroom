@@ -131,11 +131,24 @@ public class PathwaySerde {
         final long sizeBytes = byteBuffer.remaining();
         final Input input = new UnsafeByteBufferInput(byteBuffer);
         checkVersion(input.readByte(), PATHWAY_VERSION, "pathway", "pathways");
+        final String name = input.readString();
+        final NanoTime createTime = readNanoTime(input);
+        final NanoTime updateTime = readNanoTime(input);
+        final NanoTime lastUsedTime = readNanoTime(input);
+        // A row carrying a name and nothing else says so with the epoch, because these three are
+        // stored without a flag for their absence and changing that would make every row already
+        // written unreadable. Neither date is sent on, rather than sending a day in 1970 for a
+        // reader to draw. Last used stands: it is about traces taking the path, which these did.
+        final boolean named = !Pathway.hasModel(createTime);
         return new PathwaySummary(
-                input.readString(),
-                readNanoTime(input),
-                readNanoTime(input),
-                readNanoTime(input),
+                name,
+                named
+                        ? null
+                        : createTime,
+                named
+                        ? null
+                        : updateTime,
+                lastUsedTime,
                 input.readLong(),
                 input.readLong(),
                 input.readVarInt(true),

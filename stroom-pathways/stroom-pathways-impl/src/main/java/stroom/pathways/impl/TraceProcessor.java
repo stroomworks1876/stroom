@@ -17,6 +17,7 @@
 package stroom.pathways.impl;
 
 import stroom.bytebuffer.impl6.ByteBuffers;
+import stroom.pathways.shared.PathwaySummary;
 import stroom.pathways.shared.PathwaysDoc;
 import stroom.pathways.shared.otel.trace.NanoTime;
 import stroom.pathways.shared.otel.trace.Span;
@@ -144,8 +145,11 @@ public class TraceProcessor {
                     } else if (ranOn(trace) < oldestDayInWindow) {
                         // It would be narrowed straight back out, so the model is left alone, no
                         // change row is written and nothing is marked. What the day was given still
-                        // counts, and is kept until the end of the hold with the rest of its week.
-                        keepForABucket(trace, ranOn(trace), doc, messageReceiver, sourceUuid);
+                        // counts, and so does the fact that this pathway was given anything at all;
+                        // both are kept until the end of the hold.
+                        final NanoTime ranAt = ranAt(trace);
+                        keepForABucket(trace, dayOf(ranAt), doc, messageReceiver, sourceUuid);
+                        noteOldTrace(trace, ranAt);
                         return ApplyOutcome.APPLIED;
                     } else {
                         // No commit falls inside one trace. Its changes, the marker saying it was
@@ -162,7 +166,7 @@ public class TraceProcessor {
                             buildPathways(writer, trace, doc, messageReceiver, pathwaysDb, sourceUuid);
                             markProcessed(writer, processingStatus, keyByteBuffer);
                         });
-                        movedTheModel = true;
+                        wroteToTheShard = true;
                         writer.tryCommit();
                         return ApplyOutcome.APPLIED;
                     }
@@ -216,17 +220,101 @@ public class TraceProcessor {
     // Gathered rather than written where they are found, so a week is opened once for the whole hold
     // rather than once per trace. A bulk load is thousands of traces across a handful of weeks.
     private final Map<String, Map<DayOfPathway, DayRecord>> beforeTheWindow = new LinkedHashMap<>();
-    private boolean movedTheModel;
+    private boolean wroteToTheShard;
+    private final Map<String, OldTraces> names = new LinkedHashMap<>();
 
-    // The day a trace's work ran, read off the root span, which is where the mutator reads it too.
-    // A root span carrying no start time counts as having run now, so that deciding which route a
+    // The day a trace's work ran, which is the day its evidence is filed under.
+    private static int ranOn(final Trace trace) {
+        return dayOf(ranAt(trace));
+    }
+
+    // When a trace's work ran, read off the root span, which is where the mutator reads it too. A
+    // root span carrying no start time counts as having run now, so that deciding which route a
     // trace takes is never what breaks on one. Reading its spans still refuses such a trace, as it
     // always has, and that is where it is reported from.
-    private static int ranOn(final Trace trace) {
+    private static NanoTime ranAt(final Trace trace) {
         final NanoTime ranAt = NanoTime.fromString(trace.root().getStartTimeUnixNano());
-        return dayOf(ranAt == null
-                ? NanoTimeUtil.fromInstant(Instant.now())
-                : ranAt);
+        return ranAt == null
+                ? NanoTimeUtil.now()
+                : ranAt;
+    }
+
+    /**
+     * Notes that a pathway was given a trace whose work ran before the window.
+     *
+     * <p>Gathered rather than written where it is found, which is what every other thing this class
+     * writes per pathway does. Writing one means reading a row, decoding whatever model stands
+     * behind it and writing the whole of it back, and a bulk load of a year offers hundreds of
+     * thousands of these - so a hold gathers them and writes one row per pathway at the end.
+     */
+    private void noteOldTrace(final Trace trace, final NanoTime ranAt) {
+        names.merge(pathKeyOf(trace).toString(), new OldTraces(1L, ranAt), OldTraces::and);
+    }
+
+    /**
+     * Puts the names of pathways given only old traces into the live shard, with what those traces
+     * say about them.
+     *
+     * <p>Such a pathway teaches no model, so without a row of its own nothing lists it, nothing
+     * opens it, and none of what its days hold can be reached. The row carries its name and the key
+     * that finds its shard, and no create time, which is what says there is no model behind it.
+     *
+     * <p>Last used and times used do stand on it. They are about traces taking the path, which these
+     * did, whatever they taught.
+     *
+     * <p>A pathway that already has a model is left alone. Its counts are of traces that reached
+     * that model and these did not. Decided from the row's header, which stops before the model, so
+     * a back-filled trace for a busy pathway does not decode a tree of a thousand constraints to
+     * answer whether it has one.
+     */
+    void writeNames(final LmdbWriter writer, final PathwaysDb pathwaysDb) {
+        final SimpleDb pathways = pathwaysDb.getPathways();
+        names.forEach((name, seen) -> byteBuffers.useBytes(name.getBytes(StandardCharsets.UTF_8),
+                keyByteBuffer -> {
+                    final PathwaySummary header = pathways.get(writer.getWriteTxn(),
+                            keyByteBuffer.duplicate(), valueByteBuffer -> valueByteBuffer == null
+                                    ? null
+                                    : pathwaySerde.readSummary(valueByteBuffer));
+                    if (header != null && header.getCreateTime() != null) {
+                        return;
+                    }
+                    final Pathway named = header == null
+                            ? new Pathway.Builder()
+                                    .name(name)
+                                    .pathKey(new NamePathKey(name))
+                                    .root(new PathNode(name))
+                                    // The epoch on both, which is what says no model came into
+                                    // being. See Pathway.hasModel.
+                                    .createTime(NanoTime.ZERO)
+                                    .updateTime(NanoTime.ZERO)
+                                    .lastUsedTime(seen.ranAt())
+                                    .timesUsed(seen.count())
+                                    .build()
+                            : pathways.get(writer.getWriteTxn(), keyByteBuffer.duplicate(),
+                                    pathwaySerde::readPathway)
+                                    .copy()
+                                    .lastUsedTime(Times.compare(seen.ranAt(),
+                                            header.getLastUsedTime()) > 0
+                                            ? seen.ranAt()
+                                            : header.getLastUsedTime())
+                                    .timesUsed(header.getTimesUsed() + seen.count())
+                                    .build();
+                    pathwaySerde.writePathway(named, 0, valueByteBuffer ->
+                            pathways.insert(writer, keyByteBuffer.duplicate(), valueByteBuffer));
+                    wroteToTheShard = true;
+                }));
+        names.clear();
+    }
+
+    /** What a hold's old traces said about one pathway, before any of it is written. */
+    private record OldTraces(long count, NanoTime ranAt) {
+
+        private OldTraces and(final OldTraces arrived) {
+            return new OldTraces(count + arrived.count(),
+                    Times.compare(arrived.ranAt(), ranAt) > 0
+                            ? arrived.ranAt()
+                            : ranAt);
+        }
     }
 
     private void keepForABucket(final Trace trace,
@@ -254,10 +342,17 @@ public class TraceProcessor {
         return byWeek;
     }
 
-    /** Whether anything this processor was given actually moved a model. */
-    boolean movedTheModel() {
-        return movedTheModel;
+    /**
+     * Whether anything was written to the live shard, which is the whole question the caller asks.
+     *
+     * <p>A model moving is one reason and naming a pathway that had no row is the other. A shard
+     * left unpushed throws away the local copy, so either is enough.
+     */
+    boolean wroteToTheShard() {
+        return wroteToTheShard;
     }
+
+
 
     /**
      * What is written against a trace that has been applied: when it was applied, so the entry can be
@@ -324,6 +419,21 @@ public class TraceProcessor {
                 storedSize[0] = valueByteBuffer.remaining();
                 return pathwaySerde.readPathway(valueByteBuffer);
             });
+
+            // A row carrying a name and nothing else, written so a pathway given only old traces can
+            // be found at all. No create time is what says so. This trace is the one bringing the
+            // model into being, so it is treated exactly as it would have been had the row not been
+            // there: stamped, counted as a creation rather than an update, and handed no root, so
+            // the mutator builds one from nothing and records that as a change like any other.
+            if (!Pathway.hasModel(pathway)) {
+                created[0] = true;
+                final NanoTime stamp = NanoTimeUtil.fromInstant(Instant.now());
+                pathway = pathway.copy()
+                        .createTime(stamp)
+                        .lastUsedTime(stamp)
+                        .root(null)
+                        .build();
+            }
 
             final PathNode pathNode = nodeMutator.process(trace, pathKey, pathway.getRoot(),
                     messageReceiver, doc);
