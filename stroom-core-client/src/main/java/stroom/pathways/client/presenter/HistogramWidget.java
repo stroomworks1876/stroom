@@ -444,7 +444,7 @@ public class HistogramWidget extends Composite {
     private String titleOf(final HistoryBar bar) {
         if (bar.isWholeDay()) {
             return dateTimeFormatter.format(bar.getFromMs(), "YYYY-MM-DD")
-                   + ": " + bar.getCount() + " moved";
+                   + ": " + bar.getCount();
         }
         return dateTimeFormatter.format(bar.getFromMs()) + " – "
                + dateTimeFormatter.format(bar.getToMs()) + ": " + bar.getCount();
