@@ -93,6 +93,16 @@ public class ShardedPathwayReader {
     private static final LambdaLogger LOGGER = LambdaLoggerFactory.getLogger(ShardedPathwayReader.class);
 
     /**
+     * How many bars the days before the model existed are shown in, at most.
+     *
+     * <p>Fewer than the change side gets, because the change side is what a reader is usually
+     * reading and these sit beside it. Below about this many the hatching stops reading: it repeats
+     * every seven pixels or so across a bar, so a bar much narrower shows one stripe or none, and a
+     * day bar that cannot show its hatching is just a bar.
+     */
+    private static final int DAY_BARS = 40;
+
+    /**
      * How many slices the stretch the change history reaches is cut into.
      *
      * <p>A count rather than a width, because the plot gives every bar the same room on screen, so
@@ -472,20 +482,26 @@ public class ShardedPathwayReader {
     }
 
     /**
-     * A bar for every day from the first that was given something to the day before the model came
-     * into being, counting what moved on each.
+     * Bars covering every day from the first that was given something to the day before the model
+     * came into being, counting what moved in each.
      *
-     * <p>The height is everything that moved that day, which is what opening the day in the table
-     * shows. Worked out from the fold rather than counted as traces arrive, so loading the same
-     * history twice leaves the bar where it was.
+     * <p>The height is everything that moved, which is what opening those days in the table shows.
+     * Worked out from the fold rather than counted as traces arrive, so loading the same history
+     * twice leaves the bar where it was.
      *
-     * <p>A day that was given nothing gets a bar of no height rather than no bar. Every bar takes the
-     * same room on screen, so leaving the quiet days out would stand a day in October next to one in
-     * November and say the work ran on both and on nothing in between.
+     * <p>A stretch that was given nothing gets a bar of no height rather than no bar. Every bar takes
+     * the same room on screen, so leaving the quiet days out would stand a day in October next to one
+     * in November and say the work ran on both and on nothing in between.
      *
-     * <p>It starts at the first day that has something, not at the oldest bucket. A model whose
-     * records begin a year before it did would otherwise be drawn as a year of empty bars with the
-     * changes crushed into the end of the panel.
+     * <p>They start at the first day that has something, not at the oldest bucket. A model whose
+     * records begin a year before it did would otherwise start with a year of empty bars.
+     *
+     * <p>How many days a bar covers is worked out rather than fixed, the same way the change side
+     * works out how long each of its slices is. A day apiece is the floor, because a day is the
+     * finest model there is, and the count is what gives way once there are more days than the panel
+     * can show them in. A width taken from a ladder would hold the edges still across requests, which
+     * is what the traces histogram needs because its span runs to {@code now()} and creeps. This span
+     * is pinned at both ends by the records themselves, so there is nothing to hold still.
      */
     private static List<HistoryBar> dayBars(final List<HistoryRow> rows, final int lastDescribed) {
         final NavigableMap<Integer, Long> byDay = new TreeMap<>();
@@ -497,11 +513,21 @@ public class ShardedPathwayReader {
         if (byDay.isEmpty()) {
             return List.of();
         }
+        final int firstDay = byDay.firstKey();
         final int lastDay = Math.max(lastDescribed, byDay.lastKey());
-        final List<HistoryBar> bars = new ArrayList<>((lastDay - byDay.firstKey()) + 1);
-        for (int day = byDay.firstKey(); day <= lastDay; day++) {
-            bars.add(new HistoryBar(startOfDay(day), endOfDay(day),
-                    byDay.getOrDefault(day, 0L), true));
+        final int days = (lastDay - firstDay) + 1;
+        final int perBar = Math.max(1, ((days + DAY_BARS) - 1) / DAY_BARS);
+
+        final List<HistoryBar> bars = new ArrayList<>(((days + perBar) - 1) / perBar);
+        for (int day = firstDay; day <= lastDay; day += perBar) {
+            // Never past the last described day: a bar standing over days the model already existed
+            // for would be answering with a fold for days the change history covers.
+            final int to = Math.min(lastDay, (day + perBar) - 1);
+            long moved = 0L;
+            for (int each = day; each <= to; each++) {
+                moved += byDay.getOrDefault(each, 0L);
+            }
+            bars.add(new HistoryBar(startOfDay(day), endOfDay(to), moved, true));
         }
         return bars;
     }

@@ -47,6 +47,11 @@ import java.util.function.Consumer;
  */
 public class HistogramWidget extends Composite {
 
+    // A moment pattern, not a Java one: the formatter takes what it is given and passes it straight
+    // through, and the two agree on the time but not the date.
+    private static final String DAY_FORMAT = "YYYY-MM-DD";
+    private static final long MILLIS_PER_DAY = 86_400_000L;
+
     private final HTML panel = new HTML();
     private final DateTimeFormatter dateTimeFormatter;
     // Held only for what a histogram knows beside its bars: whether a bucket is worth narrowing to,
@@ -443,11 +448,19 @@ public class HistogramWidget extends Composite {
     // because it is minutes or hours rather than something a date would identify.
     private String titleOf(final HistoryBar bar) {
         if (bar.isWholeDay()) {
-            return dateTimeFormatter.format(bar.getFromMs(), "YYYY-MM-DD")
-                   + ": " + bar.getCount();
+            return days(bar) + ": " + bar.getCount();
         }
         return dateTimeFormatter.format(bar.getFromMs()) + " – "
                + dateTimeFormatter.format(bar.getToMs()) + ": " + bar.getCount();
+    }
+
+    // The date a day-wide bar stands for, or both of its dates where it stands for a stretch of
+    // them. It does that once there are more days to show than the panel can give one bar each.
+    private String days(final HistoryBar bar) {
+        final String from = dateTimeFormatter.format(bar.getFromMs(), DAY_FORMAT);
+        return ((bar.getToMs() - bar.getFromMs()) + 1) > MILLIS_PER_DAY
+                ? from + " – " + dateTimeFormatter.format(bar.getToMs(), DAY_FORMAT)
+                : from;
     }
 
     private SafeHtml hint() {

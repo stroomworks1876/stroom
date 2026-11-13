@@ -599,6 +599,44 @@ class TestLoadingOldTraces {
     }
 
     @Test
+    void aLongStretchOfDaysIsShownInFewerWiderBars() throws IOException {
+        // Every bar takes the same room on screen, so a bar a day would draw a year as hundreds of
+        // slivers. The count gives way instead, and each bar covers more days.
+        load(daysAgo(400), 1);
+        load(daysAgo(200), 1);
+        load(Instant.now(), 1);
+
+        final List<HistoryBar> days = reader().findMutations(doc,
+                        new FindPathwayMutationCriteria(new PageRequest(0, 1000), List.of(), null,
+                                OPERATION, null))
+                .getBars().stream()
+                .filter(HistoryBar::isWholeDay)
+                .toList();
+
+        assertThat(days.size())
+                .as("four hundred days shown in a panel's worth of bars, not four hundred of them")
+                .isBetween(2, 40);
+        assertThat(days.get(0).getToMs() - days.get(0).getFromMs())
+                .as("so each one covers more than a day")
+                .isGreaterThan(TraceProcessor.MILLIS_PER_DAY);
+        assertThat(days.stream().mapToLong(HistoryBar::getCount).sum())
+                .as("and nothing that moved is lost in the merging")
+                .isEqualTo(listedDifferences());
+        assertThat(days.get(days.size() - 1).getToMs())
+                .as("stopping at the day before the model came into being, not past it")
+                .isLessThan(startOfDay(dayOf(Instant.now())));
+    }
+
+    private long listedDifferences() throws IOException {
+        return reader().findMutations(doc,
+                        new FindPathwayMutationCriteria(new PageRequest(0, 10000), List.of(), null,
+                                OPERATION, null))
+                .getValues().stream()
+                .filter(row -> row instanceof PathwayDifference)
+                .count();
+    }
+
+    @Test
     void aPathwayWithNoDescribedDaysHasOnlyChangeBars() throws IOException {
         load(Instant.now(), 2);
 
