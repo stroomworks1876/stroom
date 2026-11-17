@@ -44,7 +44,7 @@ import java.util.function.Function;
  * The learnt pathway model for one shard, the record of which traces have been folded into it, and
  * the changes each of them made.
  *
- * <p>Three plain tables and no serde, so this is not a {@link stroom.planb.impl.dao.Db}. Anything that
+ * <p>Plain tables and no serde, so this is not a {@link stroom.planb.impl.dao.Db}. Anything that
  * needs to size or copy the environment without knowing what is in it goes through
  * {@link PlanBEnv#openForMaintenance}.
  */
@@ -58,15 +58,17 @@ public class PathwaysDb implements AutoCloseable {
     protected final SimpleDb pathways;
     protected final SimpleDb mutations;
     protected final SimpleDb observedValues;
+    protected final SimpleDb dayIndex;
 
     private PathwaysDb(final PlanBEnv env,
-                       final ByteBuffers byteBuffers) {
+                       final ByteBuffers byteBuffers,
+                       final boolean readOnly) {
         this.env = env;
         this.byteBuffers = byteBuffers;
 
-        // Four plain key/value DBIs, created on first open. Unlike AbstractDb there is no stored
-        // schema to read back and validate, because neither key nor value goes through a versioned
-        // serde.
+        // Plain key/value DBIs, each created if the environment does not have it. Unlike AbstractDb
+        // there is no stored schema to read back and validate, because neither key nor value goes
+        // through a versioned serde.
         processingStatus = new SimpleDb(
                 env,
                 env.openDbi("processing-status", DbiFlags.MDB_CREATE),
@@ -83,6 +85,24 @@ public class PathwaysDb implements AutoCloseable {
                 env,
                 env.openDbi("observed-values", DbiFlags.MDB_CREATE),
                 new PutFlags[]{});
+        // The one table an environment is allowed not to have. Only a writer creates it, so one
+        // written by a build without it opens here with no index rather than refusing to open at
+        // all - and no index reads as nothing marked, which is what it is.
+        dayIndex = readOnly
+                ? openIfPresent(env, "day-index")
+                : new SimpleDb(env, env.openDbi("day-index", DbiFlags.MDB_CREATE), new PutFlags[]{});
+    }
+
+    // Opening a table that is not there, read only, fails outright rather than giving an empty one
+    // back - a table can only be made by a writer. So the attempt is made and a failure taken to
+    // mean the environment has none.
+    private static SimpleDb openIfPresent(final PlanBEnv env, final String name) {
+        try {
+            return new SimpleDb(env, env.openDbi(name), new PutFlags[]{});
+        } catch (final RuntimeException e) {
+            LOGGER.debug(() -> LogUtil.message("No {} table in {}: {}", name, env, e.getMessage()));
+            return null;
+        }
     }
 
     public SimpleDb getProcessingStatus() {
@@ -113,6 +133,29 @@ public class PathwaysDb implements AutoCloseable {
         return observedValues;
     }
 
+    /**
+     * Which days each model has a record for once that record has gone to a bucket, a bit apiece.
+     *
+     * <p>A bucket is a week compressed into one file, so asking it anything means copying it down
+     * and decompressing all of it. Walking back through a year of those to find the last day a
+     * model was seen is what this is here to replace.
+     *
+     * <p>Only days whose records have left the shard. One still here answers for itself: its key in
+     * {@link #getObservedValues()} ends with the day it is for, so a model's days sort together and
+     * the newest of them is one seek.
+     *
+     * <p>In the live shard rather than in the buckets it describes, because a reader consults it to
+     * decide whether to open a bucket at all - inside one it could only be read by doing the thing
+     * it exists to avoid.
+     *
+     * @return null where this environment has no such table, which is one opened for reading that a
+     * writer has not been through. Nothing is marked in that case, so a caller treats it as empty
+     * rather than as a failure.
+     */
+    public SimpleDb getDayIndex() {
+        return dayIndex;
+    }
+
     public LmdbWriter createWriter() {
         return env.createWriter();
     }
@@ -126,6 +169,13 @@ public class PathwaysDb implements AutoCloseable {
         env.close();
     }
 
+    /**
+     * Opens the environment at a path, making it where it is not there.
+     *
+     * @param readOnly whether to open for reading only. A writer makes every table it needs; a
+     *                 reader takes the tables it finds, so one opened for reading may have no day
+     *                 index and answers {@link #getDayIndex()} with null.
+     */
     public static PathwaysDb create(final Path path,
                                     final ByteBuffers byteBuffers,
                                     final boolean readOnly) {
@@ -139,7 +189,8 @@ public class PathwaysDb implements AutoCloseable {
         try {
             return new PathwaysDb(
                     env,
-                    byteBuffers);
+                    byteBuffers,
+                    readOnly);
         } catch (final RuntimeException e) {
             // Close the env if we get any exceptions to prevent them staying open.
             try {

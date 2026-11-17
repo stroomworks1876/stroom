@@ -804,10 +804,10 @@ public class PathwayEditPresenter
         this.docRef = pathwaysDoc.asDocRef();
         this.name = name;
         setDirty(false);
-        // Opened on the model as it stands. Nothing older is read until a range is picked that
-        // reaches further back.
-        timeRangeSelector.setValue(TimeRanges.ALL_TIME);
-        showOver(TimeRanges.ALL_TIME);
+        // The range picks which changes are listed and plotted, not how much of the model is
+        // drawn: one ending now takes nothing off it.
+        timeRangeSelector.setValue(TimeRanges.TODAY);
+        showOver(TimeRanges.TODAY);
     }
 
     // A different range is a different set of rows, so both tables are rebuilt and the histogram

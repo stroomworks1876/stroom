@@ -67,11 +67,13 @@ import java.nio.ByteBuffer;
 import java.nio.file.Path;
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collection;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Map.Entry;
 import java.util.Objects;
 import java.util.Set;
 import java.util.function.Consumer;
@@ -212,6 +214,10 @@ public class PathwayNarrower {
                                 expiredDays.getOrDefault(week, List.of()),
                                 expiredRows.getOrDefault(week, List.of())));
 
+                // Marked before they are dropped, in this same transaction, so a day is never both
+                // gone from here and unmarked - which would be a day only a bucket can answer for
+                // with nothing saying which bucket.
+                changed |= markArchived(writer, pathwaysDb, expiredDays);
                 expiredDays.values().forEach(rows -> drop(writer, pathwaysDb.getObservedValues(), rows));
                 droppableRows.values().forEach(rows ->
                         mutationLog.drop(writer, pathwaysDb.getMutations(), rows));
@@ -388,6 +394,37 @@ public class PathwayNarrower {
     static String weekOf(final int day) {
         return BucketGranularityUtil.label(BucketGranularity.WEEK,
                 Instant.ofEpochMilli((long) day * TraceProcessor.MILLIS_PER_DAY));
+    }
+
+    // Marks the days whose records have just gone to a bucket, so a reader can find them again
+    // without opening one. A day record still here answers for itself - its key ends with its day -
+    // so only the ones leaving are worth marking.
+    //
+    // Returns whether any bit actually flipped. A pass that marked only days already marked has
+    // changed nothing, and an unchanged shard is not pushed back.
+    private boolean markArchived(final LmdbWriter writer,
+                                 final PathwaysDb pathwaysDb,
+                                 final Map<String, List<Row>> expiredDays) {
+        // Gathered per model first, because the index is a row per model and writing one means
+        // reading it back, setting its bits and writing the whole row again.
+        final Map<String, byte[]> keyOf = new LinkedHashMap<>();
+        final Map<String, List<Integer>> daysOf = new LinkedHashMap<>();
+        expiredDays.values().forEach(rows -> rows.forEach(row -> {
+            final byte[] key = row.key();
+            final byte[] pathwayKey = Arrays.copyOf(key, key.length - 1 - Integer.BYTES);
+            final String owner = asText(pathwayKey);
+            keyOf.putIfAbsent(owner, pathwayKey);
+            daysOf.computeIfAbsent(owner, o -> new ArrayList<>())
+                    .add(TraceProcessor.dayOf(ByteBuffer.wrap(key)));
+        }));
+
+        final SimpleDb index = pathwaysDb.getDayIndex();
+        boolean marked = false;
+        for (final Entry<String, List<Integer>> entry : daysOf.entrySet()) {
+            marked |= DayIndex.mark(writer, index, byteBuffers, keyOf.get(entry.getKey()),
+                    entry.getValue());
+        }
+        return marked;
     }
 
     private void drop(final LmdbWriter writer, final SimpleDb db, final List<Row> rows) {

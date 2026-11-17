@@ -38,6 +38,7 @@ import stroom.pathways.shared.PathwaysResource;
 import stroom.pathways.shared.otel.trace.NanoTime;
 import stroom.pathways.shared.pathway.Pathway;
 import stroom.preferences.client.DateTimeFormatter;
+import stroom.query.api.TimeRanges;
 import stroom.svg.client.SvgPresets;
 import stroom.util.client.DataGridUtil;
 import stroom.util.shared.ModelStringUtil;
@@ -374,7 +375,12 @@ public class PathwayListPresenter
 
         restFactory
                 .create(PATHWAYS_RESOURCE)
-                .method(res -> res.fetchPathway(new FetchPathwayRequest(docRef, name)))
+                // Over the same span the tab beside it opens on, so one pathway looks the same
+                // whichever of the two is showing it. A request naming no moment at all is answered
+                // with the stored row and nothing else - which for a pathway that has taught no
+                // model is a bare root and no drawing worth the name.
+                .method(res -> res.fetchPathway(
+                        FetchPathwayRequest.over(docRef, name, TimeRanges.TODAY)))
                 .onSuccess(result -> {
                     if (request == requests) {
                         fetching = false;

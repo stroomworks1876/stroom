@@ -154,7 +154,7 @@ public class PathwayMutationListPresenter extends MyPresenterWidget<PagerView> {
         collapseAllButton = pagerView.addButton(SvgPresets.COLLAPSE_ALL);
 
         histogram = new HistogramWidget(dateTimeFormatter);
-        histogram.setEmptyText("Nothing has changed this model yet");
+        histogram.setEmptyText("Nothing has changed the model during the selected time range");
         // The bars cover everything that has ever taught this model, which runs to days — so the time
         // on its own would not say which day either end of it was.
         histogram.setShowDate(true);

@@ -358,6 +358,10 @@ public class PathwaysProcessor implements MergeStrategy {
                     // only known once the shard has been asked, and a shard left unpushed throws
                     // the row away with the rest of the local copy.
                     traceProcessor.writeNames(writer, pathwaysDb);
+                    // The days those old traces are about, marked before the commit below and so
+                    // before their buckets are written. A reader asks this rather than opening a
+                    // year of buckets to find out which of them holds anything for a pathway.
+                    counts.changed |= traceProcessor.writeDayIndex(writer, pathwaysDb);
                     counts.changed |= traceProcessor.wroteToTheShard();
                     writer.commit();
                     // The days whose traces ran before the window go to their buckets, never to the

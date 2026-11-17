@@ -39,6 +39,7 @@ import stroom.pathways.shared.pathway.PathwayReplay;
 import stroom.pathways.shared.pathway.PathwayUsage;
 import stroom.planb.impl.dao.ShardKeyRouter;
 import stroom.planb.impl.dao.trace.PathwaysDb;
+import stroom.planb.impl.dao.trace.PathwaysDb.SimpleDb;
 import stroom.planb.impl.data.archive.BucketGranularityUtil;
 import stroom.planb.shared.BucketGranularity;
 import stroom.planb.shared.SharedFileStoreSettings;
@@ -66,6 +67,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.NavigableMap;
 import java.util.Optional;
+import java.util.OptionalInt;
 import java.util.Set;
 import java.util.SortedSet;
 import java.util.TreeMap;
@@ -753,6 +755,8 @@ public class ShardedPathwayReader {
         final List<PathwayMutation> mutations = new ArrayList<>();
         final List<PathwayUsage> usage = new ArrayList<>();
         final DayRecord[] days = {DayRecord.empty()};
+        // The day the model is folded from, which is the day asked for unless that day has nothing.
+        final int[] foldDay = {0};
         readShard(doc, shard, db -> {
             withKey(name, keyBuffer -> db.getPathways().get(keyBuffer, valueBuffer -> {
                 if (valueBuffer != null) {
@@ -768,7 +772,25 @@ public class ShardedPathwayReader {
             // change this model has ever made only to throw them away.
             folding[0] = asAtMs != null && toSequence == null && !reaches(found[0], asAtMs);
             if (folding[0]) {
-                days[0] = daysIn(db, prefix, oldestDayOfWindow(doc, asAtMs), dayOf(asAtMs));
+                final int wanted = dayOf(asAtMs);
+                final int windowStart = oldestDayOfWindow(doc, asAtMs);
+                foldDay[0] = wanted;
+                days[0] = daysIn(db, prefix, windowStart, wanted);
+                if (days[0].nodes().isEmpty()) {
+                    // Nothing in the window asked for. Rather than draw nothing, go back to the
+                    // last day this pathway was seen at all and show that - still answering for the
+                    // moment asked for, so every node is coloured by how long ago it really was.
+                    //
+                    // The index is what makes that cheap. Without it, finding that day means
+                    // opening a bucket per week until one has something, and a pathway last seen a
+                    // year ago is fifty weeks of copying down and decompressing to learn one date.
+                    final OptionalInt lastSeen = lastIndexedDay(db, keyBytes, wanted);
+                    if (lastSeen.isPresent() && lastSeen.getAsInt() < windowStart) {
+                        foldDay[0] = lastSeen.getAsInt();
+                        days[0] = daysIn(db, prefix,
+                                oldestDayOfWindow(doc, endOfDay(foldDay[0])), foldDay[0]);
+                    }
+                }
             } else {
                 mutations.addAll(mutationLog.read(db.getMutations(), keyBytes));
                 usage.addAll(mutationLog.readUsage(db.getMutations(), keyBytes));
@@ -780,7 +802,7 @@ public class ShardedPathwayReader {
             return Optional.empty();
         }
         if (folding[0]) {
-            return Optional.of(folded(doc, shard, prefix, found[0], asAtMs, days[0]));
+            return Optional.of(folded(doc, shard, prefix, found[0], asAtMs, foldDay[0], days[0]));
         }
         // A wind-back needs every change between the moment asked for and now, and gathering them
         // opens a bucket per week in between - so a date from a year ago opens a year of them. That
@@ -788,6 +810,21 @@ public class ShardedPathwayReader {
         // those changes can help.
         addArchived(doc, shard, keyBytes, asAtMs, nowMs, mutations, usage);
         return Optional.of(asAt(found[0], mutations, usage, asAtMs, toSequence, nowMs));
+    }
+
+    // The newest day at or before this one that this pathway has a record for, as far as the index
+    // knows. The index covers days whose records have gone to a bucket, which are the ones nothing
+    // else can answer cheaply; a day still in the shard is found by reading the shard.
+    private static OptionalInt lastIndexedDay(final PathwaysDb db, final byte[] keyBytes, final int day) {
+        final SimpleDb index = db.getDayIndex();
+        if (index == null) {
+            // A shard no writer has been through since the index was added. Nothing is marked, so
+            // there is no day to go back to and the date answers as it did before.
+            return OptionalInt.empty();
+        }
+        final ByteBuffer key = ByteBuffer.allocateDirect(keyBytes.length);
+        key.put(keyBytes).flip();
+        return index.get(key, value -> DayIndex.read(value).lastOnOrBefore(day));
     }
 
     // Whether the change history reaches a moment, which is the whole test for which of the two
@@ -813,21 +850,27 @@ public class ShardedPathwayReader {
      * every node of a folded model comes out at its smallest and in the never-changed colour. Only
      * the links vary, because their width comes from use. That is what the differences between days
      * are for, and they are not built yet.
+     *
+     * @param asAtMs the moment answered for, which is what the drawing counts ages back from.
+     * @param day    the day the model is folded from. The same day as {@code asAtMs} unless that
+     *               day's window holds nothing, in which case it is the last day this pathway was
+     *               seen at all - so the picture is of that day while still being coloured by how
+     *               long ago it was.
      */
     private PathwayAsAt folded(final PathwaysDoc doc,
                                final int shard,
                                final ByteBuffer prefix,
                                final Pathway pathway,
                                final long asAtMs,
+                               final int day,
                                final DayRecord fromTheShard) {
-        final int day = dayOf(asAtMs);
         final PathwayFold fold = new PathwayFold(DayRecord.merge(fromTheShard,
-                bucketDays(doc, shard, prefix, oldestDayOfWindow(doc, asAtMs), day)));
+                bucketDays(doc, shard, prefix, oldestDayOfWindow(doc, endOfDay(day)), day)));
         final Pathway model = fold.model(pathway.getPathKey(), pathway.getName());
 
         // Every day record either answer needs, read once. The window's days say how much each node
         // changed shape, and every described day says what the drawing is laid out from.
-        final int windowStart = oldestDayOfWindow(doc, asAtMs);
+        final int windowStart = oldestDayOfWindow(doc, endOfDay(day));
         final int firstDescribed = oldestArchivedDay(doc, shard);
         // The same for every day in the range, never the day being looked at. The tree below is
         // what the drawing is laid out from, and a tree that changed with the date would be a

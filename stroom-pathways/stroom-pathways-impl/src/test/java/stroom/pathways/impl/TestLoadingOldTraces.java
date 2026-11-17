@@ -253,10 +253,8 @@ class TestLoadingOldTraces {
     }
 
     @Test
-    void aWindowThatMissesEveryDayDrawsNothing() throws IOException {
+    void aWindowThatMissesEveryDayFallsBackToTheLastDayThereIs() throws IOException {
         load(daysAgo(400), 3);
-        // Traffic today as well, because a pathway whose traces are all old history has no model
-        // row and so cannot be fetched at all - a limit of its own, not the one being tested here.
         load(Instant.now(), 1);
 
         final PathwayAsAt asAt = fetchAt(daysAgo(200));
@@ -264,9 +262,13 @@ class TestLoadingOldTraces {
         assertThat(asAt.isFolded())
                 .as("it took the folding route, because no change was made that long ago")
                 .isTrue();
-        assertThat(asAt.getPathway().getRoot())
-                .as("the days are real but none of them is in this window")
-                .isNull();
+        // The days are real but none of them is in this window. Drawing nothing says the pathway
+        // did nothing, when what happened is that it did nothing lately - so the last day it was
+        // seen on is shown instead, and the colours say how long ago that was.
+        assertThat(asAt.getPathway().getRoot()).isNotNull();
+        assertThat(asAt.getPathway().getRoot().getTimesUsed())
+                .as("the three traces of the day it was last seen")
+                .isEqualTo(3L);
     }
 
     // -----------------------------------------------------------------------
@@ -755,6 +757,42 @@ class TestLoadingOldTraces {
                 .getValues().stream()
                 .filter(row -> row instanceof PathwayDifference)
                 .count();
+    }
+
+    @Test
+    void aPathwaySeenOnlyLongAgoStillDrawsOnTodaysDate() throws IOException {
+        // The case the index is for. Those traces taught no model and their day records went
+        // straight to a bucket, so the window ending today holds nothing for this pathway - and
+        // before the index, today drew a blank rather than the model it had back then.
+        load(daysAgo(400), 3);
+
+        final PathwayAsAt asAt = fetchAt(Instant.now());
+
+        assertThat(asAt.isFolded())
+                .as("there is no model to wind back through, so it is built from the day records")
+                .isTrue();
+        assertThat(asAt.getPathway().getRoot())
+                .as("the model as it stood when it was last seen, rather than nothing at all")
+                .isNotNull();
+        assertThat(asAt.getPathway().getRoot().getTimesUsed()).isEqualTo(3L);
+        assertThat(asAt.getAsAt())
+                .as("still answering for the moment asked for, so every node is coloured by how "
+                    + "long ago it really was - which for this one is over a year")
+                .isNotNull();
+    }
+
+    @Test
+    void aDateWithTrafficOfItsOwnIsNotSentBackwards() throws IOException {
+        // The index must only stand in where the window has nothing. A date whose own window holds
+        // records is answered from those, not from whatever came before them.
+        load(daysAgo(400), 3);
+        load(daysAgo(1), 7);
+
+        final PathwayAsAt asAt = fetchAt(daysAgo(1));
+
+        assertThat(asAt.getPathway().getRoot().getTimesUsed())
+                .as("yesterday's seven traces, not the three from a year ago")
+                .isEqualTo(7L);
     }
 
     @Test

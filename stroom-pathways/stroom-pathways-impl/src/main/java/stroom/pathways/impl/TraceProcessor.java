@@ -42,6 +42,7 @@ import stroom.util.shared.Severity;
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.LinkedHashMap;
@@ -327,6 +328,43 @@ public class TraceProcessor {
                 .merge(DayOfPathway.of(pathwayKey, day),
                         observed(trace, doc, messageReceiver, sourceUuid),
                         DayRecord::merge);
+    }
+
+    /**
+     * Marks the days gathered from traces whose work ran before the window.
+     *
+     * <p>Those day records go straight to a bucket and never reach the live shard, so nothing else
+     * would ever record that the pathway has them. This is the one case the index exists for.
+     *
+     * <p>Written into the hold's own transaction, which the caller commits before it writes the
+     * buckets. That order is the safe one: a failure in between leaves the index naming a day whose
+     * bucket was never written, and a reader opens it, finds nothing and carries on. The other way
+     * round leaves a day in a bucket that nothing points at, which is the same as losing it.
+     *
+     * @return whether any day was marked that was not marked already, which is whether the shard is
+     * worth pushing back for this.
+     */
+    boolean writeDayIndex(final LmdbWriter writer, final PathwaysDb pathwaysDb) {
+        // Gathered per pathway first. The index is a row apiece, so writing one means reading it,
+        // setting its bits and putting the whole row back - and a week of old history offers the
+        // same pathway a day at a time.
+        final Map<String, byte[]> keyOf = new LinkedHashMap<>();
+        final Map<String, List<Integer>> daysOf = new LinkedHashMap<>();
+        beforeTheWindow.values().forEach(days -> days.keySet().forEach(dayOfPathway -> {
+            final byte[] key = dayOfPathway.bytes();
+            final byte[] pathwayKey = Arrays.copyOf(key, key.length - 1 - Integer.BYTES);
+            final String owner = new String(pathwayKey, StandardCharsets.UTF_8);
+            keyOf.putIfAbsent(owner, pathwayKey);
+            daysOf.computeIfAbsent(owner, o -> new ArrayList<>())
+                    .add(dayOf(ByteBuffer.wrap(key)));
+        }));
+
+        boolean marked = false;
+        for (final Entry<String, List<Integer>> entry : daysOf.entrySet()) {
+            marked |= DayIndex.mark(writer, pathwaysDb.getDayIndex(), byteBuffers,
+                    keyOf.get(entry.getKey()), entry.getValue());
+        }
+        return marked;
     }
 
     /**
