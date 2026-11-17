@@ -195,6 +195,11 @@ public class PathwayMutationListPresenter extends MyPresenterWidget<PagerView> {
     private Runnable plotChangeHandler;
     // True while setData is replacing the rows, which brings its own plot with it.
     private boolean replacing;
+    // What the reader had set up, to be carried onto the rows replacing the ones on screen. All
+    // null between one lot of rows and the next.
+    private PathNode keptNode;
+    private Filter keptFilter;
+    private MutationRow keptRow;
 
     /**
      * The change rows among what the table is showing.
@@ -297,27 +302,19 @@ public class PathwayMutationListPresenter extends MyPresenterWidget<PagerView> {
                 : time.toEpochMillis();
     }
 
-    /**
-     * Puts a row back, where the rows now listed still hold it.
-     *
-     * <p>What a change of range uses. Narrowing the span listed is the same history read over a
-     * shorter stretch, so a row still in it is still the row the reader was on, and taking the
-     * selection away would send the drawing back to the model as it stands without being asked.
-     *
-     * <p>Does nothing where the row has gone, which is a range that no longer reaches it. Nothing is
-     * picked instead of something near it: a neighbouring change is a different change, and quietly
-     * moving the reader onto one would say they were looking at something they are not.
-     */
-    public void reselect(final MutationRow row) {
+    // Picks the row again, where the rows now listed still hold it. The same history read over a
+    // different range, or read again, is still the same history, so a row still in it is still the
+    // row the reader was on - and taking the selection away would send the drawing back to the
+    // model as it stands without being asked.
+    //
+    // Nothing is picked where the row has gone. A neighbouring change is a different change, and
+    // moving the reader onto one would say they were looking at something they are not.
+    private void reselect(final MutationRow row) {
         if (row == null) {
             return;
         }
-        // A change sits under the trace that made it and the rows were just collapsed, so the trace
-        // has to be opened again before the change is among them to be found.
-        if (!row.isParent()) {
-            treeAction.setExpanded(row.getGroup(), true);
-            order();
-        }
+        // The trace a change sits under was opened before the rows were built, so the row is among
+        // them already and nothing here has to build them again.
         for (final MutationRow candidate : dataProvider.getList()) {
             if (candidate.equals(row)) {
                 selectionModel.setSelected(candidate);
@@ -512,20 +509,59 @@ public class PathwayMutationListPresenter extends MyPresenterWidget<PagerView> {
         this.windowTo = windowTo;
         this.bars = NullSafe.list(bars);
         replacing = true;
-        // Whatever was selected belonged to the list being replaced, and the view around this one asks
-        // what is selected to decide which model to show.
-        selectionModel.clear();
+        try {
+            // Whatever was selected belonged to the list being replaced, and the view around this
+            // one asks what is selected to decide which model to show.
+            selectionModel.clear();
 
-        // This is reused for every pathway opened, so which of the last one's traces were open, and
-        // whatever it was narrowed to, are not carried over to the next.
-        treeAction.collapseAll();
-        selectedNode = null;
-        setFilter(Filter.OFF);
-        this.mutations = new ArrayList<>(NullSafe.list(mutations));
-        order();
-        replacing = false;
+            // Nothing kept is a different pathway, so which of the last one's traces were open and
+            // whatever it was narrowed to do not come with it. Something kept is these same rows
+            // asked for again, where all of that is what the reader is still looking at.
+            if (keeping()) {
+                if (keptRow != null && !keptRow.isParent()) {
+                    // The trace the kept row sits under, opened before the rows are built so the
+                    // row is among them to be found.
+                    treeAction.setExpanded(keptRow.getGroup(), true);
+                }
+            } else {
+                treeAction.collapseAll();
+            }
+            selectedNode = NullSafe.get(keptNode, PathNode::getUuid);
+            filter = NullSafe.getOrElse(keptFilter, f -> f, Filter.OFF);
+            showFilterState();
+
+            this.mutations = new ArrayList<>(NullSafe.list(mutations));
+            // Built once, with the narrowing and the open traces already settled. Reset first and
+            // put back after, the table would show collapsed and unnarrowed for an instant on its
+            // way to what it already was, which is a flicker for no answer.
+            order();
+            reselect(keptRow);
+        } finally {
+            replacing = false;
+            keep(null, null, null);
+        }
         histogram.setBars(bars);
         histogram.setSelectedTime(selectedMs());
+    }
+
+    /**
+     * What the reader had set up, to be carried onto the rows that replace the ones on screen: the
+     * node the table is narrowed to, the narrowing, and the row being looked at.
+     *
+     * <p>Said before the rows are handed over rather than put back after, so the table is built
+     * once with all of it in place. Nothing said means a different pathway, and none of it carries.
+     *
+     * <p>Held only until the next lot of rows arrives, so a hand-over nobody kept anything for
+     * starts clean.
+     */
+    public void keep(final PathNode node, final Filter filter, final MutationRow row) {
+        keptNode = node;
+        keptFilter = filter;
+        keptRow = row;
+    }
+
+    private boolean keeping() {
+        return keptRow != null || keptNode != null || keptFilter != null;
     }
 
     // Newest first, always. The only order that means anything here is the one the changes were made
@@ -559,18 +595,16 @@ public class PathwayMutationListPresenter extends MyPresenterWidget<PagerView> {
     }
 
     /**
-     * Narrows the table, or stops narrowing it. Asked for from the drawing as well as from the button
-     * beside the table, so the button is brought into line with whatever was asked.
+     * Narrows the table, or stops narrowing it. Asked for from the drawing as well as from the
+     * button beside the table, so the button is brought into line with whatever was asked.
+     *
+     * <p>Rebuilds the rows. Replacing them sets the narrowing as part of that instead, so that the
+     * table is built once rather than once for the rows and again for the narrowing.
      */
     public void setFilter(final Filter filter) {
         final boolean was = narrowed();
         this.filter = filter;
-        final boolean on = narrowed();
-        filterButton.setState(on);
-        filterButton.setEnabled(on);
-        filterButton.setTitle(on
-                ? FILTER_ON_TITLE
-                : FILTER_OFF_TITLE);
+        showFilterState();
         order();
         // The plot has to be counted again to match. It covers every row the range holds, which is
         // more rows than are listed here, so it cannot be re-counted from what is in hand - the
@@ -578,9 +612,21 @@ public class PathwayMutationListPresenter extends MyPresenterWidget<PagerView> {
         //
         // Not while the rows are being replaced: that arrives with a plot of its own, and asking
         // again in the middle of it would be a second request for what is already on its way.
-        if (!replacing && on != was && plotChangeHandler != null) {
+        if (!replacing && narrowed() != was && plotChangeHandler != null) {
             plotChangeHandler.run();
         }
+    }
+
+    // Brings the button into line with what the table is doing, without rebuilding the rows. Apart
+    // from setFilter because replacing the rows sets the filter and the rows in one go, and going
+    // through setFilter there would build the table twice.
+    private void showFilterState() {
+        final boolean on = narrowed();
+        filterButton.setState(on);
+        filterButton.setEnabled(on);
+        filterButton.setTitle(on
+                ? FILTER_ON_TITLE
+                : FILTER_OFF_TITLE);
     }
 
     // Whether the table is showing one node's changes rather than all of them. Both halves matter:

@@ -136,10 +136,16 @@ public class PathwayEditPresenter
     // What came back for the range with no change picked out. Kept so that letting go of a row does
     // not ask the server for something already in hand.
     private PathwayAsAt rangeAsAt;
-    // The row that was being looked at when the range was changed, to be picked again once the rows
-    // for the new range are in. Null at every other time, so that opening a pathway starts with
-    // nothing picked however the last one was left.
+    // What the reader had set up when the rows were last asked for again, to be put back once the
+    // new ones are in: the row being looked at, the narrowing, and the node it is aimed at. All
+    // nothing at every other time, so that opening a pathway starts clean however the last one was
+    // left - which is also what a change of range wants, since it drops the narrowing by design.
     private MutationRow keptRow;
+    private PathwayMutationListPresenter.Filter keptFilter;
+    private PathNode keptNode;
+    // True while rows are being handed over and whatever the reader was on is picked again, so that
+    // the picking is not taken for the reader picking something.
+    private boolean restoring;
     private final TimeRangeSelector timeRangeSelector = new TimeRangeSelector();
     // Whether each of the two things the drawing is made from has arrived. Both are asked for at once
     // and neither waits on the other, so which lands first is not known.
@@ -226,8 +232,32 @@ public class PathwayEditPresenter
             // The row being looked at, to be put back once the new rows are in. Taken here rather
             // than in showOver, because opening a pathway goes through that too and must not carry
             // the row from whichever pathway was open before.
+            //
+            // Only the row. A different range is a different set of changes, so what the table was
+            // narrowed to is let go rather than aimed at rows that were not asked for.
             keptRow = mutationListPresenter.getSelectionModel().getSelected();
+            keptFilter = null;
+            keptNode = null;
             showOver(e.getValue());
+        }));
+
+        // The whole tab asked for again over the range it is already showing - the model as well as
+        // the rows, because the two are of one moment and refreshing one of them would leave a
+        // drawing made from changes the table no longer lists.
+        //
+        // Everything the reader set up is kept: the narrowing, the node it is aimed at and the row
+        // being looked at. A button that fetches the rows again must not also undo what they had
+        // done to them.
+        registerHandler(mutationListPresenter.getView().getRefreshButton().addClickHandler(e -> {
+            if (docRef == null || pathway == null) {
+                return;
+            }
+            keptRow = mutationListPresenter.getSelectionModel().getSelected();
+            keptFilter = mutationListPresenter.getFilter();
+            keptNode = pathwayTreePresenter.getSelectionModel().getSelectedObject();
+            // Asks for the model and then, once it lands, the rows. One call rather than one
+            // apiece: asking for the rows here as well would fetch them twice over.
+            showOver(timeRange);
         }));
         // Constraints are the only thing on this screen that writes, and they are written straight
         // into the model the moment the constraint dialog is accepted. This is how the tab learns
@@ -264,6 +294,11 @@ public class PathwayEditPresenter
         // same model back against a later clock, and a node is coloured by how long since it last
         // changed — so the whole drawing would come back older without anything having been learnt.
         registerHandler(mutationListPresenter.getSelectionModel().addSelectionHandler(e -> {
+            if (restoring) {
+                // Rows being handed over, which picks whatever the reader was on. The drawing is
+                // decided once those have landed, so this would be a second answer to one event.
+                return;
+            }
             if (!Objects.equals(drawnChange, mutationListPresenter.getSelectedSequence())
                 || !Objects.equals(drawnAt, mutationListPresenter.getSelectedTime())) {
                 showAtPosition(mutationListPresenter.getSelectedTime(),
@@ -475,14 +510,21 @@ public class PathwayEditPresenter
     // The whole history at once, so winding the model back is done here rather than asked for a step
     // at a time. It is bounded by what the model has learnt, not by how many traces went through it.
     private void fetchHistory(final DocRef docRef, final String name) {
-        // The same span the drawing answers for, so the table beside it lists the changes it was
+        // The node the table will be narrowed to once the rows are in, so the plot arrives counted
+        // for it. Taken from what is being kept rather than from what is on screen: the rows are
+        // about to be replaced, and the plot has to answer for the table that follows them.
+        final String plot = keptFilter == PathwayMutationListPresenter.Filter.SELECTED_NODE
+                ? NullSafe.get(keptNode, PathNode::getUuid)
+                : null;
+        // The same range the drawing answers for, so the table beside it lists the changes it was
         // made from rather than every change there has ever been.
         final FindPathwayMutationCriteria criteria = new FindPathwayMutationCriteria(
                 new PageRequest(0, MAX_HISTORY),
                 List.of(new CriteriaFieldSort(PathwayMutation.FIELD_TIME, false, false)),
                 docRef,
                 name,
-                timeRange);
+                timeRange,
+                plot);
 
         restFactory
                 .create(PATHWAYS_RESOURCE)
@@ -494,26 +536,47 @@ public class PathwayEditPresenter
                         return;
                     }
                     history = result.getValues();
-                    mutationListPresenter.setData(history,
-                            result.getWindowFrom(), result.getWindowTo(), result.getBars());
+                    // Said before the rows are handed over, so the table is built once with the
+                    // narrowing and the open traces already on it rather than reset and put back.
+                    //
+                    // The picking that comes out of it is not listened to: the drawing is decided
+                    // once below, and answering the event as well would ask the server twice for
+                    // the same change.
+                    restoring = true;
+                    try {
+                        mutationListPresenter.keep(keptNode, keptFilter, keptRow);
+                        mutationListPresenter.setData(history,
+                                result.getWindowFrom(), result.getWindowTo(), result.getBars());
+                    } finally {
+                        restoring = false;
+                    }
                     historyArrived = true;
-                    // The range's own model first, so that what the drawing was last made from is
-                    // the empty selection the new rows arrived with. Putting the row back then
-                    // reads as the reader picking it, and winds the model to it the same way.
-                    drawWhenReady();
-                    mutationListPresenter.reselect(keptRow);
-                    keptRow = null;
+                    // Whatever came back picked: the model at that change, or the range's own where
+                    // no row did. Already in hand for the second, so it costs nothing to ask.
+                    showAtPosition(mutationListPresenter.getSelectedTime(),
+                            mutationListPresenter.getSelectedSequence());
+                    keepNothing();
                 })
                 .onFailure(new DefaultErrorHandler(this, () -> {
                     // Asked and not answered. The drawing waits for these, so it has to be told that
-                    // none are coming or it waits for ever. There are no rows to put a row back
-                    // among, so whatever was being looked at is let go.
-                    keptRow = null;
+                    // none are coming or it waits for ever. There are no rows to put anything back
+                    // among, so whatever the reader had set up is let go.
+                    keepNothing();
                     historyArrived = true;
                     drawWhenReady();
                 }))
-                .taskMonitorFactory(this)
+                // The table's own view, so the refresh button beside it turns while its rows are
+                // being fetched rather than the tab reporting it somewhere else.
+                .taskMonitorFactory(mutationListPresenter.getView())
                 .exec();
+    }
+
+    // Nothing left to put back, which is where every fetch of the rows ends. Held only between
+    // asking for them and their arriving, so that a fetch nobody kept anything for starts clean.
+    private void keepNothing() {
+        keptRow = null;
+        keptFilter = null;
+        keptNode = null;
     }
 
     // The plot on its own, counted for whichever node the table has been narrowed to. No rows are
@@ -866,6 +929,10 @@ public class PathwayEditPresenter
         if (pathway == null) {
             return;
         }
+        // Whether what is on screen is this same pathway. If it is, it is still the right thing to
+        // be looking at until the new rows land, however the range moved.
+        final boolean sameOnScreen = this.pathway != null
+                                     && Objects.equals(this.pathway.getName(), pathway.getName());
         this.pathway = pathway;
 
         // Where the pathway has learnt from, which both tables name their rows' stores by position in.
@@ -879,14 +946,21 @@ public class PathwayEditPresenter
         // than waiting on the history the way the changes do.
         pathListPresenter.setData(pathway);
 
-        // The drawing is coloured and sized from the changes behind the model, which are asked for at
-        // the end of this. Nothing is handed over until they arrive: an empty list would say this
-        // pathway's changes had arrived and were none, and the drawing would be made with every node
-        // at its smallest.
-        pathwayTreePresenter.read(pathway);
         showConstraints();
         showPlayButtons();
-        mutationListPresenter.setData(Collections.emptyList());
+        // The drawing is coloured and sized from the changes behind the model, which are asked for
+        // at the end of this. Nothing is handed over until they arrive: an empty list would say
+        // this pathway's changes had arrived and were none, and the drawing would be made with
+        // every node at its smallest.
+        //
+        // Both are skipped for a pathway already on screen. What is up is still this pathway's,
+        // and emptying the table and the plot on the way to filling them again is a blink that
+        // answers nothing. Another pathway's rows under this one's name would be a lie, so those
+        // do go.
+        if (!sameOnScreen) {
+            pathwayTreePresenter.read(pathway);
+            mutationListPresenter.setData(Collections.emptyList());
+        }
 
         // Only the changes. How busy each node was comes back with the model now, so the readings
         // are no longer asked for separately.
