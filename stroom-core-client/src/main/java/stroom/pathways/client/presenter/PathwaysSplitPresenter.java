@@ -66,6 +66,8 @@ public class PathwaysSplitPresenter extends DocPresenter<PathwaysSplitView, Path
         super.onBind();
         // The figures come back with the model, so the drawing beside the list is made the same way
         // as the one in the tab: given rather than counted, and asking for no history of its own.
+        // They carry the time ages are counted back from and the tree the nodes are placed from as
+        // well, so handing over the one object is the whole of setting this drawing up.
         registerHandler(pathwayListPresenter.getSelectionModel().addSelectionHandler(e ->
                 pathwayListPresenter.withSelectedPathway(asAt -> {
                     pathwayTreePresenter.setFigures(asAt);

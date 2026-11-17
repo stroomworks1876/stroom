@@ -1069,8 +1069,15 @@ class PathwayGraphRenderer implements PathwayRenderer {
             final Point to = childAt;
             // Lighter where it leaves the parent, full strength where it arrives, so a link reads in
             // the direction the work flows without needing an arrow head on it.
-            final int edgeWidth = scale.edge(timesUsed(child, usage));
+            // The node at the far end as it was at the moment being shown. The one being walked is
+            // the layout's, which is the node as it stands now, so asking that how busy it is would
+            // draw today's traffic on a picture of an earlier day.
             final PathNode childShown = shownNodes.get(child.getUuid());
+            final PathNode childAsShown = childShown != null
+                    ? childShown
+                    : child;
+            final int edgeWidth = scale.edge(timesUsed(childAsShown, usage));
+            final NanoTime childLastUsed = lastUsed(childAsShown, usage);
             final EdgeAppearance want = new EdgeAppearance(
                     node.getUuid(),
                     edgeClass(childShown != null,
@@ -1080,8 +1087,8 @@ class PathwayGraphRenderer implements PathwayRenderer {
                     (int) to.getX(), (int) to.getY(),
                     edgeWidth,
                     "url(#" + gradientId(child.getUuid()) + ")",
-                    light(lastUsed(child, usage), now),
-                    colour(lastUsed(child, usage), now));
+                    light(childLastUsed, now),
+                    colour(childLastUsed, now));
             edgeAppearance.put(child.getUuid(), want);
             gradient(child.getUuid(), from, to, want.start(), want.end());
             line(edges, child.getUuid(), want);

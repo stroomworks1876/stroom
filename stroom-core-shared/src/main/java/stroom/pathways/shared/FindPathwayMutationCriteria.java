@@ -49,24 +49,55 @@ public class FindPathwayMutationCriteria extends BaseCriteria {
      */
     @JsonProperty
     private final TimeRange timeRange;
+    /**
+     * Which node the plot is counted over, or null for all of them.
+     *
+     * <p>The plot only. The rows come back whole and the table narrows itself, because narrowing
+     * them here would mean reloading the table every time the filter was turned on - which takes
+     * away whichever row was being looked at and shuts every trace the reader had opened.
+     *
+     * <p>Asked for here rather than counted in the browser because the plot covers every row the
+     * range holds, and the rows are capped: a plot counted from the ones in hand would quietly say
+     * less than the truth about a pathway with a long history.
+     */
+    @JsonProperty
+    private final String plotNode;
 
     @JsonCreator
     public FindPathwayMutationCriteria(@JsonProperty("pageRequest") final PageRequest pageRequest,
                                        @JsonProperty("sortList") final List<CriteriaFieldSort> sortList,
                                        @JsonProperty("pathwaysDocRef") final DocRef pathwaysDocRef,
                                        @JsonProperty("pathwayName") final String pathwayName,
-                                       @JsonProperty("timeRange") final TimeRange timeRange) {
+                                       @JsonProperty("timeRange") final TimeRange timeRange,
+                                       @JsonProperty("plotNode") final String plotNode) {
         super(pageRequest, sortList);
         this.pathwaysDocRef = pathwaysDocRef;
         this.pathwayName = pathwayName;
         this.timeRange = timeRange;
+        this.plotNode = plotNode;
+    }
+
+    /**
+     * Rows for a span, with the plot over all of them. What everything asking for the table wants:
+     * the table narrows itself, so only a request for the plot alone names a node.
+     */
+    public FindPathwayMutationCriteria(final PageRequest pageRequest,
+                                       final List<CriteriaFieldSort> sortList,
+                                       final DocRef pathwaysDocRef,
+                                       final String pathwayName,
+                                       final TimeRange timeRange) {
+        this(pageRequest, sortList, pathwaysDocRef, pathwayName, timeRange, null);
     }
 
     public FindPathwayMutationCriteria(final PageRequest pageRequest,
                                        final List<CriteriaFieldSort> sortList,
                                        final DocRef pathwaysDocRef,
                                        final String pathwayName) {
-        this(pageRequest, sortList, pathwaysDocRef, pathwayName, null);
+        this(pageRequest, sortList, pathwaysDocRef, pathwayName, null, null);
+    }
+
+    public String getPlotNode() {
+        return plotNode;
     }
 
     public DocRef getPathwaysDocRef() {
@@ -92,17 +123,19 @@ public class FindPathwayMutationCriteria extends BaseCriteria {
         final FindPathwayMutationCriteria that = (FindPathwayMutationCriteria) o;
         return Objects.equals(pathwaysDocRef, that.pathwaysDocRef)
                && Objects.equals(pathwayName, that.pathwayName)
-               && Objects.equals(timeRange, that.timeRange);
+               && Objects.equals(timeRange, that.timeRange)
+               && Objects.equals(plotNode, that.plotNode);
     }
 
     @Override
     public int hashCode() {
-        return Objects.hash(super.hashCode(), pathwaysDocRef, pathwayName, timeRange);
+        return Objects.hash(super.hashCode(), pathwaysDocRef, pathwayName, timeRange, plotNode);
     }
 
     @Override
     public String toString() {
         return "FindPathwayMutationCriteria{pathwaysDocRef=" + pathwaysDocRef
-               + ", pathwayName='" + pathwayName + "', timeRange=" + timeRange + "}";
+               + ", pathwayName='" + pathwayName + "', timeRange=" + timeRange
+               + ", plotNode='" + plotNode + "'}";
     }
 }

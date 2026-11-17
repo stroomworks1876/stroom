@@ -136,6 +136,10 @@ public class PathwayEditPresenter
     // What came back for the range with no change picked out. Kept so that letting go of a row does
     // not ask the server for something already in hand.
     private PathwayAsAt rangeAsAt;
+    // The row that was being looked at when the range was changed, to be picked again once the rows
+    // for the new range are in. Null at every other time, so that opening a pathway starts with
+    // nothing picked however the last one was left.
+    private MutationRow keptRow;
     private final TimeRangeSelector timeRangeSelector = new TimeRangeSelector();
     // Whether each of the two things the drawing is made from has arrived. Both are asked for at once
     // and neither waits on the other, so which lands first is not known.
@@ -218,7 +222,13 @@ public class PathwayEditPresenter
         // The end of the range picked is the moment the tab answers for. Asked of the server rather
         // than worked out here: the changes it is counted from are filed by the day their work ran,
         // so a date never promises an unbroken run of them.
-        registerHandler(timeRangeSelector.addValueChangeHandler(e -> showOver(e.getValue())));
+        registerHandler(timeRangeSelector.addValueChangeHandler(e -> {
+            // The row being looked at, to be put back once the new rows are in. Taken here rather
+            // than in showOver, because opening a pathway goes through that too and must not carry
+            // the row from whichever pathway was open before.
+            keptRow = mutationListPresenter.getSelectionModel().getSelected();
+            showOver(e.getValue());
+        }));
         // Constraints are the only thing on this screen that writes, and they are written straight
         // into the model the moment the constraint dialog is accepted. This is how the tab learns
         // there is something to save.
@@ -233,6 +243,11 @@ public class PathwayEditPresenter
         // drawing because everything it offers narrows the table beside it, and the drawing knows
         // nothing of that.
         pathwayTreePresenter.setNodeMenuHandler(this::showNodeMenu);
+
+        // Narrowing the table to one node narrows the plot over it too. Asked for rather than
+        // counted here: the plot covers every row the range holds, and those are capped, so one
+        // counted from the rows in hand would understate a pathway with a long history.
+        mutationListPresenter.setPlotChangeHandler(this::fetchPlot);
 
         registerHandler(pathwayTreePresenter.getSelectionModel()
                 .addSelectionChangeHandler(e -> {
@@ -482,16 +497,65 @@ public class PathwayEditPresenter
                     mutationListPresenter.setData(history,
                             result.getWindowFrom(), result.getWindowTo(), result.getBars());
                     historyArrived = true;
+                    // The range's own model first, so that what the drawing was last made from is
+                    // the empty selection the new rows arrived with. Putting the row back then
+                    // reads as the reader picking it, and winds the model to it the same way.
                     drawWhenReady();
+                    mutationListPresenter.reselect(keptRow);
+                    keptRow = null;
                 })
                 .onFailure(new DefaultErrorHandler(this, () -> {
                     // Asked and not answered. The drawing waits for these, so it has to be told that
-                    // none are coming or it waits for ever.
+                    // none are coming or it waits for ever. There are no rows to put a row back
+                    // among, so whatever was being looked at is let go.
+                    keptRow = null;
                     historyArrived = true;
                     drawWhenReady();
                 }))
                 .taskMonitorFactory(this)
                 .exec();
+    }
+
+    // The plot on its own, counted for whichever node the table has been narrowed to. No rows are
+    // asked for - the page is of no length - because the ones on screen have not changed and
+    // replacing them would shut every trace the reader had opened.
+    private void fetchPlot() {
+        if (docRef == null || pathway == null) {
+            return;
+        }
+        final String name = pathway.getName();
+        final FindPathwayMutationCriteria criteria = new FindPathwayMutationCriteria(
+                new PageRequest(0, 0),
+                List.of(new CriteriaFieldSort(PathwayMutation.FIELD_TIME, false, false)),
+                docRef,
+                name,
+                timeRange,
+                plotNode());
+
+        restFactory
+                .create(PATHWAYS_RESOURCE)
+                .method(res -> res.findMutations(criteria))
+                .onSuccess(result -> {
+                    // This is opened again for other pathways, and the filter can be turned off
+                    // again while this is on its way, so a plot that no longer answers for what is
+                    // on screen is dropped rather than drawn.
+                    if (pathway != null && name.equals(pathway.getName())
+                        && Objects.equals(criteria.getPlotNode(), plotNode())) {
+                        mutationListPresenter.setBars(result.getBars());
+                    }
+                })
+                .onFailure(new DefaultErrorHandler(this, null))
+                .taskMonitorFactory(this)
+                .exec();
+    }
+
+    // Which node the plot is counted over, or null for all of them. The same two things the table
+    // asks of itself: a filter is only narrowing anything while a node is picked out.
+    private String plotNode() {
+        return mutationListPresenter.getFilter() == PathwayMutationListPresenter.Filter.SELECTED_NODE
+                ? NullSafe.get(pathwayTreePresenter.getSelectionModel().getSelectedObject(),
+                        PathNode::getUuid)
+                : null;
     }
 
     // How much each node had been used at each point the model can be wound back to. Fetched apart
@@ -589,27 +653,12 @@ public class PathwayEditPresenter
         // learnt, so a date never promises one.
         final Pathway shown = NullSafe.getOrElse(asAt, PathwayAsAt::getPathway, pathway);
 
-        // Winding the model back takes nodes out of it. Placing what is left from the model as it
-        // stands now keeps every node where it was, rather than closing the gaps and moving
-        // everything the reader was looking at.
-        //
-        // A folded model is laid out from itself instead. It names its nodes by a stand-in worked
-        // out from the path of span names that reaches each one, so looking them up among the
-        // learnt model's uuids finds nothing and the drawing comes out empty. It is also not wound
-        // back from anything, so there are no gaps to hold open. And it can hold nodes the learnt
-        // model never had, from history loaded after the fact, which the layout would leave out.
-        final boolean folded = NullSafe.isTrue(asAt, PathwayAsAt::isFolded);
-        // A folded model is laid out from the tree the server sends with it, which holds every node
-        // any described day has. Laid out from the day on show instead, each day is a different set
-        // of nodes and the drawing is built again at every step rather than moved.
-        final PathNode foldedLayout = NullSafe.get(asAt, PathwayAsAt::getLayout);
-        pathwayTreePresenter.setLayout(folded
-                ? NullSafe.getOrElse(foldedLayout, layout -> layout,
-                        NullSafe.get(shown, Pathway::getRoot))
-                : pathway.getRoot());
+        // Everything the drawing is made from, in one go: the figures, the time ages are counted
+        // back from, and the tree the nodes are placed from. All three come off what the server
+        // sent, and in particular none of them is taken from anything this tab is holding - the
+        // learner is still running, so a copy kept from when the tab was opened misses whatever has
+        // been learnt since, and a node missing from the layout is never drawn at all.
         pathwayTreePresenter.setFigures(asAt);
-        pathwayTreePresenter.setAsAt(NullSafe.get(asAt, PathwayAsAt::getAsAt),
-                mutationListPresenter.getSelectedSequence());
         pathwayTreePresenter.read(NullSafe.get(shown, Pathway::getRoot) == null
                 ? null
                 : shown);
@@ -810,17 +859,14 @@ public class PathwayEditPresenter
     private void show(final PathwayAsAt asAt) {
         this.asAt = asAt;
         this.rangeAsAt = asAt;
-        final Pathway fetched = NullSafe.get(asAt, PathwayAsAt::getPathway);
-        // The model as it stands is what the drawing is laid out from, so a wound-back one is kept
-        // beside it rather than over it: placing what is left where it already was keeps every node
-        // still, rather than closing the gaps and moving everything the reader was looking at.
-        if (asAt != null && asAt.getAsAt() == null && fetched != null) {
-            this.pathway = fetched;
-        }
-        final Pathway pathway = this.pathway;
+        // Whatever came back, whichever moment it was asked for. Winding a model back replaces its
+        // nodes and copies the rest of it across, so the paths, the sources and the name are the
+        // pathway's current ones however far back the drawing reaches.
+        final Pathway pathway = NullSafe.get(asAt, PathwayAsAt::getPathway);
         if (pathway == null) {
             return;
         }
+        this.pathway = pathway;
 
         // Where the pathway has learnt from, which both tables name their rows' stores by position in.
         // It comes with the model rather than from the configuration, so a store pointed elsewhere

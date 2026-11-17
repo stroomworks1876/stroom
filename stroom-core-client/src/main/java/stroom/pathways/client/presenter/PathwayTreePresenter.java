@@ -112,21 +112,16 @@ public class PathwayTreePresenter
     // recently, which is what a reader opening a pathway is usually after. The tree is a click away
     // for reading the structure itself.
     private PathwayRenderer renderer = graphRenderer;
-    // How much each node has changed and when it last did, by uuid. Worked out from the stored changes
-    // rather than held on the node: the changes already say it, and holding it twice would let the two
-    // differ.
-    // The moment being looked at. Zero while the model on show is the current one, in which case it
-    // is the time now.
-    private long asAt;
-    // Every node the model has ever held, which the drawing places from so that a node appearing does
-    // not move the ones around it. Null where the model on show is the current one and is its own
-    // answer.
-    private PathNode layout;
-    // The change being wound back to, which says which reading applies.
-    private long upTo;
-    // What the server worked out for the moment on show, or null where nothing has been figures and the
-    // figures are still counted here.
+    // What the server worked out for the moment on show: how much each node had changed and when it
+    // last did, by uuid, worked out from the stored changes rather than held on the node, because the
+    // changes already say it and holding it twice would let the two differ.
+    //
+    // The two below are read off it and set with it, never apart - a drawing given some of them and
+    // not the others draws a wrong picture rather than no picture. The time ages are counted back
+    // from, and the tree the nodes are placed in.
     private PathwayAsAt figures;
+    private long asAt;
+    private PathNode layout;
     // Nodes to draw attention to, each path key against every place it takes in the order they were
     // figures in — every place, because a walk can reach one node more than once. Held rather than
     // applied once, because the drawing is rebuilt whenever the model is and the elements it was put
@@ -506,37 +501,32 @@ public class PathwayTreePresenter
     }
 
     /**
-     * How large and how old each node is drawn, as the server worked them out for the moment being
-     * shown.
+     * Everything the drawing is made from, as the server worked it out for the moment being shown:
+     * how large and how old each node is drawn, the time those ages are counted back from, and the
+     * tree the nodes are placed in.
      *
-     * <p>Not counted here. The changes they come from are filed by the day their work ran, so a date
-     * never promises an unbroken run of them, and counting down to a moment would mean reading every
-     * change at or below it.
+     * <p>All of it from the one answer, and all of it set here. Taken apart into a call each, a
+     * screen that made some of those calls and not the others drew a wrong picture rather than no
+     * picture - which is what the pathways document page did, drawing every node grey because
+     * nothing had told it what time to count back from.
+     *
+     * <p>Not counted here. The changes the figures come from are filed by the day their work ran, so
+     * a date never promises an unbroken run of them, and counting down to a moment would mean reading
+     * every change at or below it.
      */
     public void setFigures(final PathwayAsAt asAt) {
         figures = asAt;
-    }
 
-    /**
-     * The model to work the positions out from, which is the model as it stands now rather than the
-     * one being shown. Null where they are the same.
-     */
-    public void setLayout(final PathNode layout) {
-        this.layout = layout;
-    }
+        // Where the nodes go. A model with nodes missing from it - wound back, or folded out of day
+        // records - is laid out from the tree the server sends with it, so that what is left stays
+        // where it was. A whole model is its own layout and the server sends none.
+        this.layout = NullSafe.getOrElse(asAt, PathwayAsAt::getLayout,
+                NullSafe.get(asAt, PathwayAsAt::getPathway, Pathway::getRoot));
 
-    /**
-     * The moment the model on show stood at, or null where it is the model as it stands now. How long
-     * ago a node changed is measured from here, so winding back an hour does not age every node by an
-     * hour.
-     */
-    public void setAsAt(final NanoTime asAt, final Long upTo) {
-        this.asAt = asAt == null
-                ? 0L
-                : asAt.toEpochMillis();
-        this.upTo = upTo == null
-                ? 0L
-                : upTo;
+        // The moment the drawing describes, which the server states on every answer. How long ago a
+        // node changed is measured from here, so winding back an hour does not age every node by an
+        // hour, and a drawing left on screen does not quietly age against the clock in the browser.
+        this.asAt = NullSafe.getOrElse(asAt, PathwayAsAt::getAsAt, NanoTime::toEpochMillis, 0L);
     }
 
     private static String key(final List<String> path) {
@@ -630,9 +620,8 @@ public class PathwayTreePresenter
         final RenderRequest request = new RenderRequest(pathway, layout,
                 figures.getChanges(),
                 figures.getUsage(),
-                asAt > 0
-                        ? asAt
-                        : System.currentTimeMillis(),
+                // The moment the server answered for, never the clock here - see setFigures.
+                asAt,
                 figures.getChangeCeiling(),
                 figures.getUsageCeiling(),
                 showKey,

@@ -226,6 +226,10 @@ public class ShardedPathwayReader {
      *
      * <p>Only that pathway's shard is opened, and only its own run of keys is walked, because the
      * mutation key begins with the name it belongs to. The same is true of each week bucket read.
+     *
+     * <p>The plot comes back with the rows, counted over every row the range holds rather than over
+     * the page, and over one node's changes where the criteria names a node. A page of no length is
+     * how the plot is asked for on its own, which is what narrowing the table to a node does.
      */
     public PathwayMutationResultPage findMutations(final PathwaysDoc doc,
                                                    final FindPathwayMutationCriteria criteria) {
@@ -298,7 +302,7 @@ public class ShardedPathwayReader {
         return new PathwayMutationResultPage(page, pageResponse,
                 bound(window, TimeFilter::getFrom, 0L),
                 bound(window, TimeFilter::getTo, Long.MAX_VALUE),
-                bars(rows, window, found[0]));
+                bars(rows, window, found[0], criteria.getPlotNode()));
     }
 
     /**
@@ -495,9 +499,13 @@ public class ShardedPathwayReader {
      */
     private static List<HistoryBar> bars(final List<HistoryRow> rows,
                                          final TimeFilter window,
-                                         final Pathway pathway) {
+                                         final Pathway pathway,
+                                         final String plotNode) {
+        // The day side is not narrowed, because the table does not narrow it either: filtering to a
+        // node takes changes out of the list and leaves the days alone, and a plot that answered
+        // differently from the rows under it would be the thing this was meant to fix.
         final List<HistoryBar> bars = new ArrayList<>(dayBars(rows, pathway));
-        bars.addAll(changeBars(rows, window));
+        bars.addAll(changeBars(rows, window, plotNode));
         return bars;
     }
 
@@ -556,7 +564,13 @@ public class ShardedPathwayReader {
         return bars;
     }
 
-    private static List<HistoryBar> changeBars(final List<HistoryRow> rows, final TimeFilter window) {
+    private static List<HistoryBar> changeBars(final List<HistoryRow> rows,
+                                               final TimeFilter window,
+                                               final String plotNode) {
+        // Where the slices fall is worked out over every row, narrowed or not, so that turning the
+        // filter on changes the heights and leaves the bars themselves where they were. Worked out
+        // over the narrowed rows instead, the plot would rescale under the reader and the bar they
+        // were looking at would move.
         long first = Long.MAX_VALUE;
         long last = Long.MIN_VALUE;
         for (final HistoryRow row : rows) {
@@ -587,7 +601,7 @@ public class ShardedPathwayReader {
         }
         for (final HistoryRow row : rows) {
             final Long at = appliedAt(row);
-            if (at != null) {
+            if (at != null && touches(row, plotNode)) {
                 final int i = (int) Math.min(CHANGE_BARS - 1, (at - first) / width);
                 counted.get(i).add(PathwayMutation.groupOf((PathwayMutation) row));
             }
@@ -730,6 +744,9 @@ public class ShardedPathwayReader {
         final int shard = ShardKeyRouter.computeShardIndex(name, shardCountOf(settings));
         final byte[] keyBytes = name.getBytes(StandardCharsets.UTF_8);
         final Long asAtMs = latestIn(timeRange);
+        // Read once and used for both the answer's moment and the weeks gathered below, so a reply
+        // cannot say it describes one instant while having been built from another.
+        final long nowMs = System.currentTimeMillis();
         final ByteBuffer prefix = TraceProcessor.observedValuesPrefix(keyBytes);
         final Pathway[] found = {null};
         final boolean[] folding = {false};
@@ -769,8 +786,8 @@ public class ShardedPathwayReader {
         // opens a bucket per week in between - so a date from a year ago opens a year of them. That
         // is why the choice above is made first: where the history does not reach the date, none of
         // those changes can help.
-        addArchived(doc, shard, keyBytes, asAtMs, mutations, usage);
-        return Optional.of(asAt(found[0], mutations, usage, asAtMs, toSequence));
+        addArchived(doc, shard, keyBytes, asAtMs, nowMs, mutations, usage);
+        return Optional.of(asAt(found[0], mutations, usage, asAtMs, toSequence, nowMs));
     }
 
     // Whether the change history reaches a moment, which is the whole test for which of the two
@@ -995,10 +1012,15 @@ public class ShardedPathwayReader {
     // The window splits one pathway's history across the live shard and the week buckets, so winding
     // the model back past what the shard still holds means reading the weeks between the time asked
     // for and now. Nothing can be left out: a wind-back passes through every change between the two.
+    //
+    // Now is handed in rather than read here, and is the same reading the answer's own moment is
+    // taken from, so a reply cannot say it describes one instant while having been gathered up to
+    // another.
     private void addArchived(final PathwaysDoc doc,
                              final int shard,
                              final byte[] keyBytes,
                              final Long asAtMs,
+                             final long nowMs,
                              final List<PathwayMutation> mutations,
                              final List<PathwayUsage> usage) {
         if (asAtMs == null) {
@@ -1007,7 +1029,7 @@ public class ShardedPathwayReader {
         }
         final List<PathwayMutation> archivedChanges = new ArrayList<>();
         final List<PathwayUsage> archivedUsage = new ArrayList<>();
-        eachWeekIn(doc, shard, asAtMs, System.currentTimeMillis(), db -> {
+        eachWeekIn(doc, shard, asAtMs, nowMs, db -> {
             archivedChanges.addAll(mutationLog.read(db.getMutations(), keyBytes));
             archivedUsage.addAll(mutationLog.readUsage(db.getMutations(), keyBytes));
         });
@@ -1122,29 +1144,43 @@ public class ShardedPathwayReader {
         return last;
     }
 
+    /**
+     * One pathway as it stood at one moment, with the figures a drawing of it needs.
+     *
+     * @param asAtMs  the moment to wind back to, or null for the model as it stands.
+     * @param nowMs   the server's clock, which is the moment answered for when none was asked for.
+     *                Taken here rather than read from the clock inside, so the moment the answer
+     *                carries is one the caller stated.
+     */
     static PathwayAsAt asAt(final Pathway pathway,
                             final List<PathwayMutation> mutations,
                             final List<PathwayUsage> usage,
                             final Long asAtMs,
-                            final Long toSequence) {
+                            final Long toSequence,
+                            final long nowMs) {
         // Taken before anything is wound back, because the scale is what the pathway has ever done
         // rather than what it had done by the moment being shown.
         final long changeCeiling = mostChanged(pathway.getRoot());
         final long usageCeiling = mostUsed(pathway.getRoot());
 
+        // Every answer says which instant it describes, so the drawing measures how long ago each
+        // node changed against a time this machine produced rather than against the browser's own
+        // clock. The two never agree exactly, and the times being measured are this machine's.
+        final NanoTime moment = NanoTime.ofMillis(asAtMs == null
+                ? nowMs
+                : asAtMs);
+
         // A particular change, picked rather than searched for: stepping through the history asks
         // for them one at a time and every change one trace made carries the same timestamp.
         if (toSequence != null) {
-            final Pathway shown = wound(pathway, after(mutations, toSequence));
-            return new PathwayAsAt(
-                    shown,
-                    changesByUuid(shown, MutationCounts.of(mutations, toSequence)),
-                    usageByUuid(usage, toSequence),
-                    timeOf(mutations, toSequence),
-                    changeCeiling,
-                    usageCeiling,
-                    false,
-                    null);
+            // When that change was taken in. A change nobody can find falls back to the moment
+            // asked for, so the answer still says which instant it describes.
+            final NanoTime taken = timeOf(mutations, toSequence);
+            return woundTo(pathway, mutations, usage, toSequence,
+                    taken == null
+                            ? moment
+                            : taken,
+                    changeCeiling, usageCeiling);
         }
 
         if (asAtMs == null) {
@@ -1152,14 +1188,13 @@ public class ShardedPathwayReader {
                     pathway,
                     changesByUuid(pathway, MutationCounts.of(mutations, 0L)),
                     Map.of(),
-                    null,
+                    moment,
                     changeCeiling,
                     usageCeiling,
                     false,
                     null);
         }
 
-        final NanoTime asAt = NanoTime.ofMillis(asAtMs);
         final Long lastChange = lastChangeBy(mutations, asAtMs);
         if (lastChange == null) {
             // The learner had taken nothing in by then, so there is nothing to wind back through.
@@ -1170,11 +1205,13 @@ public class ShardedPathwayReader {
                     pathway.copy().root(null).build(),
                     Map.of(),
                     Map.of(),
-                    asAt,
+                    moment,
                     changeCeiling,
                     usageCeiling,
                     false,
-                    null);
+                    // Every node has come off, so the pathway's own tree is what says where they
+                    // all used to sit. Sent for the same reason a wound-back model sends one.
+                    pathway.getRoot());
         }
 
         // Nothing to undo means the time asked for is now, however the range was written - so the
@@ -1190,23 +1227,50 @@ public class ShardedPathwayReader {
                     pathway,
                     changesByUuid(pathway, MutationCounts.of(mutations, lastChange)),
                     Map.of(),
-                    asAt,
+                    moment,
                     changeCeiling,
                     usageCeiling,
                     false,
                     null);
         }
 
-        final Pathway shown = wound(pathway, later);
+        return woundTo(pathway, mutations, usage, lastChange, moment, changeCeiling, usageCeiling);
+    }
+
+    // The model as it stood just after one change, with the figures a drawing of it needs. Both ways
+    // in end here - by change number for a step through the history, by moment for a date - and they
+    // differ only in which change they wind back to and what moment the answer describes.
+    //
+    // Nodes have come off, so the answer carries the pathway's own tree as the layout: it is what
+    // says where the missing ones used to sit, and holding them open is what keeps the rest of the
+    // drawing still.
+    private static PathwayAsAt woundTo(final Pathway pathway,
+                                       final List<PathwayMutation> mutations,
+                                       final List<PathwayUsage> usage,
+                                       final long sequence,
+                                       final NanoTime moment,
+                                       final long changeCeiling,
+                                       final long usageCeiling) {
+        final Pathway shown = wound(pathway, after(mutations, sequence));
         return new PathwayAsAt(
                 shown,
-                changesByUuid(shown, MutationCounts.of(mutations, lastChange)),
-                usageByUuid(usage, lastChange),
-                asAt,
+                changesByUuid(shown, MutationCounts.of(mutations, sequence)),
+                usageByUuid(usage, sequence),
+                moment,
                 changeCeiling,
                 usageCeiling,
                 false,
-                null);
+                pathway.getRoot());
+    }
+
+    // Whether a change is one the plot is being counted over. A bar's height is a count of traces,
+    // and the table keeps a trace in the list when any one of its changes touched the node, so
+    // counting the changes that touched it puts the trace in the same bar either way - every change
+    // one trace made carries the one time, so they all fall in the same slice.
+    private static boolean touches(final HistoryRow row, final String plotNode) {
+        return plotNode == null
+               || (row instanceof final PathwayMutation change
+                   && plotNode.equals(change.getNodeUuid()));
     }
 
     // When the change picked was taken in, so the drawing can say what moment it is showing.

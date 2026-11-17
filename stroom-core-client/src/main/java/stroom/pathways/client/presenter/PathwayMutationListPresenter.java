@@ -191,6 +191,10 @@ public class PathwayMutationListPresenter extends MyPresenterWidget<PagerView> {
     private Long windowTo;
     // The plot over the rows, as the server counted it.
     private List<HistoryBar> bars = List.of();
+    // Told when the filter goes on or comes off, so the plot can be counted again to match.
+    private Runnable plotChangeHandler;
+    // True while setData is replacing the rows, which brings its own plot with it.
+    private boolean replacing;
 
     /**
      * The change rows among what the table is showing.
@@ -291,6 +295,35 @@ public class PathwayMutationListPresenter extends MyPresenterWidget<PagerView> {
         return time == null
                 ? null
                 : time.toEpochMillis();
+    }
+
+    /**
+     * Puts a row back, where the rows now listed still hold it.
+     *
+     * <p>What a change of range uses. Narrowing the span listed is the same history read over a
+     * shorter stretch, so a row still in it is still the row the reader was on, and taking the
+     * selection away would send the drawing back to the model as it stands without being asked.
+     *
+     * <p>Does nothing where the row has gone, which is a range that no longer reaches it. Nothing is
+     * picked instead of something near it: a neighbouring change is a different change, and quietly
+     * moving the reader onto one would say they were looking at something they are not.
+     */
+    public void reselect(final MutationRow row) {
+        if (row == null) {
+            return;
+        }
+        // A change sits under the trace that made it and the rows were just collapsed, so the trace
+        // has to be opened again before the change is among them to be found.
+        if (!row.isParent()) {
+            treeAction.setExpanded(row.getGroup(), true);
+            order();
+        }
+        for (final MutationRow candidate : dataProvider.getList()) {
+            if (candidate.equals(row)) {
+                selectionModel.setSelected(candidate);
+                return;
+            }
+        }
     }
 
     /**
@@ -467,6 +500,9 @@ public class PathwayMutationListPresenter extends MyPresenterWidget<PagerView> {
      * <p>The bars are worked out where the rows are, because they are of two widths and only that
      * end knows where the change history runs out - and because the rows are capped, so a plot
      * counted from them would quietly say less than the truth about a pathway with a long history.
+     *
+     * <p>The plot arrives with the rows, so taking the filter off here raises nothing: asking for a
+     * plot while one is already on its way would be a second request for what is coming anyway.
      */
     public void setData(final List<HistoryRow> mutations,
                         final Long windowFrom,
@@ -475,6 +511,7 @@ public class PathwayMutationListPresenter extends MyPresenterWidget<PagerView> {
         this.windowFrom = windowFrom;
         this.windowTo = windowTo;
         this.bars = NullSafe.list(bars);
+        replacing = true;
         // Whatever was selected belonged to the list being replaced, and the view around this one asks
         // what is selected to decide which model to show.
         selectionModel.clear();
@@ -486,6 +523,7 @@ public class PathwayMutationListPresenter extends MyPresenterWidget<PagerView> {
         setFilter(Filter.OFF);
         this.mutations = new ArrayList<>(NullSafe.list(mutations));
         order();
+        replacing = false;
         histogram.setBars(bars);
         histogram.setSelectedTime(selectedMs());
     }
@@ -525,18 +563,52 @@ public class PathwayMutationListPresenter extends MyPresenterWidget<PagerView> {
      * beside the table, so the button is brought into line with whatever was asked.
      */
     public void setFilter(final Filter filter) {
+        final boolean was = narrowed();
         this.filter = filter;
-        final boolean on = filter != Filter.OFF && selectedNode != null;
+        final boolean on = narrowed();
         filterButton.setState(on);
         filterButton.setEnabled(on);
         filterButton.setTitle(on
                 ? FILTER_ON_TITLE
                 : FILTER_OFF_TITLE);
         order();
-        // The plot is not touched. It covers the range, and the range has not changed - narrowing to
-        // one node narrows the table beneath it. The bars are counted over every row the range
-        // holds, which is more rows than are listed here, so they cannot be re-counted from what is
-        // in hand anyway.
+        // The plot has to be counted again to match. It covers every row the range holds, which is
+        // more rows than are listed here, so it cannot be re-counted from what is in hand - the
+        // view around this one asks the server for it.
+        //
+        // Not while the rows are being replaced: that arrives with a plot of its own, and asking
+        // again in the middle of it would be a second request for what is already on its way.
+        if (!replacing && on != was && plotChangeHandler != null) {
+            plotChangeHandler.run();
+        }
+    }
+
+    // Whether the table is showing one node's changes rather than all of them. Both halves matter:
+    // a filter with nothing picked out narrows nothing, and the plot must not be narrowed either.
+    private boolean narrowed() {
+        return filter != Filter.OFF && selectedNode != null;
+    }
+
+    /**
+     * Told when the plot no longer covers what the table is showing, which is the filter going on or
+     * coming off. Whoever is told asks the server to count the plot again, because the rows it is
+     * counted over are more than the ones listed here.
+     */
+    public void setPlotChangeHandler(final Runnable plotChangeHandler) {
+        this.plotChangeHandler = plotChangeHandler;
+    }
+
+    /**
+     * The plot on its own, counted over the same rows for whichever node the table is narrowed to.
+     *
+     * <p>Apart from {@link #setData}, because the rows have not changed: replacing them would shut
+     * every trace the reader had opened and take away the row they were looking at, to put back a
+     * list they can already see.
+     */
+    public void setBars(final List<HistoryBar> bars) {
+        this.bars = NullSafe.list(bars);
+        histogram.setBars(this.bars);
+        histogram.setSelectedTime(selectedMs());
     }
 
     public Filter getFilter() {

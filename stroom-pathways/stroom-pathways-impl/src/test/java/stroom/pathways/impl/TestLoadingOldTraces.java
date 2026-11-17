@@ -26,6 +26,7 @@ import stroom.pathways.shared.PathwaySummary;
 import stroom.pathways.shared.PathwaysDoc;
 import stroom.pathways.shared.pathway.DifferenceType;
 import stroom.pathways.shared.pathway.HistoryBar;
+import stroom.pathways.shared.pathway.HistoryRow;
 import stroom.pathways.shared.pathway.NamePathKey;
 import stroom.pathways.shared.pathway.NodeChange;
 import stroom.pathways.shared.pathway.PathNode;
@@ -71,6 +72,7 @@ import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
 import java.util.UUID;
 
@@ -399,11 +401,11 @@ class TestLoadingOldTraces {
     }
 
     @Test
-    void aWoundBackModelCarriesNoLayoutOfItsOwn() throws IOException {
+    void theModelAsItStandsCarriesNoLayoutOfItsOwn() throws IOException {
         load(Instant.now(), 2);
 
         assertThat(reader().fetchPathwayAsAt(doc, OPERATION, null, null).orElseThrow().getLayout())
-                .as("it is laid out from the model as it stands, which the browser already holds")
+                .as("nothing was taken off it, so it already holds every node there is to place")
                 .isNull();
     }
 
@@ -753,6 +755,51 @@ class TestLoadingOldTraces {
                 .getValues().stream()
                 .filter(row -> row instanceof PathwayDifference)
                 .count();
+    }
+
+    @Test
+    void thePlotCanBeCountedOverOneNode() throws IOException {
+        load(Instant.now(), 2);
+
+        final List<HistoryRow> rows = reader().findMutations(doc,
+                new FindPathwayMutationCriteria(new PageRequest(0, 1000), List.of(), null, OPERATION,
+                        null)).getValues();
+        final String node = rows.stream()
+                .filter(row -> row instanceof PathwayMutation)
+                .map(row -> ((PathwayMutation) row).getNodeUuid())
+                .filter(Objects::nonNull)
+                .findFirst()
+                .orElseThrow();
+
+        final List<HistoryBar> all = changeBars(null);
+        final List<HistoryBar> one = changeBars(node);
+        final List<HistoryBar> none = changeBars("not a node of this pathway");
+
+        assertThat(one)
+                .as("the slices stay where they are, so turning the filter on changes the heights "
+                    + "rather than rescaling the plot under the reader")
+                .hasSameSizeAs(all);
+        for (int i = 0; i < all.size(); i++) {
+            assertThat(one.get(i).getFromMs()).isEqualTo(all.get(i).getFromMs());
+            assertThat(one.get(i).getToMs()).isEqualTo(all.get(i).getToMs());
+        }
+        assertThat(one.stream().mapToLong(HistoryBar::getCount).sum())
+                .as("a node the model learnt stands in the plot")
+                .isGreaterThan(0L);
+        assertThat(none.stream().mapToLong(HistoryBar::getCount).sum())
+                .as("and a node it never learnt leaves the plot empty rather than whole")
+                .isEqualTo(0L);
+    }
+
+    // The change side of the plot only. The day side is never narrowed, because the table does not
+    // narrow it either.
+    private List<HistoryBar> changeBars(final String plotNode) throws IOException {
+        return reader().findMutations(doc,
+                        new FindPathwayMutationCriteria(new PageRequest(0, 0), List.of(), null,
+                                OPERATION, null, plotNode))
+                .getBars().stream()
+                .filter(bar -> !bar.isWholeDay())
+                .toList();
     }
 
     @Test

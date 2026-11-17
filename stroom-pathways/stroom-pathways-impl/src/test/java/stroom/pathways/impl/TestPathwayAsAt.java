@@ -47,24 +47,51 @@ class TestPathwayAsAt {
 
     private static final String NAME = "GET /orders";
     private static final long NOON = 1_700_000_000_000L;
+    // Stands in for the server's clock. Passed in rather than read inside, so a reply's moment is
+    // one the caller stated and these can assert it.
+    private static final long ANSWERED = NOON + 10_000;
 
     @Test
     void noMomentAsksForTheModelAsItStands() {
         final Pathway pathway = pathway(5);
 
-        final PathwayAsAt asAt = ShardedPathwayReader.asAt(pathway, changes(), List.of(), null, null);
+        final PathwayAsAt asAt =
+                ShardedPathwayReader.asAt(pathway, changes(), List.of(), null, null, ANSWERED);
 
-        assertThat(asAt.getAsAt()).isNull();
+        assertThat(asAt.getAsAt())
+                .as("every reply says which instant it describes, so the browser never has to "
+                    + "measure how old a node is against its own clock")
+                .isEqualTo(NanoTime.ofMillis(ANSWERED));
+        assertThat(asAt.getLayout())
+                .as("nothing was taken off, so the model answered with holds every node there is "
+                    + "and is its own layout")
+                .isNull();
         assertThat(asAt.getPathway().getRoot().getConstraints().get("size").getValue())
                 .as("nothing comes off a model nobody asked to wind back")
                 .isEqualTo(new IntegerValue(5));
     }
 
     @Test
+    void aWoundBackModelCarriesTheNodesItNoLongerHas() {
+        // The drawing puts its nodes where every node there is says, so that winding back leaves
+        // gaps rather than closing them. The browser cannot supply that: the learner is still
+        // running, so anything it kept from when the tab was opened misses what has been learnt
+        // since, and a node missing from the layout is never drawn at all.
+        final Pathway pathway = pathway(5);
+
+        final PathwayAsAt asAt = ShardedPathwayReader.asAt(
+                pathway, changes(), List.of(), NOON + 1_500, null, ANSWERED);
+
+        assertThat(asAt.getLayout())
+                .as("sent because the model answered with has had nodes taken off it")
+                .isSameAs(pathway.getRoot());
+    }
+
+    @Test
     void aMomentTakesOffEveryChangeLearntAfterIt() {
         final Pathway pathway = pathway(5);
 
-        final PathwayAsAt asAt = ShardedPathwayReader.asAt(pathway, changes(), List.of(), NOON + 1_500, null);
+        final PathwayAsAt asAt = ShardedPathwayReader.asAt(pathway, changes(), List.of(), NOON + 1_500, null, ANSWERED);
 
         assertThat(asAt.getPathway().getRoot().getConstraints().get("size").getValue())
                 .as("the change taken in at two seconds past is undone, the one at one second stands")
@@ -75,7 +102,9 @@ class TestPathwayAsAt {
     void aMomentTheHistoryDoesNotReachHasNoModelToShow() {
         // Picked before the learner had taken anything in. Showing the model as it stands would hand
         // a reader today's model under an old date's heading.
-        final PathwayAsAt asAt = ShardedPathwayReader.asAt(pathway(5), changes(), List.of(), NOON - 1, null);
+        //
+        // The moment asked for is still what the answer describes, not the clock it was read at.
+        final PathwayAsAt asAt = ShardedPathwayReader.asAt(pathway(5), changes(), List.of(), NOON - 1, null, ANSWERED);
 
         assertThat(asAt.getPathway().getRoot())
                 .as("there is nothing to wind back through, so there is nothing to draw")
@@ -87,10 +116,14 @@ class TestPathwayAsAt {
     void theScaleIsWhatThePathwayHasEverDoneNotWhatItHadDoneByThen() {
         // Measured against the part on show, whatever was largest at that moment would always be
         // drawn at full size, so winding back would rescale the picture rather than shrink it.
+        //
+        // The clock plays no part in a scale, so both of these are given the same one.
         final Pathway pathway = pathway(5);
 
-        final PathwayAsAt wound = ShardedPathwayReader.asAt(pathway, changes(), List.of(), NOON + 1_500, null);
-        final PathwayAsAt now = ShardedPathwayReader.asAt(pathway, changes(), List.of(), null, null);
+        final PathwayAsAt wound = ShardedPathwayReader.asAt(
+                pathway, changes(), List.of(), NOON + 1_500, null, ANSWERED);
+        final PathwayAsAt now = ShardedPathwayReader.asAt(
+                pathway, changes(), List.of(), null, null, ANSWERED);
 
         assertThat(wound.getChangeCeiling()).isEqualTo(now.getChangeCeiling());
         assertThat(wound.getChangeCeiling())
@@ -102,8 +135,10 @@ class TestPathwayAsAt {
     void everyNodeOnShowHasItsFiguresWithIt() {
         // A node the drawing has no figures for is drawn at its smallest in the colour of never
         // having changed, so a map that misses nodes shows as a picture that has mostly gone grey.
+        //
+        // Which figures a node gets is settled by the moment asked for, never by the clock.
         final PathwayAsAt asAt = ShardedPathwayReader.asAt(pathway(5), changes(), List.of(),
-                NOON + 1_500, null);
+                NOON + 1_500, null, ANSWERED);
 
         assertThat(asAt.getChanges())
                 .containsKey(asAt.getPathway().getRoot().getUuid());
@@ -114,13 +149,16 @@ class TestPathwayAsAt {
 
     @Test
     void aMomentAfterEveryChangeIsTheModelAsItStands() {
-        // "All time" and "Today" both end now, so they must answer identically. A moment that takes
-        // nothing off is now, whatever the range said - and in particular it must not be given usage
-        // readings, which lag a node's own tally and would draw the lines differently.
+        // "All time" and "Today" both end now, so they must answer with the same model. A moment
+        // that takes nothing off is now, whatever the range said - and in particular it must not be
+        // given usage readings, which lag a node's own tally and would draw the lines differently.
+        //
+        // Not the same moment, though: "All time" names no instant, so the answer says when it was
+        // read, while "Today" says where the range ended.
         final PathwayAsAt allTime = ShardedPathwayReader.asAt(pathway(5), changes(), List.of(),
-                null, null);
+                null, null, ANSWERED);
         final PathwayAsAt today = ShardedPathwayReader.asAt(pathway(5), changes(), List.of(),
-                NOON + 60_000, null);
+                NOON + 60_000, null, ANSWERED);
 
         assertThat(today.getUsage())
                 .as("nothing was wound back, so each node's own tally is what the drawing reads")
@@ -150,7 +188,9 @@ class TestPathwayAsAt {
     void aChangeCanBePickedByNumberRatherThanByTime() {
         // Stepping asks for them one at a time. Every change one trace made carries the same
         // timestamp, so a time could not tell two of them apart.
-        final PathwayAsAt asAt = ShardedPathwayReader.asAt(pathway(5), changes(), List.of(), null, 1L);
+        //
+        // The one answer that names a moment of its own rather than the one it was asked for.
+        final PathwayAsAt asAt = ShardedPathwayReader.asAt(pathway(5), changes(), List.of(), null, 1L, ANSWERED);
 
         assertThat(asAt.getPathway().getRoot().getConstraints().get("size").getValue())
                 .isEqualTo(new IntegerValue(3));
