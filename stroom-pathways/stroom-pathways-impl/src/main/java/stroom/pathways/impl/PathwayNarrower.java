@@ -259,8 +259,12 @@ public class PathwayNarrower {
 
         final NanoTime now = NanoTimeUtil.fromInstant(Instant.now());
         final List<PathwayMutation> mutations = new ArrayList<>();
-        final PathNode root = narrowNode(pathway.getRoot(), window.values(), now, false, mutations);
+        final PathNode narrowedRoot = narrowNode(pathway.getRoot(), window.values(), now, false, mutations);
         final Paths paths = stillTaken(pathway, oldestDay, now, mutations);
+        // A dropped path is counted against the root by the change rows, so the root says when too.
+        final PathNode root = narrowedRoot != null && paths != pathway.getPaths()
+                ? narrowedRoot.copy().lastChangedTime(now).build()
+                : narrowedRoot;
         if (mutations.isEmpty()) {
             return window.dropped() > 0;
         }
@@ -519,6 +523,7 @@ public class PathwayNarrower {
             return null;
         }
         final Map<String, ConstraintValue> seen = window.get(node.getNodePath());
+        final int changesBefore = mutations.size();
         final Map<String, Constraint> constraints = new LinkedHashMap<>(NullSafe.map(node.getConstraints()));
         if (seen != null) {
             constraints.replaceAll((name, constraint) -> {
@@ -537,17 +542,22 @@ public class PathwayNarrower {
         // Settled before the children are reached, because whether this node is still part of the work
         // decides the same question for everything under it.
         final NanoTime retiredTime = retirement(node, seen, time, parentRetired, mutations);
+        // The change rows count a narrowing as a change to the node, so the node says when it was too.
+        final boolean changed = mutations.size() > changesBefore;
 
         final List<PathNode> children = new ArrayList<>();
         NullSafe.list(node.getChildren())
                 .forEach(child -> children.add(
                         narrowNode(child, window, time, retiredTime != null, mutations)));
 
-        return node.copy()
+        final PathNode.Builder builder = node.copy()
                 .children(children)
                 .constraints(constraints)
-                .retiredTime(retiredTime)
-                .build();
+                .retiredTime(retiredTime);
+        if (changed) {
+            builder.lastChangedTime(time);
+        }
+        return builder.build();
     }
 
     // Whether a node is still part of the work, answered from how many times the window saw it run. A

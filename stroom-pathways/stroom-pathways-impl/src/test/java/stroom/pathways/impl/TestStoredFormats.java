@@ -17,6 +17,7 @@
 package stroom.pathways.impl;
 
 import stroom.bytebuffer.impl6.ByteBufferFactoryImpl;
+import stroom.bytebuffer.impl6.ByteBufferPoolOutput;
 import stroom.pathways.shared.PathwaySummary;
 import stroom.pathways.shared.otel.trace.NanoTime;
 import stroom.pathways.shared.pathway.Constraint;
@@ -186,6 +187,125 @@ class TestStoredFormats {
                 .isEqualTo(new NanoTimeRange(NanoTime.ofMillis(1), null));
         assertThat(constraints.get("top.only").getValue())
                 .isEqualTo(new NanoTimeRange(null, NanoTime.ofMillis(9)));
+    }
+
+    @Test
+    void aNodeKeepsWhenItLastChanged() {
+        final PathNode changed = new PathNode("Commit").copy()
+                .timesChanged(3)
+                .lastChangedTime(NanoTime.ofMillis(5))
+                .build();
+        final Pathway pathway = Pathway.builder()
+                .name("GET /orders")
+                .createTime(NanoTime.ofMillis(1))
+                .updateTime(NanoTime.ofMillis(2))
+                .lastUsedTime(NanoTime.ofMillis(3))
+                .pathKey(new NamePathKey("GET /orders"))
+                .root(new PathNode("GET /orders").copy()
+                        .children(List.of(changed))
+                        .retiredTime(NanoTime.ofMillis(7))
+                        .build())
+                .build();
+
+        final Pathway read = new PathwaySerde(BYTE_BUFFER_FACTORY).readPathway(copied(pathway));
+
+        assertThat(read.getRoot().getLastChangedTime())
+                .as("a node nothing has changed has no time")
+                .isNull();
+        assertThat(read.getRoot().getRetiredTime())
+                .as("the field after it is still where it should be")
+                .isEqualTo(NanoTime.ofMillis(7));
+        assertThat(read.getRoot().getChildren().getFirst().getLastChangedTime())
+                .isEqualTo(NanoTime.ofMillis(5));
+    }
+
+    @Test
+    void aPathwayStoredWithoutLastChangedTimesIsStillRead() {
+        // Format 1 is format 2 less each node's last-changed time, written here by hand the way that
+        // format laid a pathway out. Refusing it would leave every pathway already learnt unreadable
+        // until the table was cleared.
+        final ByteBuffer stored;
+        try (final ByteBufferPoolOutput output = new ByteBufferPoolOutput(BYTE_BUFFER_FACTORY, 128, -1)) {
+            output.writeByte(1);
+            output.writeString("GET /orders");
+            writeTime(output, NanoTime.ofMillis(1));
+            writeTime(output, NanoTime.ofMillis(2));
+            writeTime(output, NanoTime.ofMillis(3));
+            output.writeLong(4207);
+            output.writeLong(31);
+            output.writeVarInt(2, true);
+            output.writeVarInt(0, true);
+            output.writeByte(0);
+            output.writeString("GET /orders");
+            // A node's children are written inside it, ahead of its own figures: the root's name and
+            // path, then the whole child, then the root's figures.
+            writeNodeHead(output, "root", "GET /orders", List.of("GET /orders"), 1);
+            writeNodeHead(output, "child", "Commit", List.of("GET /orders", "Commit"), 0);
+            writeNodeFiguresWithoutLastChanged(output);
+            writeNodeFiguresWithoutLastChanged(output);
+            // No paths: nodes, steps, uses and sources all empty.
+            output.writeInt(0);
+            output.writeInt(0);
+            output.writeInt(0);
+            output.writeInt(0);
+            final ByteBuffer written = output.getByteBuffer().flip();
+            stored = ByteBuffer.allocateDirect(written.remaining());
+            stored.put(written).flip();
+        }
+
+        final Pathway read = new PathwaySerde(BYTE_BUFFER_FACTORY).readPathway(stored);
+
+        assertThat(read.getName()).isEqualTo("GET /orders");
+        assertThat(read.getTimesUsed()).isEqualTo(4207);
+        assertThat(read.getRoot().getUuid()).isEqualTo("root");
+        assertThat(read.getRoot().getLastChangedTime()).isNull();
+        assertThat(read.getRoot().getRetiredTime())
+                .as("read from where format 1 put it rather than shifted by a field it does not have")
+                .isEqualTo(NanoTime.ofMillis(8));
+        assertThat(read.getRoot().getChildren()).hasSize(1);
+        assertThat(read.getRoot().getChildren().getFirst().getTimesChanged()).isEqualTo(6);
+        assertThat(read.getRoot().getChildren().getFirst().getLastChangedTime()).isNull();
+        assertThat(new PathwaySerde(BYTE_BUFFER_FACTORY).readSummary(stored.rewind()).getTimesUsed())
+                .as("the list reads it as well")
+                .isEqualTo(4207);
+    }
+
+    private static void writeNodeHead(final ByteBufferPoolOutput output,
+                                      final String uuid,
+                                      final String name,
+                                      final List<String> path,
+                                      final int children) {
+        output.writeString(uuid);
+        output.writeString(name);
+        output.writeInt(path.size());
+        path.forEach(output::writeString);
+        output.writeInt(children);
+    }
+
+    // No constraints, used five times, changed six, last used at 4ms and retired at 8ms.
+    private static void writeNodeFiguresWithoutLastChanged(final ByteBufferPoolOutput output) {
+        output.writeInt(0);
+        output.writeLong(5);
+        output.writeLong(6);
+        output.writeBoolean(true);
+        writeTime(output, NanoTime.ofMillis(4));
+        output.writeBoolean(true);
+        writeTime(output, NanoTime.ofMillis(8));
+    }
+
+    private static void writeTime(final ByteBufferPoolOutput output, final NanoTime time) {
+        output.writeLong(time.getSeconds());
+        output.writeInt(time.getNanos());
+    }
+
+    private static ByteBuffer copied(final Pathway pathway) {
+        final ByteBuffer[] written = new ByteBuffer[1];
+        new PathwaySerde(BYTE_BUFFER_FACTORY).writePathway(pathway, 0, buffer -> {
+            final ByteBuffer copy = ByteBuffer.allocateDirect(buffer.remaining());
+            copy.put(buffer).flip();
+            written[0] = copy;
+        });
+        return written[0];
     }
 
     private static ByteBuffer write() {

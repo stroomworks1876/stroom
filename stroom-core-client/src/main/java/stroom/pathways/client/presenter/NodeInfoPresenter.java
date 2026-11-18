@@ -70,9 +70,9 @@ public class NodeInfoPresenter extends MyPresenterWidget<PagerView> {
 
     /**
      * @param node   the node picked out, or null where none is.
-     * @param change how often the model has been taught something about this node and when it last
-     *               was, which the node does not hold — the changes say it, and holding it twice
-     *               would let the two differ.
+     * @param change how often the model had been taught something about this node by the moment on
+     *               show, and when it last was. Not read off the node, which holds those as they
+     *               stand now rather than as they stood then.
      */
     public void setData(final PathNode node, final NodeChange change) {
         if (node == null) {

@@ -1229,7 +1229,7 @@ public class ShardedPathwayReader {
         if (asAtMs == null) {
             return new PathwayAsAt(
                     pathway,
-                    changesByUuid(pathway, MutationCounts.of(mutations, 0L)),
+                    changesByUuid(pathway, MutationCounts.of(mutations, 0L), moment),
                     Map.of(),
                     moment,
                     changeCeiling,
@@ -1239,6 +1239,12 @@ public class ShardedPathwayReader {
         }
 
         final Long lastChange = lastChangeBy(mutations, asAtMs);
+        if (lastChange == null && reaches(pathway, asAtMs)) {
+            // The model was there by then, but none of the changes it had made by then are in hand:
+            // they have moved out of the shard, and only the weeks after the moment are read. Every
+            // change in hand therefore came later, so all of them come off.
+            return undoneInHand(pathway, mutations, moment, changeCeiling, usageCeiling);
+        }
         if (lastChange == null) {
             // The learner had taken nothing in by then, so there is nothing to wind back through.
             // Folding the day records is the other answer, and the caller takes that route before
@@ -1268,7 +1274,7 @@ public class ShardedPathwayReader {
         if (later.isEmpty()) {
             return new PathwayAsAt(
                     pathway,
-                    changesByUuid(pathway, MutationCounts.of(mutations, lastChange)),
+                    changesByUuid(pathway, MutationCounts.of(mutations, lastChange), moment),
                     Map.of(),
                     moment,
                     changeCeiling,
@@ -1278,6 +1284,24 @@ public class ShardedPathwayReader {
         }
 
         return woundTo(pathway, mutations, usage, lastChange, moment, changeCeiling, usageCeiling);
+    }
+
+    // The model with every change in hand taken off, which with none in hand is the model as it
+    // stands. None of those changes had been made by the moment answered for, so none is counted;
+    // each node says for itself how much it had changed by then, where it can.
+    private static PathwayAsAt undoneInHand(final Pathway pathway,
+                                            final List<PathwayMutation> mutations,
+                                            final NanoTime moment,
+                                            final long changeCeiling,
+                                            final long usageCeiling) {
+        final MutationCounts noneCounted = MutationCounts.of(List.of(), 0L);
+        if (mutations.isEmpty()) {
+            return new PathwayAsAt(pathway, changesByUuid(pathway, noneCounted, moment), Map.of(),
+                    moment, changeCeiling, usageCeiling, false, null);
+        }
+        final Pathway shown = wound(pathway, mutations);
+        return new PathwayAsAt(shown, changesByUuid(shown, noneCounted, moment), Map.of(),
+                moment, changeCeiling, usageCeiling, false, pathway.getRoot());
     }
 
     // The model as it stood just after one change, with the figures a drawing of it needs. Both ways
@@ -1297,7 +1321,7 @@ public class ShardedPathwayReader {
         final Pathway shown = wound(pathway, after(mutations, sequence));
         return new PathwayAsAt(
                 shown,
-                changesByUuid(shown, MutationCounts.of(mutations, sequence)),
+                changesByUuid(shown, MutationCounts.of(mutations, sequence), moment),
                 usageByUuid(usage, sequence),
                 moment,
                 changeCeiling,
@@ -1369,24 +1393,36 @@ public class ShardedPathwayReader {
 
     // Keyed by uuid because that is how a drawing asks for them, and only for nodes the model being
     // shown actually holds.
+    //
+    // A node whose last change came at or before the moment says exactly how much it had changed by
+    // then and when it last did, so its own figures are used. Only a node changed since has to be
+    // counted from the change rows, which reach back no further than the narrowing window - the
+    // older ones are in the weekly buckets.
     private static Map<String, NodeChange> changesByUuid(final Pathway shown,
-                                                         final MutationCounts counts) {
+                                                         final MutationCounts counts,
+                                                         final NanoTime moment) {
         final Map<String, NodeChange> byUuid = new HashMap<>();
-        collectChanges(shown.getRoot(), counts, byUuid);
+        collectChanges(shown.getRoot(), counts, moment.toEpochMillis(), byUuid);
         return byUuid;
     }
 
     private static void collectChanges(final PathNode node,
                                        final MutationCounts counts,
+                                       final long momentMs,
                                        final Map<String, NodeChange> byUuid) {
         if (node == null) {
             return;
         }
-        final NodeChange change = counts.node(node.getNodePath());
+        final NanoTime lastChanged = node.getLastChangedTime();
+        final NodeChange change = lastChanged != null && lastChanged.toEpochMillis() <= momentMs
+                // At least one: a node the narrowing alone has changed has a time and no tally, and
+                // the change rows count a narrowing as one.
+                ? new NodeChange(Math.max(1L, node.getTimesChanged()), lastChanged)
+                : counts.node(node.getNodePath());
         if (change != null) {
             byUuid.put(node.getUuid(), change);
         }
-        NullSafe.list(node.getChildren()).forEach(child -> collectChanges(child, counts, byUuid));
+        NullSafe.list(node.getChildren()).forEach(child -> collectChanges(child, counts, momentMs, byUuid));
     }
 
     // The reading kept at the moment being shown, which is the earliest taken at or after the change

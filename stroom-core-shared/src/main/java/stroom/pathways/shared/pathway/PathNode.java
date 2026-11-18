@@ -50,6 +50,8 @@ public class PathNode {
     private final long timesChanged;
     @JsonProperty
     private final NanoTime lastUsedTime;
+    @JsonProperty
+    private final NanoTime lastChangedTime;
     /**
      * When this node stopped being part of the work, or null while it is still part of it.
      *
@@ -71,6 +73,7 @@ public class PathNode {
                     @JsonProperty("timesUsed") final long timesUsed,
                     @JsonProperty("timesChanged") final long timesChanged,
                     @JsonProperty("lastUsedTime") final NanoTime lastUsedTime,
+                    @JsonProperty("lastChangedTime") final NanoTime lastChangedTime,
                     @JsonProperty("retiredTime") final NanoTime retiredTime) {
         this.uuid = uuid;
         this.name = name;
@@ -82,6 +85,7 @@ public class PathNode {
         this.timesUsed = timesUsed;
         this.timesChanged = timesChanged;
         this.lastUsedTime = lastUsedTime;
+        this.lastChangedTime = lastChangedTime;
         this.retiredTime = retiredTime;
     }
 
@@ -93,7 +97,7 @@ public class PathNode {
                     final List<String> nodePath,
                     final List<PathNode> children,
                     final Map<String, Constraint> constraints) {
-        this(uuid, name, nodePath, children, constraints, 0L, 0L, null, null);
+        this(uuid, name, nodePath, children, constraints, 0L, 0L, null, null, null);
     }
 
     public PathNode(final String name,
@@ -107,6 +111,7 @@ public class PathNode {
         this.timesUsed = 0L;
         this.timesChanged = 0L;
         this.lastUsedTime = null;
+        this.lastChangedTime = null;
     }
 
     public PathNode(final String name) {
@@ -119,6 +124,7 @@ public class PathNode {
         this.timesUsed = 0L;
         this.timesChanged = 0L;
         this.lastUsedTime = null;
+        this.lastChangedTime = null;
     }
 
     /**
@@ -135,22 +141,36 @@ public class PathNode {
      * the drawing counts, so the two agree: the trace that brought the pathway into being is left
      * out, and so are the changes that say something was added or was absent.
      *
-     * <p>Held here only so that the scale the drawing measures node sizes against is a walk of the
-     * model rather than a read of every change ever made. How much a node had changed <em>by some
-     * past moment</em> is not this, and is not held: that is counted from the changes being undone,
-     * because one trace can change a node many times and only the last of them coming off would
-     * lower this.
+     * <p>Held so that the scale the drawing measures node sizes against is a walk of the model rather
+     * than a read of every change ever made, and so that a node not changed since the moment being
+     * drawn can be sized from itself. Changes made by the narrowing are not counted here. How much a
+     * node had changed <em>by a moment before its last change</em> is not this, and is not held: that
+     * is counted from the changes being undone, because one trace can change a node many times and
+     * only the last of them coming off would lower this.
      */
     public long getTimesChanged() {
         return timesChanged;
     }
 
     /**
-     * The last time a trace reached this node. When it last <em>changed</em> is not held here — that
-     * is what the stored changes say, and holding it twice would let the two differ.
+     * The last time a trace reached this node.
      */
     public NanoTime getLastUsedTime() {
         return lastUsedTime;
+    }
+
+    /**
+     * When the learner last took in a trace that changed this node, counted the way
+     * {@link #getTimesChanged()} is. Null for a node nothing has changed, and for one read from a
+     * stored format with no room for it.
+     *
+     * <p>Held so the model can be drawn as it stands from itself alone. The stored changes say the same
+     * thing, but those older than the narrowing window are moved out to the weekly buckets, and a
+     * pathway quiet for longer than the window would otherwise have nothing to say how long ago each
+     * node changed.
+     */
+    public NanoTime getLastChangedTime() {
+        return lastChangedTime;
     }
 
     /**
@@ -249,6 +269,7 @@ public class PathNode {
         private long timesUsed;
         private long timesChanged;
         private NanoTime lastUsedTime;
+        private NanoTime lastChangedTime;
         private NanoTime retiredTime;
 
         public Builder() {
@@ -263,6 +284,7 @@ public class PathNode {
             this.timesUsed = pathNode.timesUsed;
             this.timesChanged = pathNode.timesChanged;
             this.lastUsedTime = pathNode.lastUsedTime;
+            this.lastChangedTime = pathNode.lastChangedTime;
             this.retiredTime = pathNode.retiredTime;
         }
 
@@ -306,6 +328,11 @@ public class PathNode {
             return self();
         }
 
+        public Builder lastChangedTime(final NanoTime lastChangedTime) {
+            this.lastChangedTime = lastChangedTime;
+            return self();
+        }
+
         public Builder retiredTime(final NanoTime retiredTime) {
             this.retiredTime = retiredTime;
             return self();
@@ -326,6 +353,7 @@ public class PathNode {
                     timesUsed,
                     timesChanged,
                     lastUsedTime,
+                    lastChangedTime,
                     retiredTime);
         }
     }

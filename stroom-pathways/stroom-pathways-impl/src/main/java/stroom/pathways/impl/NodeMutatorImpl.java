@@ -204,7 +204,8 @@ public class NodeMutatorImpl {
                && !MutationType.NODE_ABSENT.equals(type);
     }
 
-    // Raises the tally on every node this trace changed, leaving the rest of the tree as it stands.
+    // Raises the tally, and says when, on every node this trace changed, leaving the rest of the tree
+    // as it stands.
     // Rebuilt branch by branch rather than whole, because the walk above only rebuilds what the trace
     // reached and a second pass over everything would undo that.
     private PathNode counted(final PathNode node) {
@@ -229,7 +230,8 @@ public class NodeMutatorImpl {
             builder.children(rebuilt);
         }
         if (changed) {
-            builder.timesChanged(node.getTimesChanged() + 1);
+            builder.timesChanged(node.getTimesChanged() + 1)
+                    .lastChangedTime(time);
         }
         return builder.build();
     }

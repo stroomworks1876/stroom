@@ -113,8 +113,8 @@ public class PathwayTreePresenter
     // for reading the structure itself.
     private PathwayRenderer renderer = graphRenderer;
     // What the server worked out for the moment on show: how much each node had changed and when it
-    // last did, by uuid, worked out from the stored changes rather than held on the node, because the
-    // changes already say it and holding it twice would let the two differ.
+    // last did, by uuid. Never read off the node here: the node holds those as they stand now, and
+    // only the server can say what they were at the moment on show.
     //
     // The two below are read off it and set with it, never apart - a drawing given some of them and
     // not the others draws a wrong picture rather than no picture. The time ages are counted back

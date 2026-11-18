@@ -178,7 +178,7 @@ final class PathwayFold {
         // Nothing is retired, because retiring is what the narrowing does to a learnt model, and
         // nothing has changed until the differences between days exist to count.
         return new PathNode(node.identity, node.path.get(node.path.size() - 1), node.path, below,
-                constraints(node), node.seen.timesUsed(), 0L, node.lastUsed, null);
+                constraints(node), node.seen.timesUsed(), 0L, node.lastUsed, null, null);
     }
 
     // The counts and the time are left off each constraint: a day record says what a constraint was

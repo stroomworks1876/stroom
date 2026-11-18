@@ -23,6 +23,7 @@ import stroom.pathways.shared.pathway.ConstraintValue;
 import stroom.pathways.shared.pathway.IntegerValue;
 import stroom.pathways.shared.pathway.MutationType;
 import stroom.pathways.shared.pathway.NamePathKey;
+import stroom.pathways.shared.pathway.NodeChange;
 import stroom.pathways.shared.pathway.PathNode;
 import stroom.pathways.shared.pathway.Pathway;
 import stroom.pathways.shared.pathway.PathwayMutation;
@@ -110,6 +111,68 @@ class TestPathwayAsAt {
                 .as("there is nothing to wind back through, so there is nothing to draw")
                 .isNull();
         assertThat(asAt.getAsAt()).isEqualTo(NanoTime.ofMillis(NOON - 1));
+    }
+
+    @Test
+    void aModelWhoseChangesHaveAllLeftTheShardIsShownAsItStands() {
+        // Opened on today with nothing learnt today: the changes that built the model are in the
+        // week buckets, and only the weeks after the moment asked for are read. The model was there
+        // all along, so it is what is shown rather than nothing - and each node says for itself how
+        // much it had changed and how long ago, so it is drawn aged rather than grey.
+        final Pathway pathway = changedAt(pathway(5), NOON + 2_000);
+        final PathwayAsAt asAt = ShardedPathwayReader.asAt(pathway, List.of(), List.of(),
+                NOON + 60_000, null, ANSWERED);
+
+        assertThat(asAt.getPathway().getRoot()).isNotNull();
+        assertThat(asAt.getPathway().getRoot().getConstraints().get("size").getValue())
+                .isEqualTo(new IntegerValue(5));
+        assertThat(asAt.getLayout())
+                .as("nothing was taken off, so the model is its own layout")
+                .isNull();
+        final NodeChange own = asAt.getChanges().get("root-uuid");
+        assertThat(own)
+                .as("the node's own tally and time, with no change row in hand to count from")
+                .isNotNull();
+        assertThat(own.getCount()).isEqualTo(7L);
+        assertThat(own.getLastUpdated()).isEqualTo(NanoTime.ofMillis(NOON + 2_000));
+    }
+
+    @Test
+    void aNodeChangedSinceTheMomentIsCountedFromTheChangeRows() {
+        // Its own figures are as it stands now, which is later than the moment - so they say nothing
+        // about how it stood then.
+        final Pathway pathway = changedAt(pathway(5), NOON + 2_000);
+        final PathwayAsAt asAt = ShardedPathwayReader.asAt(pathway, changes(), List.of(),
+                NOON + 1_500, null, ANSWERED);
+
+        assertThat(asAt.getChanges().get("root-uuid").getLastUpdated())
+                .isEqualTo(NanoTime.ofMillis(NOON + 1_000));
+    }
+
+    @Test
+    void theModelAsItStandsIsSizedByEachNodesWholeLife() {
+        // The change rows in hand reach back only as far as the narrowing window, but the scale a
+        // node is measured against is its whole life. Counted from the rows, a node busy for months
+        // and quiet this week would be drawn as if it had hardly changed.
+        final Pathway pathway = changedAt(pathway(5), NOON + 2_000);
+        final PathwayAsAt asAt = ShardedPathwayReader.asAt(pathway, changes(), List.of(),
+                null, null, ANSWERED);
+
+        assertThat(asAt.getChanges().get("root-uuid").getCount()).isEqualTo(7L);
+    }
+
+    @Test
+    void aModelWhoseEarlierChangesHaveLeftTheShardHasEveryLaterOneTakenOff() {
+        // The model was there by the moment asked for, and every change in hand came after it.
+        final PathwayAsAt asAt = ShardedPathwayReader.asAt(pathway(5), changes(), List.of(),
+                NOON + 500, null, ANSWERED);
+
+        assertThat(asAt.getPathway().getRoot())
+                .as("the model existed by then, so there is a model to show")
+                .isNotNull();
+        assertThat(asAt.getLayout())
+                .as("changes were taken off, so the pathway's own tree is sent to lay it out")
+                .isNotNull();
     }
 
     @Test
@@ -223,6 +286,12 @@ class TestPathwayAsAt {
 
     // A root whose "size" constraint has been widened twice: to 3 one second past noon, and to the
     // value given here two seconds past.
+    private static Pathway changedAt(final Pathway pathway, final long ms) {
+        return pathway.copy()
+                .root(pathway.getRoot().copy().lastChangedTime(NanoTime.ofMillis(ms)).build())
+                .build();
+    }
+
     private static Pathway pathway(final int size) {
         final PathNode root = PathNode.builder()
                 .uuid("root-uuid")

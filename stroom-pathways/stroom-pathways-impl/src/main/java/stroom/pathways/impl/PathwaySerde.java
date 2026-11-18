@@ -83,7 +83,12 @@ public class PathwaySerde {
      * Which shape a stored pathway has. Raise this whenever a field is added, removed or moved,
      * anywhere in the pathway, its nodes, or their constraints.
      */
-    private static final byte PATHWAY_VERSION = 1;
+    private static final byte PATHWAY_VERSION = 2;
+    /**
+     * The same layout as version 2 less each node's last-changed time, so it is still read: those
+     * nodes come back with none, which is what a node nothing has changed carries anyway.
+     */
+    private static final byte PATHWAY_VERSION_WITHOUT_LAST_CHANGED = 1;
 
     /**
      * Which shape a stored mutation has. The layout is positional and carries no field names, so a row
@@ -112,8 +117,9 @@ public class PathwaySerde {
 
     public Pathway readPathway(final ByteBuffer byteBuffer) {
         final Input input = new UnsafeByteBufferInput(byteBuffer);
-        checkVersion(input.readByte(), PATHWAY_VERSION, "pathway", "pathways");
-        return readPathway(input);
+        final byte version = input.readByte();
+        checkPathwayVersion(version);
+        return readPathway(input, version);
     }
 
     /**
@@ -130,7 +136,7 @@ public class PathwaySerde {
     public PathwaySummary readSummary(final ByteBuffer byteBuffer) {
         final long sizeBytes = byteBuffer.remaining();
         final Input input = new UnsafeByteBufferInput(byteBuffer);
-        checkVersion(input.readByte(), PATHWAY_VERSION, "pathway", "pathways");
+        checkPathwayVersion(input.readByte());
         final String name = input.readString();
         final NanoTime createTime = readNanoTime(input);
         final NanoTime updateTime = readNanoTime(input);
@@ -156,7 +162,7 @@ public class PathwaySerde {
                 sizeBytes);
     }
 
-    private Pathway readPathway(final Input input) {
+    private Pathway readPathway(final Input input, final byte version) {
         final Pathway.Builder builder = Pathway.builder()
                 .name(input.readString())
                 .createTime(readNanoTime(input))
@@ -173,7 +179,7 @@ public class PathwaySerde {
 
         return builder
                 .pathKey(readPathKey(input))
-                .root(readPathNode(input))
+                .root(readPathNode(input, version))
                 .paths(readPaths(input))
                 .build();
     }
@@ -205,16 +211,20 @@ public class PathwaySerde {
         };
     }
 
-    private PathNode readPathNode(final Input input) {
-        return PathNode.builder()
+    private PathNode readPathNode(final Input input, final byte version) {
+        final PathNode.Builder builder = PathNode.builder()
                 .uuid(input.readString())
                 .name(input.readString())
                 .nodePath(readStrings(input))
-                .children(readList(input, this::readPathNode))
+                .children(readList(input, in -> readPathNode(in, version)))
                 .constraints(readConstraints(input))
                 .timesUsed(input.readLong())
                 .timesChanged(input.readLong())
-                .lastUsedTime(readNullableNanoTime(input))
+                .lastUsedTime(readNullableNanoTime(input));
+        if (version != PATHWAY_VERSION_WITHOUT_LAST_CHANGED) {
+            builder.lastChangedTime(readNullableNanoTime(input));
+        }
+        return builder
                 .retiredTime(readNullableNanoTime(input))
                 .build();
     }
@@ -561,6 +571,12 @@ public class PathwaySerde {
     // sides carry a presence flag rather than a type byte that would have nothing to describe.
     // Read as though it were the current shape, a row laid out differently comes back as whatever its
     // bytes happened to mean. Refusing says what is wrong and which table to clear.
+    private static void checkPathwayVersion(final byte found) {
+        if (found != PATHWAY_VERSION_WITHOUT_LAST_CHANGED) {
+            checkVersion(found, PATHWAY_VERSION, "pathway", "pathways");
+        }
+    }
+
     private static void checkVersion(final byte found, final byte expected, final String what,
                                      final String table) {
         if (found != expected) {
@@ -673,6 +689,7 @@ public class PathwaySerde {
         output.writeLong(pathNode.getTimesUsed());
         output.writeLong(pathNode.getTimesChanged());
         writeNullableNanoTime(pathNode.getLastUsedTime(), output);
+        writeNullableNanoTime(pathNode.getLastChangedTime(), output);
         writeNullableNanoTime(pathNode.getRetiredTime(), output);
     }
 

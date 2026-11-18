@@ -94,6 +94,36 @@ class TestNodeChangeCounts {
     }
 
     @Test
+    void aNodeSaysWhenItLastChangedAsTheChangeRowsDo() {
+        // The model drawn as it stands reads this rather than the change rows, which leave the shard
+        // once they are older than the narrowing window. So it has to be the same time those rows say.
+        final PathNode first = mutator().process(trace("t0", 10), key(), null, quiet(), doc());
+        final NodeMutatorImpl mutator = mutator();
+        final PathNode second = mutator.process(trace("t1", 40), key(), first, quiet(), doc());
+
+        assertThat(first.getChildren().getFirst().getLastChangedTime())
+                .as("the trace that brought the pathway into being changed nothing")
+                .isNull();
+        assertThat(second.getChildren().getFirst().getLastChangedTime())
+                .isNotNull()
+                .isEqualTo(mutator.getMutations().stream()
+                        .filter(mutation -> PING.equals(mutation.getNodePath().getLast()))
+                        .findFirst()
+                        .orElseThrow()
+                        .getTime());
+    }
+
+    @Test
+    void aTraceThatTellsTheModelNothingNewLeavesTheTimeAlone() {
+        final PathNode first = mutator().process(trace("t0", 10), key(), null, quiet(), doc());
+        final PathNode second = mutator().process(trace("t1", 40), key(), first, quiet(), doc());
+        final PathNode third = mutator().process(trace("t2", 40), key(), second, quiet(), doc());
+
+        assertThat(third.getChildren().getFirst().getLastChangedTime())
+                .isEqualTo(second.getChildren().getFirst().getLastChangedTime());
+    }
+
+    @Test
     void aTraceThatTellsTheModelNothingNewCountsForNothing() {
         final PathNode first = mutator().process(trace("t0", 10), key(), null, quiet(), doc());
         final PathNode second = mutator().process(trace("t1", 10), key(), first, quiet(), doc());
