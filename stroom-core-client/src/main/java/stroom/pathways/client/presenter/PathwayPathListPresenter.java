@@ -141,6 +141,9 @@ public class PathwayPathListPresenter extends MyPresenterWidget<PagerView> {
     // drawing already shows that plainly.
     private String selectedNode;
     private Filter filter = Filter.OFF;
+    // Which pathway the rows are of, so being handed the same one again can be told apart from a
+    // different one.
+    private String pathwayName;
     // Where the traces that taught this model are kept, or null where nothing keeps them.
     private List<String> sources = List.of();
     // How to order the rows for each column that offers it, and the one ordered on where nothing has
@@ -485,6 +488,19 @@ public class PathwayPathListPresenter extends MyPresenterWidget<PagerView> {
      * gives above.
      */
     public void setData(final Pathway pathway) {
+        // The same pathway again is a refresh or a new range, and its nodes keep their uuids. The node
+        // the table is narrowed to is kept, and the narrowing with it, where the model still has that
+        // node: the drawing still has it picked out, so it has no change to report and would never
+        // say which node it is again.
+        final boolean same = pathway != null && Objects.equals(pathwayName, pathway.getName());
+        pathwayName = NullSafe.get(pathway, Pathway::getName);
+        final String keptNode = same && contains(pathway.getRoot(), selectedNode)
+                ? selectedNode
+                : null;
+        final Filter keptFilter = keptNode == null
+                ? Filter.OFF
+                : filter;
+
         // Whatever was selected belonged to the pathway being replaced, and the view around this one
         // asks what is selected to decide what to pick out.
         selectionModel.clear();
@@ -499,9 +515,8 @@ public class PathwayPathListPresenter extends MyPresenterWidget<PagerView> {
         stepCounts.clear();
         root = NullSafe.get(pathway, Pathway::getRoot);
         shapes = Collections.emptyList();
-        // Whatever was picked out belonged to the model being replaced, so the filter starts with
-        // nothing to work from rather than with a node this pathway may not have.
-        selectedNode = null;
+        // Off while the rows are swapped, whatever is put back afterwards.
+        selectedNode = keptNode;
         setFilter(Filter.OFF);
 
         final Paths paths = NullSafe.get(pathway, Pathway::getPaths);
@@ -516,6 +531,26 @@ public class PathwayPathListPresenter extends MyPresenterWidget<PagerView> {
 
         rows = new ArrayList<>(NullSafe.list(paths.getPaths()));
         order();
+        // Put back only once the new rows and their steps are in, because narrowing walks each row
+        // over its steps.
+        if (keptFilter != Filter.OFF) {
+            setFilter(keptFilter);
+        }
+    }
+
+    private static boolean contains(final PathNode node, final String uuid) {
+        if (node == null || uuid == null) {
+            return false;
+        }
+        if (uuid.equals(node.getUuid())) {
+            return true;
+        }
+        for (final PathNode child : NullSafe.list(node.getChildren())) {
+            if (contains(child, uuid)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /**

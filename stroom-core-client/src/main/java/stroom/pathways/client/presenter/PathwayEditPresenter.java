@@ -244,20 +244,15 @@ public class PathwayEditPresenter
         // the rows, because the two are of one moment and refreshing one of them would leave a
         // drawing made from changes the table no longer lists.
         //
-        // Everything the reader set up is kept: the narrowing, the node it is aimed at and the row
-        // being looked at. A button that fetches the rows again must not also undo what they had
-        // done to them.
-        registerHandler(mutationListPresenter.getView().getRefreshButton().addClickHandler(e -> {
-            if (docRef == null || pathway == null) {
-                return;
-            }
-            keptRow = mutationListPresenter.getSelectionModel().getSelected();
-            keptFilter = mutationListPresenter.getFilter();
-            keptNode = pathwayTreePresenter.getSelectionModel().getSelectedObject();
-            // Asks for the model and then, once it lands, the rows. One call rather than one
-            // apiece: asking for the rows here as well would fetch them twice over.
-            showOver(timeRange);
-        }));
+        // What the reader set up on the changes is kept: the narrowing, the node it is aimed at and
+        // the row being looked at. A button that fetches the rows again must not also undo what they
+        // had done to them.
+        //
+        // The paths come with the model, so the paths table's button asks for the same thing. That
+        // table keeps its own narrowing when given the same pathway again, but not the path being
+        // looked at.
+        registerHandler(mutationListPresenter.getView().getRefreshButton().addClickHandler(e -> refresh()));
+        registerHandler(pathListPresenter.getView().getRefreshButton().addClickHandler(e -> refresh()));
         // Constraints are the only thing on this screen that writes, and they are written straight
         // into the model the moment the constraint dialog is accepted. This is how the tab learns
         // there is something to save.
@@ -923,6 +918,18 @@ public class PathwayEditPresenter
                 .onFailure(new DefaultErrorHandler(this, null))
                 .taskMonitorFactory(this)
                 .exec();
+    }
+
+    private void refresh() {
+        if (docRef == null || pathway == null) {
+            return;
+        }
+        keptRow = mutationListPresenter.getSelectionModel().getSelected();
+        keptFilter = mutationListPresenter.getFilter();
+        keptNode = pathwayTreePresenter.getSelectionModel().getSelectedObject();
+        // Asks for the model and then, once it lands, the rows. One call rather than one apiece:
+        // asking for the rows here as well would fetch them twice over.
+        showOver(timeRange);
     }
 
     // What came back for a position, which is the drawing and nothing else.
