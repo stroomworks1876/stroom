@@ -4,8 +4,7 @@
              xmlns:form="urn:import:stroom.widget.form.client"
              xmlns:i="urn:import:stroom.item.client">
     <g:FlowPanel styleName="max form-padding form">
-        <form:FormGroup ui:field="stateTypeGroup"
-                        label="State Type"
+        <form:FormGroup label="State Type"
                         helpText="Choose the type of state you want to store.">
             <i:SelectionBox ui:field="stateType" addStyleNames="allow-focus"/>
         </form:FormGroup>

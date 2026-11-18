@@ -4,10 +4,21 @@
              xmlns:form="urn:import:stroom.widget.form.client"
              xmlns:sg="urn:import:stroom.planb.client.view">
     <g:FlowPanel styleName="max form-padding form">
-        <g:SimplePanel ui:field="settings"/>
-        <form:FormGroup identity="tracesPathways" label="Pathways"
-                        helpText="The Pathways document this trace store is linked to. Leave empty for none.">
-            <g:SimplePanel ui:field="pathways"/>
-        </form:FormGroup>
+        <sg:SettingsGroup label="Shared File Store"
+                          ui:field="sharedFileStorePanel"/>
+        <sg:SettingsGroup label="Publishing"
+                          ui:field="publishingPanel"/>
+        <sg:SettingsGroup label="Storage"
+                          ui:field="storagePanel"/>
+        <sg:SettingsGroup label="Data Retention"
+                          ui:field="retentionPanel"/>
+        <sg:SettingsGroup label="Learning">
+            <g:FlowPanel>
+                <form:FormGroup identity="tracesPathways" label="Pathways"
+                                helpText="The Pathways document this trace store is linked to. Leave empty for none.">
+                    <g:SimplePanel ui:field="pathways"/>
+                </form:FormGroup>
+            </g:FlowPanel>
+        </sg:SettingsGroup>
     </g:FlowPanel>
 </ui:UiBinder>

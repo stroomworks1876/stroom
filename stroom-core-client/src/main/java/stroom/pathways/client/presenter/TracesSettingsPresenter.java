@@ -17,48 +17,55 @@
 package stroom.pathways.client.presenter;
 
 import stroom.docref.DocRef;
+import stroom.document.client.event.ChangeUiHandlers;
 import stroom.entity.client.presenter.DocPresenter;
 import stroom.entity.client.presenter.ReadOnlyChangeHandler;
 import stroom.explorer.client.presenter.DocSelectionBoxPresenter;
 import stroom.pathways.client.presenter.TracesSettingsPresenter.TracesSettingsView;
 import stroom.pathways.shared.PathwaysDoc;
 import stroom.pathways.shared.TracesDoc;
-import stroom.planb.client.presenter.PlanBSettingsPresenter;
+import stroom.planb.client.view.GeneralSettingsView;
+import stroom.planb.client.view.PublishingSettingsView;
+import stroom.planb.client.view.RetentionSettingsView;
+import stroom.planb.client.view.SharedFileStoreSettingsView;
+import stroom.planb.shared.HoldingAreaSettings;
 import stroom.planb.shared.StateType;
+import stroom.planb.shared.TraceSettings;
 import stroom.security.shared.DocumentPermission;
+import stroom.util.shared.time.SimpleDuration;
 
 import com.google.inject.Inject;
 import com.google.web.bindery.event.shared.EventBus;
+import com.gwtplatform.mvp.client.HasUiHandlers;
 import com.gwtplatform.mvp.client.View;
 
 /**
- * Settings tab presenter for {@link TracesDoc}.
- *
- * <p>This is a thin adapter that satisfies the {@code DocPresenter<?, TracesDoc>}
- * contract required by {@link stroom.entity.client.presenter.DocTabProvider}.
- * All settings form logic is delegated to {@link PlanBSettingsPresenter}, which
- * is locked to {@link StateType#TRACE} so the state-type dropdown is hidden.
- *
- * <p>The {@code updateTraceSettingsForSharding} logic previously in this class has
- * moved to {@link stroom.planb.client.presenter.TraceSettingsPresenter#onChange()},
- * where it belongs alongside the sharding field state.
+ * Settings tab of a {@link TracesDoc}: the trace store's own settings and the Pathways document it
+ * hands its traces to. A trace store is only ever served from a shared file store, so this offers no
+ * snapshot or part-transfer settings.
  */
 public class TracesSettingsPresenter
-        extends DocPresenter<TracesSettingsView, TracesDoc> {
+        extends DocPresenter<TracesSettingsView, TracesDoc>
+        implements ChangeUiHandlers {
 
-    private final PlanBSettingsPresenter planBSettingsPresenter;
     private final DocSelectionBoxPresenter pathwaysPresenter;
+
+    /**
+     * Held from the most recent read so that a write round-trips them. Neither has an editor — the
+     * query range limit because nothing offers one yet, the compaction frequency because reclaiming
+     * pages in the holding area is internal housekeeping an operator has no reason to set. Without
+     * this a save would silently clear whatever was configured.
+     */
+    private SimpleDuration maxQueryTimeRange;
+    private SimpleDuration compactionFrequency;
 
     @Inject
     public TracesSettingsPresenter(final EventBus eventBus,
                                    final TracesSettingsView view,
-                                   final PlanBSettingsPresenter planBSettingsPresenter,
                                    final DocSelectionBoxPresenter pathwaysPresenter) {
         super(eventBus, view);
-        this.planBSettingsPresenter = planBSettingsPresenter;
         this.pathwaysPresenter = pathwaysPresenter;
-        planBSettingsPresenter.setStateTypeLocked(true);
-        view.setSettingsView(planBSettingsPresenter.getView());
+        view.setUiHandlers(this);
 
         // Handing traces over is a change to this store, so it is the edit right on this store that
         // authorises it. The user needs to be able to use the Pathways document they pick, hence VIEW
@@ -72,31 +79,61 @@ public class TracesSettingsPresenter
     @Override
     protected void onBind() {
         super.onBind();
-        registerHandler(planBSettingsPresenter.addChangeHandler(this::onChange));
         registerHandler(pathwaysPresenter.addDataSelectionHandler(e -> onChange()));
     }
 
     @Override
     protected void onRead(final DocRef docRef, final TracesDoc doc, final boolean readOnly) {
+        final TraceSettings settings = doc.getSettings() instanceof final TraceSettings traceSettings
+                ? traceSettings
+                : new TraceSettings.Builder().build();
+        maxQueryTimeRange = settings.getMaxQueryTimeRange();
+        compactionFrequency = settings.getHoldingArea().getCompactionFrequency();
+        getView().setMaxStoreSize(settings.getMaxStoreSize());
+        getView().setMaxSpansPerTrace(settings.getMaxSpansPerTrace());
+        getView().setGranularity(settings.getGranularity());
+        getView().setMaxWaitForData(settings.getHoldingArea().getMaxWaitForData());
+        getView().setRetention(settings.getRetention());
+        getView().setSharedFileStore(settings.getSharedFileStore());
+        getView().setSharedFileStoreLocked(doc.hasSharedFileStoreData());
         getView().onReadOnly(readOnly);
-        planBSettingsPresenter.readSettings(doc.getSettings(), StateType.TRACE, readOnly);
-        planBSettingsPresenter.setSharedFileStoreLocked(doc.hasSharedFileStoreData());
         pathwaysPresenter.setEnabled(!readOnly);
         pathwaysPresenter.setSelectedEntityReference(doc.getPathwaysDocRef(), true);
     }
 
     @Override
     protected TracesDoc onWrite(final TracesDoc doc) {
+        final TraceSettings settings = new TraceSettings.Builder()
+                .maxStoreSize(getView().getMaxStoreSize())
+                .maxSpansPerTrace(getView().getMaxSpansPerTrace())
+                .granularity(getView().getGranularity())
+                .holdingArea(new HoldingAreaSettings.Builder()
+                        .maxWaitForData(getView().getMaxWaitForData())
+                        .compactionFrequency(compactionFrequency)
+                        .build())
+                .retention(getView().getRetention())
+                .sharedFileStore(getView().getSharedFileStore())
+                .maxQueryTimeRange(maxQueryTimeRange)
+                .build();
         return doc.copyTraces()
                 .stateType(StateType.TRACE)
-                .settings(planBSettingsPresenter.writeSettings())
+                .settings(settings)
                 .pathwaysDocRef(pathwaysPresenter.getSelectedEntityReference())
                 .build();
     }
 
-    public interface TracesSettingsView extends View, ReadOnlyChangeHandler {
+    public interface TracesSettingsView extends
+            View,
+            GeneralSettingsView,
+            SharedFileStoreSettingsView,
+            PublishingSettingsView,
+            RetentionSettingsView,
+            ReadOnlyChangeHandler,
+            HasUiHandlers<ChangeUiHandlers> {
 
-        void setSettingsView(View view);
+        Long getMaxSpansPerTrace();
+
+        void setMaxSpansPerTrace(Long maxSpansPerTrace);
 
         void setPathwaysView(View view);
     }

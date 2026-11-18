@@ -20,7 +20,6 @@ import stroom.item.client.SelectionBox;
 import stroom.planb.client.presenter.PlanBSettingsPresenter.PlanBSettingsView;
 import stroom.planb.client.presenter.StateTypeChangeUiHandlers;
 import stroom.planb.shared.StateType;
-import stroom.widget.form.client.FormGroup;
 
 import com.google.gwt.event.logical.shared.ValueChangeEvent;
 import com.google.gwt.uibinder.client.UiBinder;
@@ -38,8 +37,6 @@ public class PlanBSettingsViewImpl
 
     private final Widget widget;
 
-    @UiField
-    FormGroup stateTypeGroup;
     @UiField
     SelectionBox<StateType> stateType;
     @UiField
@@ -72,11 +69,6 @@ public class PlanBSettingsViewImpl
     @Override
     public void setStateType(final StateType stateType) {
         this.stateType.setValue(stateType);
-    }
-
-    @Override
-    public void setStateTypeVisible(final boolean visible) {
-        stateTypeGroup.setVisible(visible);
     }
 
     @Override

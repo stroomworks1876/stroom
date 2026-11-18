@@ -17,9 +17,6 @@
 package stroom.planb.client.presenter;
 
 import stroom.docref.DocRef;
-import stroom.document.client.event.ChangeEvent;
-import stroom.document.client.event.ChangeEvent.ChangeHandler;
-import stroom.document.client.event.HasChangeHandlers;
 import stroom.entity.client.presenter.DocPresenter;
 import stroom.entity.client.presenter.ReadOnlyChangeHandler;
 import stroom.planb.client.presenter.PlanBSettingsPresenter.PlanBSettingsView;
@@ -27,7 +24,6 @@ import stroom.planb.client.view.CondenseSettingsView;
 import stroom.planb.client.view.GeneralSettingsView;
 import stroom.planb.client.view.HttpStoreSettingsView;
 import stroom.planb.client.view.RetentionSettingsView;
-import stroom.planb.client.view.SharedFileStoreSettingsView;
 import stroom.planb.shared.AbstractPlanBSettings;
 import stroom.planb.shared.DurationSetting;
 import stroom.planb.shared.PlanBDoc;
@@ -37,13 +33,12 @@ import stroom.planb.shared.StateType;
 import com.google.inject.Inject;
 import com.google.inject.Provider;
 import com.google.web.bindery.event.shared.EventBus;
-import com.google.web.bindery.event.shared.HandlerRegistration;
 import com.gwtplatform.mvp.client.HasUiHandlers;
 import com.gwtplatform.mvp.client.View;
 
 public class PlanBSettingsPresenter
         extends DocPresenter<PlanBSettingsView, PlanBDoc>
-        implements StateTypeChangeUiHandlers, HasChangeHandlers {
+        implements StateTypeChangeUiHandlers {
 
     private final Provider<StateSettingsPresenter> stateSettingsPresenterProvider;
     private final Provider<TemporalStateSettingsPresenter> temporalStateSettingsPresenterProvider;
@@ -52,7 +47,6 @@ public class PlanBSettingsPresenter
     private final Provider<SessionSettingsPresenter> sessionSettingsPresenterProvider;
     private final Provider<HistogramSettingsPresenter> histogramSettingsPresenterProvider;
     private final Provider<MetricSettingsPresenter> metricSettingsPresenterProvider;
-    private final Provider<TraceSettingsPresenter> traceSettingsPresenterProvider;
 
     private AbstractPlanBSettingsPresenter<?> settingsPresenter;
     private StateType currentStateType;
@@ -73,8 +67,7 @@ public class PlanBSettingsPresenter
             final Provider<TemporalRangeStateSettingsPresenter> temporalRangeStateSettingsPresenterProvider,
             final Provider<SessionSettingsPresenter> sessionSettingsPresenterProvider,
             final Provider<HistogramSettingsPresenter> histogramSettingsPresenterProvider,
-            final Provider<MetricSettingsPresenter> metricSettingsPresenterProvider,
-            final Provider<TraceSettingsPresenter> traceSettingsPresenterProvider) {
+            final Provider<MetricSettingsPresenter> metricSettingsPresenterProvider) {
         super(eventBus, view);
         this.stateSettingsPresenterProvider = stateSettingsPresenterProvider;
         this.temporalStateSettingsPresenterProvider = temporalStateSettingsPresenterProvider;
@@ -83,7 +76,6 @@ public class PlanBSettingsPresenter
         this.sessionSettingsPresenterProvider = sessionSettingsPresenterProvider;
         this.histogramSettingsPresenterProvider = histogramSettingsPresenterProvider;
         this.metricSettingsPresenterProvider = metricSettingsPresenterProvider;
-        this.traceSettingsPresenterProvider = traceSettingsPresenterProvider;
         view.setUiHandlers(this);
     }
 
@@ -193,14 +185,6 @@ public class PlanBSettingsPresenter
                 settingsPresenter = presenter;
                 break;
             }
-            case TRACE: {
-                final TraceSettingsPresenter presenter =
-                        traceSettingsPresenterProvider.get();
-                presenter.getView().setMaxStoreSize(maxStoreSize);
-                presenter.getView().setRetention(retention);
-                settingsPresenter = presenter;
-                break;
-            }
         }
 
         if (settingsPresenter != null) {
@@ -212,46 +196,9 @@ public class PlanBSettingsPresenter
                 if (getEntity() != null) {
                     onChange();
                 }
-                // For embedded use (e.g. TracesSettingsPresenter): propagate the
-                // change so listeners registered via addChangeHandler are notified.
-                ChangeEvent.fire(this);
             });
         }
         currentStateType = stateType;
-    }
-
-    public void setStateTypeLocked(final boolean locked) {
-        getView().setStateTypeVisible(!locked);
-    }
-
-    public void readSettings(final AbstractPlanBSettings settings,
-                             final StateType stateType,
-                             final boolean readOnly) {
-        getView().setStateType(stateType);
-        currentStateType = null;
-        changeStateType();
-        if (settingsPresenter != null) {
-            settingsPresenter.read(settings, readOnly);
-        }
-        getView().onReadOnly(readOnly);
-    }
-
-    public AbstractPlanBSettings writeSettings() {
-        return settingsPresenter != null
-                ? settingsPresenter.write()
-                : null;
-    }
-
-    public void setSharedFileStoreLocked(final boolean locked) {
-        if (settingsPresenter != null
-                && settingsPresenter.getView() instanceof final SharedFileStoreSettingsView view) {
-            view.setSharedFileStoreLocked(locked);
-        }
-    }
-
-    @Override
-    public HandlerRegistration addChangeHandler(final ChangeHandler handler) {
-        return addHandlerToSource(ChangeEvent.getType(), handler);
     }
 
     private Long getMaxStoreSize(final View view) {
@@ -295,8 +242,6 @@ public class PlanBSettingsPresenter
         StateType getStateType();
 
         void setStateType(StateType stateType);
-
-        void setStateTypeVisible(boolean visible);
 
         void setSettingsView(View view);
     }

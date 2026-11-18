@@ -16,31 +16,101 @@
 
 package stroom.pathways.client.view;
 
-import stroom.entity.client.presenter.ReadOnlyChangeHandler;
+import stroom.document.client.event.ChangeUiHandlers;
 import stroom.pathways.client.presenter.TracesSettingsPresenter.TracesSettingsView;
+import stroom.planb.client.view.GeneralSettingsWidget;
+import stroom.planb.client.view.PublishingSettingsWidget;
+import stroom.planb.client.view.RetentionSettingsWidget;
+import stroom.planb.client.view.SettingsGroup;
+import stroom.planb.client.view.SharedFileStoreSettingsWidget;
+import stroom.planb.client.view.TraceGeneralSettingsWidget;
+import stroom.planb.shared.BucketGranularity;
+import stroom.planb.shared.RetentionSettings;
+import stroom.planb.shared.SharedFileStoreSettings;
+import stroom.util.shared.time.SimpleDuration;
 
 import com.google.gwt.uibinder.client.UiBinder;
 import com.google.gwt.uibinder.client.UiField;
+import com.google.gwt.user.client.ui.FlowPanel;
 import com.google.gwt.user.client.ui.SimplePanel;
 import com.google.gwt.user.client.ui.Widget;
 import com.google.inject.Inject;
 import com.gwtplatform.mvp.client.View;
-import com.gwtplatform.mvp.client.ViewImpl;
+import com.gwtplatform.mvp.client.ViewWithUiHandlers;
 
 public class TracesSettingsViewImpl
-         extends ViewImpl
-         implements TracesSettingsView, ReadOnlyChangeHandler {
+        extends ViewWithUiHandlers<ChangeUiHandlers>
+        implements TracesSettingsView {
 
     private final Widget widget;
+    private final GeneralSettingsWidget generalSettingsWidget;
+    private final TraceGeneralSettingsWidget traceGeneralSettingsWidget;
+    private final PublishingSettingsWidget publishingSettingsWidget;
+    private final RetentionSettingsWidget retentionSettingsWidget;
+    private final SharedFileStoreSettingsWidget sharedFileStoreSettingsWidget;
 
     @UiField
-    SimplePanel settings;
+    SettingsGroup sharedFileStorePanel;
+    @UiField
+    SettingsGroup publishingPanel;
+    @UiField
+    SettingsGroup storagePanel;
+    @UiField
+    SettingsGroup retentionPanel;
     @UiField
     SimplePanel pathways;
 
     @Inject
-    public TracesSettingsViewImpl(final Binder binder) {
+    public TracesSettingsViewImpl(final Binder binder,
+                                  final GeneralSettingsWidget generalSettingsWidget,
+                                  final TraceGeneralSettingsWidget traceGeneralSettingsWidget,
+                                  final PublishingSettingsWidget publishingSettingsWidget,
+                                  final RetentionSettingsWidget retentionSettingsWidget,
+                                  final SharedFileStoreSettingsWidget sharedFileStoreSettingsWidget) {
         widget = binder.createAndBindUi(this);
+        this.generalSettingsWidget = generalSettingsWidget;
+        this.traceGeneralSettingsWidget = traceGeneralSettingsWidget;
+        this.publishingSettingsWidget = publishingSettingsWidget;
+        this.retentionSettingsWidget = retentionSettingsWidget;
+        this.sharedFileStoreSettingsWidget = sharedFileStoreSettingsWidget;
+
+        sharedFileStorePanel.add(sharedFileStoreSettingsWidget.asWidget());
+        publishingPanel.add(publishingSettingsWidget.asWidget());
+
+        // Max store size and the per-trace span limit are both about how much space this store may
+        // take, so they share one panel.
+        final FlowPanel storageContent = new FlowPanel();
+        storageContent.addStyleName("form");
+        final Widget general = generalSettingsWidget.asWidget();
+        general.removeStyleName("max");
+        storageContent.add(general);
+        storageContent.add(traceGeneralSettingsWidget.asWidget());
+        storagePanel.add(storageContent);
+
+        // A trace store has one environment per bucket and shard, so the limit is per file rather
+        // than the size of the whole store, and neither write option reaches the shared file store.
+        generalSettingsWidget.setMaxStoreSizeHelpText(
+                "The size limit for each file in the store. A trace store has one file per time "
+                + "bucket and shard, so the whole store can be much bigger than this.");
+        generalSettingsWidget.setWriteOptionsVisible(false);
+
+        retentionPanel.add(retentionSettingsWidget.asWidget());
+
+        // Trace retention deletes by insert time whatever this says, so there is nothing to offer.
+        retentionSettingsWidget.setUseStateTimeVisible(false);
+
+        // The shared file store merge processor is the only thing that acts on the check frequency.
+        retentionSettingsWidget.setCheckIntervalVisible(true);
+    }
+
+    @Override
+    public void setUiHandlers(final ChangeUiHandlers uiHandlers) {
+        super.setUiHandlers(uiHandlers);
+        generalSettingsWidget.setUiHandlers(uiHandlers);
+        traceGeneralSettingsWidget.setUiHandlers(uiHandlers);
+        publishingSettingsWidget.setUiHandlers(uiHandlers);
+        retentionSettingsWidget.setUiHandlers(uiHandlers);
+        sharedFileStoreSettingsWidget.setUiHandlers(uiHandlers);
     }
 
     @Override
@@ -49,18 +119,82 @@ public class TracesSettingsViewImpl
     }
 
     @Override
-    public void setSettingsView(final View view) {
-        this.settings.setWidget(view.asWidget());
-    }
-
-    @Override
     public void setPathwaysView(final View view) {
         this.pathways.setWidget(view.asWidget());
     }
 
     @Override
+    public Long getMaxStoreSize() {
+        return generalSettingsWidget.getMaxStoreSize();
+    }
+
+    @Override
+    public void setMaxStoreSize(final Long maxStoreSize) {
+        generalSettingsWidget.setMaxStoreSize(maxStoreSize);
+    }
+
+    @Override
+    public Long getMaxSpansPerTrace() {
+        return traceGeneralSettingsWidget.getMaxSpansPerTrace();
+    }
+
+    @Override
+    public void setMaxSpansPerTrace(final Long maxSpansPerTrace) {
+        traceGeneralSettingsWidget.setMaxSpansPerTrace(maxSpansPerTrace);
+    }
+
+    @Override
+    public BucketGranularity getGranularity() {
+        return publishingSettingsWidget.getGranularity();
+    }
+
+    @Override
+    public void setGranularity(final BucketGranularity granularity) {
+        publishingSettingsWidget.setGranularity(granularity);
+    }
+
+    @Override
+    public SimpleDuration getMaxWaitForData() {
+        return publishingSettingsWidget.getMaxWaitForData();
+    }
+
+    @Override
+    public void setMaxWaitForData(final SimpleDuration maxWaitForData) {
+        publishingSettingsWidget.setMaxWaitForData(maxWaitForData);
+    }
+
+    @Override
+    public RetentionSettings getRetention() {
+        return retentionSettingsWidget.getRetention();
+    }
+
+    @Override
+    public void setRetention(final RetentionSettings retention) {
+        retentionSettingsWidget.setRetention(retention);
+    }
+
+    @Override
+    public SharedFileStoreSettings getSharedFileStore() {
+        return sharedFileStoreSettingsWidget.getSharedFileStore();
+    }
+
+    @Override
+    public void setSharedFileStore(final SharedFileStoreSettings sharedFileStore) {
+        sharedFileStoreSettingsWidget.setSharedFileStore(sharedFileStore);
+    }
+
+    @Override
+    public void setSharedFileStoreLocked(final boolean locked) {
+        sharedFileStoreSettingsWidget.setSharedFileStoreLocked(locked);
+    }
+
+    @Override
     public void onReadOnly(final boolean readOnly) {
-        // No-op (read-only state is propagated to child panels directly)
+        generalSettingsWidget.onReadOnly(readOnly);
+        traceGeneralSettingsWidget.onReadOnly(readOnly);
+        publishingSettingsWidget.onReadOnly(readOnly);
+        retentionSettingsWidget.onReadOnly(readOnly);
+        sharedFileStoreSettingsWidget.onReadOnly(readOnly);
     }
 
     public interface Binder extends UiBinder<Widget, TracesSettingsViewImpl> {
