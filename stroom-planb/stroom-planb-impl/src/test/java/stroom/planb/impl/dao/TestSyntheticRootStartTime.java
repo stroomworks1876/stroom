@@ -30,7 +30,6 @@ import stroom.planb.shared.StateType;
 import stroom.planb.shared.TraceSettings;
 import stroom.util.io.ByteSize;
 import stroom.util.shared.PageRequest;
-import stroom.util.shared.time.SimpleDuration;
 
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -136,7 +135,7 @@ class TestSyntheticRootStartTime {
     private static Object rootStart(final Path dbDir, final PlanBDoc doc) {
         try (final TraceDb db = TraceDb.create(dbDir, BB, BBF, doc, true)) {
             final List<TraceRoot> roots = db.findTraces(new FindTraceCriteria(
-                    new PageRequest(0, 100), null, null, SimpleDuration.ZERO)).getValues();
+                    new PageRequest(0, 100), null, null)).getValues();
             assertThat(roots).hasSize(1);
             assertThat(roots.getFirst().isOrphan()).as("root was synthesized").isTrue();
             return roots.getFirst().getStartTime();

@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-package stroom.planb.impl.dao.trace;
+package stroom.pathways.impl;
 
 import stroom.pathways.shared.otel.trace.AnyValue;
 import stroom.pathways.shared.otel.trace.KeyValue;
@@ -62,12 +62,11 @@ import java.util.Set;
 public class CanonicalSpanOrder {
 
     /**
-     * The attribute the OpenTelemetry agent puts the running thread's name in. Read here to decide
-     * what could have run at the same time; the model does not learn a value for it, because thread
-     * names change every run and a constraint over them would say nothing.
+     * Spans sharing a value of this attribute stay in one group and form one run within it. The
+     * tracing agent puts the running thread's name in it.
      */
-    private static final String THREAD_NAME = "thread.name";
-    private static final String NO_THREAD = "";
+    private static final String GROUPING_ATTRIBUTE_KEY = "thread.name";
+    private static final String NO_GROUPING_VALUE = "";
 
 
     /**
@@ -92,9 +91,9 @@ public class CanonicalSpanOrder {
     }
 
     /**
-     * The children in one order, however they were timed. A run of one thread's spans follows the one
-     * before it rather than being woven in among it, so what a reader follows is the work each thread
-     * did.
+     * The children in one order, however they were timed. A run of spans sharing a grouping value
+     * follows the one before it rather than being woven in among it, so what a reader follows is the
+     * work each run did.
      */
     public List<Span> sort(final List<Span> spans) {
         final List<Span> ordered = new ArrayList<>(NullSafe.list(spans).size());
@@ -104,7 +103,7 @@ public class CanonicalSpanOrder {
 
     /**
      * The children gathered into groups of work that happened at the same time, each group holding one
-     * run per thread. A group of one run is work that had the moment to itself; a group of several is
+     * run per grouping value. A group of one run is work that had the moment to itself; a group of several is
      * work that overlapped, and nothing about the order of those runs is worth keeping.
      */
     public List<SpanGroup> groups(final List<Span> spans) {
@@ -127,30 +126,30 @@ public class CanonicalSpanOrder {
         final List<SpanGroup> groups = new ArrayList<>();
         int groupStart = 0;
         long groupEnd = timed.getFirst().end;
-        Set<String> threads = new HashSet<>();
-        threads.add(timed.getFirst().thread);
+        Set<String> values = new HashSet<>();
+        values.add(timed.getFirst().groupingValue);
         for (int i = 1; i <= timed.size(); i++) {
             // A span joins the group while it begins before the group has finished, give or take the
             // tolerance. The group's end moves out to cover it, so a chain of overlapping spans is one
             // group even where the first and last do not touch.
             //
-            // It also joins where a thread already in the group ran it, however long after. A thread's
-            // spans are read as one run below, and a group that ended in the middle of one would leave
-            // its tail in a group of its own — where it can no longer be seen as part of the same work
-            // as the thread beside it that did the same thing. Nothing is reordered by this: the run
-            // it joins is its own thread's.
+            // It also joins where its grouping value is already in the group, however long after.
+            // Spans sharing a value are read as one run below, and a group that ended in the middle of
+            // one would leave its tail in a group of its own — where it can no longer be seen as part
+            // of the same work as the run beside it that did the same thing. Nothing is reordered by
+            // this: the run it joins is its own.
             if (i < timed.size()
                 && (timed.get(i).start - toleranceNanos <= groupEnd
-                    || sameThreadAsGroup(timed.get(i), threads))) {
+                    || sharesGroupingValue(timed.get(i), values))) {
                 groupEnd = Math.max(groupEnd, timed.get(i).end);
-                threads.add(timed.get(i).thread);
+                values.add(timed.get(i).groupingValue);
             } else {
                 groups.add(group(timed.subList(groupStart, i)));
                 if (i < timed.size()) {
                     groupStart = i;
                     groupEnd = timed.get(i).end;
-                    threads = new HashSet<>();
-                    threads.add(timed.get(i).thread);
+                    values = new HashSet<>();
+                    values.add(timed.get(i).groupingValue);
                 }
             }
         }
@@ -158,47 +157,47 @@ public class CanonicalSpanOrder {
     }
 
     /**
-     * One moment's work, as a run per thread. More than one run means they happened at the same time.
+     * One moment's work, as a run per grouping value. More than one run means they happened at the same time.
      */
     public record SpanGroup(List<List<Span>> runs) {
 
     }
 
-    // Spans that do not say which thread ran them never hold a group open: nothing says they belong
-    // to the same run, and treating them as one would put every such span in a single group.
-    private static boolean sameThreadAsGroup(final Timed timed, final Set<String> threads) {
-        return !NO_THREAD.equals(timed.thread) && threads.contains(timed.thread);
+    // Spans with no grouping value never hold a group open: nothing says they belong to the same
+    // run, and treating them as one would put every such span in a single group.
+    private static boolean sharesGroupingValue(final Timed timed, final Set<String> values) {
+        return !NO_GROUPING_VALUE.equals(timed.groupingValue) && values.contains(timed.groupingValue);
     }
 
-    // A run per thread, each in the order that thread ran them, runs in the order they started. The
-    // group arrives in start order, so gathering by thread keeps both without sorting again. Spans
-    // naming no thread make one run of their own, ordered by name.
+    // A run per grouping value, each in start order, runs in the order they started. The group
+    // arrives in start order, so gathering by value keeps both without sorting again. Spans with no
+    // grouping value make one run of their own, ordered by name.
     private static SpanGroup group(final List<Timed> group) {
-        final Map<String, List<Timed>> byThread = new LinkedHashMap<>();
+        final Map<String, List<Timed>> byValue = new LinkedHashMap<>();
         for (final Timed timed : group) {
-            byThread.computeIfAbsent(timed.thread, k -> new ArrayList<>()).add(timed);
+            byValue.computeIfAbsent(timed.groupingValue, k -> new ArrayList<>()).add(timed);
         }
-        final List<Timed> unknown = byThread.remove(NO_THREAD);
+        final List<Timed> unknown = byValue.remove(NO_GROUPING_VALUE);
         if (unknown != null) {
             unknown.sort(Comparator.comparing(t -> t.span.getName()));
-            byThread.put(NO_THREAD, unknown);
+            byValue.put(NO_GROUPING_VALUE, unknown);
         }
-        final List<List<Span>> runs = new ArrayList<>(byThread.size());
-        byThread.values().forEach(run -> runs.add(run.stream().map(t -> t.span).toList()));
+        final List<List<Span>> runs = new ArrayList<>(byValue.size());
+        byValue.values().forEach(run -> runs.add(run.stream().map(t -> t.span).toList()));
         return new SpanGroup(runs);
     }
 
-    // Which thread ran the span, or NO_THREAD where it does not say.
-    private static String thread(final Span span) {
+    // The span's value for the grouping attribute, or NO_GROUPING_VALUE where it has none.
+    private static String groupingValue(final Span span) {
         for (final KeyValue attribute : NullSafe.list(span.getAttributes())) {
-            if (THREAD_NAME.equals(attribute.getKey())) {
-                final String name = NullSafe.get(attribute.getValue(), AnyValue::getStringValue);
-                if (name != null) {
-                    return name;
+            if (GROUPING_ATTRIBUTE_KEY.equals(attribute.getKey())) {
+                final String value = NullSafe.get(attribute.getValue(), AnyValue::getStringValue);
+                if (value != null) {
+                    return value;
                 }
             }
         }
-        return NO_THREAD;
+        return NO_GROUPING_VALUE;
     }
 
     private static long toNanos(final SimpleDuration simpleDuration) {
@@ -215,7 +214,7 @@ public class CanonicalSpanOrder {
 
     // Epoch nanos rather than NanoTime, because the grouping is arithmetic and a long holds a
     // timestamp until the year 2262.
-    private record Timed(Span span, long start, long end, String thread) {
+    private record Timed(Span span, long start, long end, String groupingValue) {
 
         private static Timed of(final Span span) {
             final long start = NanoTime.fromString(span.getStartTimeUnixNano()).toEpochNanos();
@@ -223,7 +222,7 @@ public class CanonicalSpanOrder {
             final long end = span.getEndTimeUnixNano() == null
                     ? start
                     : Math.max(start, NanoTime.fromString(span.getEndTimeUnixNano()).toEpochNanos());
-            return new Timed(span, start, end, CanonicalSpanOrder.thread(span));
+            return new Timed(span, start, end, CanonicalSpanOrder.groupingValue(span));
         }
     }
 }

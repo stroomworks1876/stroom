@@ -34,7 +34,6 @@ import stroom.planb.shared.TraceSettings;
 import stroom.util.io.ByteSize;
 import stroom.util.shared.CriteriaFieldSort;
 import stroom.util.shared.PageRequest;
-import stroom.util.shared.time.SimpleDuration;
 
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -99,7 +98,7 @@ class TestTraceRootIndexConsistency {
             final List<String> ids = db.findTraces(new FindTraceCriteria(
                             new PageRequest(0, 100),
                             List.of(new CriteriaFieldSort(sortField, false, false)),
-                            null, SimpleDuration.ZERO))
+                            null))
                     .getValues().stream().map(TraceRoot::getTraceId).toList();
             assertThat(ids)
                     .as("sort by '%s' must return the trace exactly once (no stale index entry)", sortField)
@@ -503,7 +502,7 @@ class TestTraceRootIndexConsistency {
 
     private List<String> traceIds(final TraceDb db) {
         return db.findTraces(new FindTraceCriteria(
-                        new PageRequest(0, 100), null, null, SimpleDuration.ZERO))
+                        new PageRequest(0, 100), null, null))
                 .getValues().stream().map(TraceRoot::getTraceId).toList();
     }
 
@@ -513,7 +512,7 @@ class TestTraceRootIndexConsistency {
 
     private TraceRoot storedRoot(final TraceDb db) {
         return db.findTraces(new FindTraceCriteria(
-                        new PageRequest(0, 100), null, null, SimpleDuration.ZERO))
+                        new PageRequest(0, 100), null, null))
                 .getValues().stream()
                 .filter(r -> r.getTraceId().equals(TRACE))
                 .findFirst().orElseThrow();

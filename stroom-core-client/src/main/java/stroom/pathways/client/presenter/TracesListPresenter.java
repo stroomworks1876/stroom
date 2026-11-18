@@ -28,7 +28,6 @@ import stroom.pathways.shared.FindTracesWithHistogramCriteria;
 import stroom.pathways.shared.TracesResource;
 import stroom.pathways.shared.otel.trace.NanoTime;
 import stroom.pathways.shared.otel.trace.TraceRoot;
-import stroom.pathways.shared.pathway.Pathway;
 import stroom.preferences.client.DateTimeFormatter;
 import stroom.query.api.TimeRange;
 import stroom.svg.shared.SvgImage;
@@ -38,7 +37,6 @@ import stroom.util.client.DurationUtil;
 import stroom.util.client.NumberUtil;
 import stroom.util.shared.NullSafe;
 import stroom.util.shared.ResultPage;
-import stroom.util.shared.time.SimpleDuration;
 import stroom.widget.dropdowntree.client.view.QuickFilterPageView;
 import stroom.widget.dropdowntree.client.view.QuickFilterTooltipUtil;
 import stroom.widget.dropdowntree.client.view.QuickFilterUiHandlers;
@@ -92,10 +90,6 @@ public class TracesListPresenter
 
     private DocRef dataSourceRef;
     private String filter;
-    private Pathway pathway;
-    // Set with the pathway, and meaningless without one: these are the spans the pathway was built
-    // without, which a trace has to be judged without too.
-    private List<String> ignoredSpanNames;
     private TimeRange timeRange;
     // Set when the criteria change, so the next rows to arrive are checked for the selected trace.
     // Paging and sorting leave it alone: the same rows in a different order, or a different window on
@@ -406,14 +400,7 @@ public class TracesListPresenter
                                         CriteriaUtil.createSortList(dataGrid.getColumnSortList()),
                                         dataSourceRef,
                                         filter,
-                                        pathway,
-                                        SimpleDuration.ZERO,
-                                        timeRange,
-                                        // Beside the pathway, because a trace can only be judged
-                                        // against a model by leaving out what that model was built
-                                        // without. Both are empty until something asks for a pathway
-                                        // to be matched; whoever wires that up fills them together.
-                                        ignoredSpanNames),
+                                        timeRange),
                                         HISTOGRAM_BUCKETS);
 
                         restFactory
@@ -498,12 +485,6 @@ public class TracesListPresenter
      */
     public void setFilter(final String filter) {
         this.filter = filter;
-        recheckSelection = true;
-    }
-
-    public void setPathway(final Pathway pathway, final List<String> ignoredSpanNames) {
-        this.pathway = pathway;
-        this.ignoredSpanNames = ignoredSpanNames;
         recheckSelection = true;
     }
 

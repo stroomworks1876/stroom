@@ -28,11 +28,9 @@ import stroom.pathways.shared.GetTraceRequest;
 import stroom.pathways.shared.TracesDoc;
 import stroom.pathways.shared.TracesResource;
 import stroom.pathways.shared.otel.trace.TraceRoot;
-import stroom.pathways.shared.pathway.Pathway;
 import stroom.query.api.TimeRange;
 import stroom.query.api.TimeRanges;
 import stroom.query.client.view.TimeRangeSelector;
-import stroom.util.shared.time.SimpleDuration;
 import stroom.widget.customdatebox.client.ClientDateUtil;
 
 import com.google.gwt.core.client.GWT;
@@ -131,7 +129,6 @@ public class TracesListTabPresenter extends DocPresenter<TracesView, TracesDoc> 
         final GetTraceRequest request = new GetTraceRequest(
                 dataSourceRef,
                 traceRoot.getTraceId(),
-                SimpleDuration.ZERO,
                 startTimeMs);
         restFactory
                 .create(TRACES_RESOURCE)
@@ -226,10 +223,6 @@ public class TracesListTabPresenter extends DocPresenter<TracesView, TracesDoc> 
         listPresenter.setTimeRange(window);
         listPresenter.showFilter(traceId);
         listPresenter.refresh();
-    }
-
-    public void setPathway(final Pathway pathway, final List<String> ignoredSpanNames) {
-        listPresenter.setPathway(pathway, ignoredSpanNames);
     }
 
     public void refresh() {

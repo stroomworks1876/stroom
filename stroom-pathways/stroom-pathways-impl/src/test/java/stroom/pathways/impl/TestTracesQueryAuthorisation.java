@@ -117,7 +117,7 @@ class TestTracesQueryAuthorisation {
 
     @Test
     void getTraceIsRefused() {
-        assertRefused(() -> store.getTrace(new GetTraceRequest(DOC_REF, TRACE_ID, null, null)));
+        assertRefused(() -> store.getTrace(new GetTraceRequest(DOC_REF, TRACE_ID, null)));
     }
 
     @Test
@@ -133,7 +133,7 @@ class TestTracesQueryAuthorisation {
     }
 
     private static FindTraceCriteria criteria() {
-        return new FindTraceCriteria(new PageRequest(0, 100), List.of(), DOC_REF, null);
+        return new FindTraceCriteria(new PageRequest(0, 100), List.of(), DOC_REF);
     }
 
     @FunctionalInterface

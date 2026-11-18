@@ -106,11 +106,5 @@ public class TestTraceLoad {
             new TraceLoader().load(tracesStore);
         }
     }
-
-    @Test
-    void testMemory() {
-        final TracePersistence persistence = new TracePersistenceMemory();
-        new TraceLoader().load(persistence);
-    }
 }
 

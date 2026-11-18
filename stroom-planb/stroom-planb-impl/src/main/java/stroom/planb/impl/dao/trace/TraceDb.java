@@ -1467,85 +1467,32 @@ public class TraceDb extends AbstractDb<SpanKey, SpanValue> {
 
     /**
      * Finds traces, applying {@code filterPredicate} (the quick-filter match on a {@link TraceRoot}) when
-     * non-null. A pathway criterion forces a full {@code trace-roots} scan, since matching one means
-     * inspecting every span; otherwise the requested sort column selects a secondary index, defaulting to
-     * newest-first by start time. A quick filter costs an exact total by testing candidates, rather than
-     * the O(1) or key-only counts available without one.
+     * non-null. The requested sort column selects a secondary index, defaulting to newest-first by start
+     * time. A quick filter costs an exact total by testing candidates, rather than the O(1) or key-only
+     * counts available without one.
      */
     public TracesResultPage findTraces(final FindTraceCriteria criteria,
                                        final Predicate<TraceRoot> filterPredicate) {
-        final List<TraceRoot> list = new ArrayList<>();
-        final PageResponse.Builder builder = PageResponse.builder();
+        // Sort-dispatched secondary index query.  Determine the requested column and direction.
+        final stroom.util.shared.CriteriaFieldSort firstSort =
+                NullSafe.get(criteria.getSortList(), sorts -> sorts.isEmpty() ? null : sorts.getFirst());
+        final String sortField  = firstSort != null ? firstSort.getId() : TraceRootField.TRACE_START;
+        // Default: newest first (descending start-time).
+        final boolean desc = firstSort == null || firstSort.isDesc();
 
-        final CanonicalSpanOrder spanOrder = new CanonicalSpanOrder(criteria.getTemporalOrderingTolerance());
-        final PathKeyFactory pathKeyFactory = new PathKeyFactoryImpl();
-        if (criteria.getPathway() != null) {
-            final TracePredicate tracePredicate = new TracePredicate(
-                    spanOrder,
-                    new IgnoredSpans(criteria.getIgnoredSpanNames()),
-                    pathKeyFactory,
-                    Map.of(criteria.getPathway().getPathKey(), criteria.getPathway().getRoot()));
-            // Derive the time filter once so every root is judged against the same window.
-            final TimeFilter timeFilter = timeFilter(criteria);
-
-            // Pathway matching requires inspecting every span — no secondary-index shortcut.
-            env.read(readTxn -> {
-                final Count count = new Count();
-                LmdbIterable.iterate(readTxn, traceRootsDbi, (key, val) -> {
-                    try {
-                        final TraceRootKey traceRootKey = traceRootKeySerde.read(key);
-                        final TraceRoot root = traceRootValueSerde.read(val);
-                        final TraceBuilder traceBuilder = new TraceBuilder(root.getTraceId());
-                        byteBuffers.useBytes(traceRootKey.getTraceId(), prefixBuffer -> {
-                            findSpans(readTxn, traceRootKey.getTraceId(), traceBuilder::addSpan);
-                        });
-                        final Trace trace = traceBuilder.build();
-
-                        final long pos = count.getAndIncrement();
-                        if (criteria.getPageRequest().getOffset() <= pos &&
-                            criteria.getPageRequest().getLength() > list.size() &&
-                            tracePredicate.test(trace) &&
-                            matchesTimeRange(root, timeFilter) &&
-                            (filterPredicate == null || filterPredicate.test(root))) {
-                            list.add(root);
-                        }
-                    } catch (final RuntimeException e) {
-                        // Drop the row rather than the query — an unreadable root or span set here
-                        // costs one trace, not the whole page.
-                        LOGGER.debug(e.getMessage(), e);
-                    }
-                });
-                builder.offset(criteria.getPageRequest().getOffset());
-                builder.length(list.size());
-                builder.total(count.get());
-                builder.exact(true);
-                return list;
-            });
-
+        final Dbi<ByteBuffer> indexDbi;
+        if (TraceRootField.TRACE_ID.equals(sortField)) {
+            // Primary DBI key IS the traceId — last 16 bytes == all bytes.
+            indexDbi = traceRootsDbi;
         } else {
-            // Sort-dispatched secondary index query.  Determine the requested column and direction.
-            final stroom.util.shared.CriteriaFieldSort firstSort =
-                    NullSafe.get(criteria.getSortList(), sorts -> sorts.isEmpty() ? null : sorts.getFirst());
-            final String sortField  = firstSort != null ? firstSort.getId() : TraceRootField.TRACE_START;
-            // Default: newest first (descending start-time).
-            final boolean desc = firstSort == null || firstSort.isDesc();
-
-            final Dbi<ByteBuffer> indexDbi;
-            if (TraceRootField.TRACE_ID.equals(sortField)) {
-                // Primary DBI key IS the traceId — last 16 bytes == all bytes.
-                indexDbi = traceRootsDbi;
-            } else {
-                // Any secondary-indexed field; TRACE_START and unknowns fall back to start-time.
-                requireSecondaryIndexes("sort trace roots by " + sortField);
-                final TraceSecondaryIndex index = TraceSecondaryIndex.forField(sortField);
-                indexDbi = secondaryIndexDbis.get(
-                        index != null ? index : TraceSecondaryIndex.START_TIME);
-            }
-
-            return findTracesByIndex(criteria, indexDbi, desc, filterPredicate);
+            // Any secondary-indexed field; TRACE_START and unknowns fall back to start-time.
+            requireSecondaryIndexes("sort trace roots by " + sortField);
+            final TraceSecondaryIndex index = TraceSecondaryIndex.forField(sortField);
+            indexDbi = secondaryIndexDbis.get(
+                    index != null ? index : TraceSecondaryIndex.START_TIME);
         }
 
-        return new TracesResultPage(list, builder.build());
+        return findTracesByIndex(criteria, indexDbi, desc, filterPredicate);
     }
 
     private static TimeFilter timeFilter(final FindTraceCriteria criteria) {

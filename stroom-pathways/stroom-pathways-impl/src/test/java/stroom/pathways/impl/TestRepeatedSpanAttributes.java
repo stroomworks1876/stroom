@@ -26,8 +26,6 @@ import stroom.pathways.shared.otel.trace.Trace;
 import stroom.pathways.shared.pathway.NamePathKey;
 import stroom.pathways.shared.pathway.PathKey;
 import stroom.pathways.shared.pathway.PathNode;
-import stroom.planb.impl.dao.trace.CanonicalSpanOrder;
-import stroom.planb.impl.dao.trace.IgnoredSpans;
 
 import org.junit.jupiter.api.Test;
 
@@ -44,9 +42,8 @@ import static org.assertj.core.api.Assertions.assertThatCode;
  *
  * <p>OTLP's {@code Span.attributes} is a repeated field and nothing on the way in deduplicates it —
  * {@code SpanHandler} appends each key/value to a plain list — so a producer that emits a key twice
- * gets it stored twice. Both places that turn those attributes into a map have to survive that: one
- * builds the learnt model, the other answers a pathway-filtered search, and a throw from either loses
- * far more than the one span it came from.
+ * gets it stored twice. Building the learnt model turns those attributes into a map, and a throw
+ * there loses far more than the one span it came from.
  */
 class TestRepeatedSpanAttributes {
 
@@ -74,27 +71,6 @@ class TestRepeatedSpanAttributes {
         assertThat(root[0].getConstraints())
                 .as("the key is kept once")
                 .containsKey("attribute.http.method");
-    }
-
-    @Test
-    void aPathwaySearchSurvivesIt() {
-        final PathwaysDoc doc = doc();
-        final PathNode root = new NodeMutatorImpl(
-                new CanonicalSpanOrder(doc.getTemporalOrderingTolerance()), NO_IGNORED,
-                new IgnoredSpans(List.of()))
-                .process(traceWithRepeatedAttribute(), new NamePathKey(OPERATION), null,
-                        (severity, message) -> {
-                        }, doc);
-
-        final TracePredicate predicate = new TracePredicate(
-                new CanonicalSpanOrder(doc.getTemporalOrderingTolerance()),
-                new IgnoredSpans(List.of()),
-                new PathKeyFactoryImpl(),
-                Map.of(new NamePathKey(OPERATION), root));
-
-        assertThatCode(() -> predicate.test(traceWithRepeatedAttribute()))
-                .as("one malformed span must not fail a search across every trace")
-                .doesNotThrowAnyException();
     }
 
     private static PathwaysDoc doc() {

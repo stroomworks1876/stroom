@@ -29,8 +29,6 @@ import stroom.pathways.shared.pathway.NamePathKey;
 import stroom.pathways.shared.pathway.NanoTimeRange;
 import stroom.pathways.shared.pathway.PathNode;
 import stroom.pathways.shared.pathway.StringValue;
-import stroom.planb.impl.dao.trace.CanonicalSpanOrder;
-import stroom.planb.impl.dao.trace.IgnoredSpans;
 
 import org.junit.jupiter.api.Test;
 
@@ -104,22 +102,6 @@ class TestIgnoredAttributes {
     }
 
     @Test
-    void aTraceStillMatchesWhateverTheIgnoredValueIs() {
-        final PathwaysDoc doc = doc();
-        final PathNode root = learn(null, List.of("thread.*"), trace("pool-1-thread-4", "GET"));
-
-        final TracePredicate predicate = new TracePredicate(
-                new CanonicalSpanOrder(doc.getTemporalOrderingTolerance()),
-                new IgnoredSpans(List.of()),
-                new PathKeyFactoryImpl(),
-                Map.of(new NamePathKey(OPERATION), root));
-
-        assertThat(predicate.test(trace("a-thread-never-seen-before", "GET")))
-                .as("an ignored attribute must not decide whether a trace took this path")
-                .isTrue();
-    }
-
-    @Test
     void aBuiltInCanBeIgnoredToo() {
         PathNode root = learn(null, List.of("duration"), trace("t", "GET", NanoDuration.ofMillis(5)));
         root = learn(root, List.of("duration"), trace("t", "GET", NanoDuration.ofMillis(500)));
@@ -176,25 +158,6 @@ class TestIgnoredAttributes {
         assertThat(root.getConstraints().get("duration").getValue())
                 .as("neither end learnt asserts nothing, which is what ignoring it outright means")
                 .isInstanceOf(AnyTypeValue.class);
-    }
-
-    @Test
-    void anOpenEndedDurationMatchesAnything() {
-        final PathwaysDoc doc = doc();
-        final PathNode root = learn(null, List.of("duration.max"), trace("t", "GET", NanoDuration.ofMillis(5)));
-
-        final TracePredicate predicate = new TracePredicate(
-                new CanonicalSpanOrder(doc.getTemporalOrderingTolerance()),
-                new IgnoredSpans(List.of()),
-                new PathKeyFactoryImpl(),
-                Map.of(new NamePathKey(OPERATION), root));
-
-        assertThat(predicate.test(trace("t", "GET", NanoDuration.ofSeconds(30))))
-                .as("nothing is asserted above the bottom, however slow the span was")
-                .isTrue();
-        assertThat(predicate.test(trace("t", "GET", NanoDuration.ofMillis(1))))
-                .as("the bottom is still asserted")
-                .isFalse();
     }
 
     private static PathNode learn(final PathNode current,

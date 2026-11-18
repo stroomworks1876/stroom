@@ -36,7 +36,6 @@ import stroom.planb.shared.StateType;
 import stroom.planb.shared.TraceSettings;
 import stroom.util.io.ByteSize;
 import stroom.util.shared.PageRequest;
-import stroom.util.shared.time.SimpleDuration;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -337,7 +336,7 @@ class TestPushArchive {
         try (final TraceDb archive = TraceDb.create(
                 bucketDir(), BYTE_BUFFERS, BYTE_BUFFER_FACTORY, doc, true)) {
             final TracesResultPage page = archive.findTraces(new FindTraceCriteria(
-                    new PageRequest(0, 1000), null, null, SimpleDuration.ZERO));
+                    new PageRequest(0, 1000), null, null));
             return page.getValues().stream().map(TraceRoot::getTraceId).sorted().toList();
         }
     }

@@ -33,7 +33,6 @@ import stroom.query.api.TimeRange;
 import stroom.util.io.ByteSize;
 import stroom.util.shared.CriteriaFieldSort;
 import stroom.util.shared.PageRequest;
-import stroom.util.shared.time.SimpleDuration;
 
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -200,8 +199,7 @@ class TestFindTracesCount {
     private static FindTraceCriteria criteria(final PageRequest pageRequest,
                                               final List<CriteriaFieldSort> sortList,
                                               final TimeRange timeRange) {
-        return new FindTraceCriteria(pageRequest, sortList, null, null, null, SimpleDuration.ZERO, timeRange,
-                null);
+        return new FindTraceCriteria(pageRequest, sortList, null, null, timeRange);
     }
 
     private static TimeRange timeRange(final String from, final String to) {

@@ -16,6 +16,7 @@
 
 package stroom.pathways.impl;
 
+import stroom.pathways.impl.CanonicalSpanOrder.SpanGroup;
 import stroom.pathways.shared.PathwaysDoc;
 import stroom.pathways.shared.otel.trace.AnyValue;
 import stroom.pathways.shared.otel.trace.KeyValue;
@@ -47,9 +48,6 @@ import stroom.pathways.shared.pathway.PathwayMutation;
 import stroom.pathways.shared.pathway.Regex;
 import stroom.pathways.shared.pathway.StringSet;
 import stroom.pathways.shared.pathway.StringValue;
-import stroom.planb.impl.dao.trace.CanonicalSpanOrder;
-import stroom.planb.impl.dao.trace.CanonicalSpanOrder.SpanGroup;
-import stroom.planb.impl.dao.trace.IgnoredSpans;
 import stroom.planb.impl.dao.trace.NanoTimeUtil;
 import stroom.util.shared.NullSafe;
 import stroom.util.shared.Severity;

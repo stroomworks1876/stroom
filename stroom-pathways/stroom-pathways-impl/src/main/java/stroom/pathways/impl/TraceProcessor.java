@@ -28,8 +28,6 @@ import stroom.pathways.shared.pathway.PathNode;
 import stroom.pathways.shared.pathway.Paths;
 import stroom.pathways.shared.pathway.Pathway;
 import stroom.planb.impl.dao.LmdbWriter;
-import stroom.planb.impl.dao.trace.CanonicalSpanOrder;
-import stroom.planb.impl.dao.trace.IgnoredSpans;
 import stroom.planb.impl.dao.trace.NanoTimeUtil;
 import stroom.planb.impl.dao.trace.PathwaysDb;
 import stroom.planb.impl.dao.trace.PathwaysDb.SimpleDb;

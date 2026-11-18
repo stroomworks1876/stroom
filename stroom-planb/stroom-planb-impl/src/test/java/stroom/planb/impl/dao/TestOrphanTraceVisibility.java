@@ -38,7 +38,6 @@ import stroom.planb.shared.StateType;
 import stroom.planb.shared.TraceSettings;
 import stroom.util.io.ByteSize;
 import stroom.util.shared.PageRequest;
-import stroom.util.shared.time.SimpleDuration;
 
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -145,7 +144,7 @@ class TestOrphanTraceVisibility {
 
     private static List<TraceRoot> roots(final TraceDb db) {
         final TracesResultPage page = db.findTraces(new FindTraceCriteria(
-                new PageRequest(0, 1000), null, null, SimpleDuration.ZERO));
+                new PageRequest(0, 1000), null, null));
         return page.getValues();
     }
 

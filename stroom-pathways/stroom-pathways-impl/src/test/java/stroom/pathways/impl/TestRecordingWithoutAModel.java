@@ -25,8 +25,6 @@ import stroom.pathways.shared.otel.trace.SpanKind;
 import stroom.pathways.shared.otel.trace.Trace;
 import stroom.pathways.shared.pathway.NamePathKey;
 import stroom.pathways.shared.pathway.PathNode;
-import stroom.planb.impl.dao.trace.CanonicalSpanOrder;
-import stroom.planb.impl.dao.trace.IgnoredSpans;
 
 import org.junit.jupiter.api.Test;
 

@@ -31,7 +31,6 @@ import stroom.pathways.shared.pathway.PathwayMutation;
 import stroom.planb.impl.PlanBPaths;
 import stroom.planb.impl.dao.LmdbWriter;
 import stroom.planb.impl.dao.ShardKeyRouter;
-import stroom.planb.impl.dao.trace.IgnoredSpans;
 import stroom.planb.impl.dao.trace.PathwaysDb;
 import stroom.planb.impl.fs.MergeCompletionStrategy;
 import stroom.planb.impl.fs.SharedFileStorePublisher;

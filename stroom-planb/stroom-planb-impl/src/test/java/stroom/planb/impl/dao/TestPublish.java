@@ -38,7 +38,6 @@ import stroom.planb.shared.StateType;
 import stroom.planb.shared.TraceSettings;
 import stroom.util.io.ByteSize;
 import stroom.util.shared.PageRequest;
-import stroom.util.shared.time.SimpleDuration;
 
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -677,7 +676,7 @@ class TestPublish {
 
         try (final TraceDb db = TraceDb.create(target, BYTE_BUFFERS, BYTE_BUFFER_FACTORY, doc, true)) {
             final TracesResultPage page = db.findTraces(new FindTraceCriteria(
-                    new PageRequest(0, 100), null, null, SimpleDuration.ZERO));
+                    new PageRequest(0, 100), null, null));
             assertThat(page.getValues()).hasSize(1);
             final TraceRoot rebuilt = page.getValues().getFirst();
             assertThat(rebuilt.getTraceId()).isEqualTo(TRACE_A);
@@ -778,7 +777,7 @@ class TestPublish {
     /** Stored roots returned by a default (start-time-sorted) findTraces over the whole shard. */
     private static List<TraceRoot> roots(final TraceDb db) {
         return db.findTraces(new FindTraceCriteria(
-                new PageRequest(0, 1000), null, null, SimpleDuration.ZERO)).getValues();
+                new PageRequest(0, 1000), null, null)).getValues();
     }
 
     /** Trace ids returned by a default (start-time-sorted) findTraces over the whole shard. */

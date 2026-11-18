@@ -27,8 +27,6 @@ import stroom.pathways.shared.pathway.NamePathKey;
 import stroom.pathways.shared.pathway.PathNode;
 import stroom.pathways.shared.pathway.StringSet;
 import stroom.pathways.shared.pathway.StringValue;
-import stroom.planb.impl.dao.trace.CanonicalSpanOrder;
-import stroom.planb.impl.dao.trace.IgnoredSpans;
 
 import org.junit.jupiter.api.Test;
 
@@ -305,37 +303,6 @@ class TestNameBasedChildMatching {
                     + "path and two traces that went different ways would then be told apart by "
                     + "nothing")
                 .hasSize(60);
-    }
-
-    @Test
-    void aTraceTheModelWasBuiltFromStillMatches() {
-        final PathwaysDoc doc = doc();
-        final Trace learnt = trace(PING, PREPARE, PREPARE);
-        final PathNode root = learn(null, learnt);
-
-        final TracePredicate predicate = new TracePredicate(
-                new CanonicalSpanOrder(doc.getTemporalOrderingTolerance()),
-                new IgnoredSpans(List.of()),
-                new PathKeyFactoryImpl(),
-                Map.of(new NamePathKey(OPERATION), root));
-
-        assertThat(predicate.test(learnt))
-                .as("the matcher lines children up by name the same way the writer does")
-                .isTrue();
-    }
-
-    @Test
-    void aTraceCarryingAnUnknownNameDoesNotMatch() {
-        final PathwaysDoc doc = doc();
-        final PathNode root = learn(null, trace(PING));
-
-        final TracePredicate predicate = new TracePredicate(
-                new CanonicalSpanOrder(doc.getTemporalOrderingTolerance()),
-                new IgnoredSpans(List.of()),
-                new PathKeyFactoryImpl(),
-                Map.of(new NamePathKey(OPERATION), root));
-
-        assertThat(predicate.test(trace(PING, PREPARE))).isFalse();
     }
 
     // What one trace ran below the root, read off its shape: a run is recorded on the path now

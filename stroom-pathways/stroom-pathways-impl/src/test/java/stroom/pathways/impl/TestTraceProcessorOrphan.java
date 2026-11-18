@@ -24,7 +24,6 @@ import stroom.pathways.shared.PathwaysDoc;
 import stroom.pathways.shared.otel.trace.Span;
 import stroom.pathways.shared.otel.trace.Trace;
 import stroom.planb.impl.dao.LmdbWriter;
-import stroom.planb.impl.dao.trace.IgnoredSpans;
 import stroom.planb.impl.dao.trace.PathwaysDb;
 import stroom.util.shared.Severity;
 

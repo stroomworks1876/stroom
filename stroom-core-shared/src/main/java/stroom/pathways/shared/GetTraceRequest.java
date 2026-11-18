@@ -17,7 +17,6 @@
 package stroom.pathways.shared;
 
 import stroom.docref.DocRef;
-import stroom.util.shared.time.SimpleDuration;
 
 import com.fasterxml.jackson.annotation.JsonCreator;
 import com.fasterxml.jackson.annotation.JsonInclude;
@@ -35,8 +34,6 @@ public class GetTraceRequest {
     private final DocRef dataSourceRef;
     @JsonProperty
     private final String traceId;
-    @JsonProperty
-    private final SimpleDuration temporalOrderingTolerance;
     /**
      * The trace's root-span start time in epoch milliseconds, if known. Used to
      * locate the archive shard bucket (labelled by start time) for a trace that
@@ -49,11 +46,9 @@ public class GetTraceRequest {
     @JsonCreator
     public GetTraceRequest(@JsonProperty("dataSourceRef") final DocRef dataSourceRef,
                            @JsonProperty("traceId") final String traceId,
-                           @JsonProperty("temporalOrderingTolerance") final SimpleDuration temporalOrderingTolerance,
                            @JsonProperty("startTimeMs") final Long startTimeMs) {
         this.dataSourceRef = dataSourceRef;
         this.traceId = traceId;
-        this.temporalOrderingTolerance = temporalOrderingTolerance;
         this.startTimeMs = startTimeMs;
     }
 
@@ -63,10 +58,6 @@ public class GetTraceRequest {
 
     public String getTraceId() {
         return traceId;
-    }
-
-    public SimpleDuration getTemporalOrderingTolerance() {
-        return temporalOrderingTolerance;
     }
 
     public Long getStartTimeMs() {
@@ -84,13 +75,12 @@ public class GetTraceRequest {
         final GetTraceRequest that = (GetTraceRequest) o;
         return Objects.equals(dataSourceRef, that.dataSourceRef) &&
                Objects.equals(traceId, that.traceId) &&
-               Objects.equals(temporalOrderingTolerance, that.temporalOrderingTolerance) &&
                Objects.equals(startTimeMs, that.startTimeMs);
     }
 
     @Override
     public int hashCode() {
-        return Objects.hash(dataSourceRef, traceId, temporalOrderingTolerance, startTimeMs);
+        return Objects.hash(dataSourceRef, traceId, startTimeMs);
     }
 
     @Override
@@ -98,7 +88,6 @@ public class GetTraceRequest {
         return "GetTraceRequest{" +
                "dataSourceRef=" + dataSourceRef +
                ", traceId='" + traceId + '\'' +
-               ", temporalOrderingTolerance='" + temporalOrderingTolerance + '\'' +
                ", startTimeMs=" + startTimeMs +
                '}';
     }

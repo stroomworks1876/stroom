@@ -32,14 +32,11 @@ import stroom.pathways.shared.otel.trace.Trace;
 import stroom.pathways.shared.otel.trace.TraceRoot;
 import stroom.pathways.shared.pathway.PathKey;
 import stroom.pathways.shared.pathway.PathNode;
-import stroom.planb.impl.dao.trace.CanonicalSpanOrder;
-import stroom.planb.impl.dao.trace.IgnoredSpans;
 import stroom.planb.shared.PlanBDoc;
 import stroom.util.logging.LambdaLogger;
 import stroom.util.logging.LambdaLoggerFactory;
 import stroom.util.shared.NullSafe;
 import stroom.util.shared.PageRequest;
-import stroom.util.shared.time.SimpleDuration;
 import stroom.util.string.StringIdUtil;
 
 import com.fasterxml.jackson.annotation.JsonInclude;
@@ -142,8 +139,7 @@ public class TraceLoader {
         final FindTraceCriteria findTraceCriteria = new FindTraceCriteria(
                 PageRequest.unlimited(),
                 Collections.emptyList(),
-                TRACE_STORE_DOC_REF,
-                SimpleDuration.ZERO);
+                TRACE_STORE_DOC_REF);
         final List<TraceRoot> traceRoots = tracesStore.findTraces(findTraceCriteria).getValues();
         final List<Trace> traces = new ArrayList<>(traceRoots.size());
         for (final TraceRoot traceRoot : traceRoots) {
@@ -152,7 +148,7 @@ public class TraceLoader {
                     : null;
             final Trace trace = tracesStore
                     .getTrace(new GetTraceRequest(
-                            TRACE_STORE_DOC_REF, traceRoot.getTraceId(), SimpleDuration.ZERO, startTimeMs));
+                            TRACE_STORE_DOC_REF, traceRoot.getTraceId(), startTimeMs));
             if (trace != null) {
                 traces.add(trace);
             }

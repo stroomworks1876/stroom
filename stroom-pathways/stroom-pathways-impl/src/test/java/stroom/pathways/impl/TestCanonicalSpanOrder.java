@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-package stroom.planb.impl.dao.trace;
+package stroom.pathways.impl;
 
 import stroom.pathways.shared.otel.trace.AnyValue;
 import stroom.pathways.shared.otel.trace.KeyValue;
@@ -85,7 +85,7 @@ class TestCanonicalSpanOrder {
 
     @Test
     void aLongRunningSpanNoLongerSwallowsTheOrderOfEverythingAfterIt() {
-        // The shape of a real ProcessPathways trace: one thread holds a long span while the others
+        // The shape of a real trace of the pathways job: one thread holds a long span while the others
         // carry on working, so overlap alone puts all of it in one group.
         final List<Span> spans = List.of(
                 span("Ping", 100, 200, "A"),
@@ -103,7 +103,7 @@ class TestCanonicalSpanOrder {
 
     @Test
     void aThreadsLastSpanIsNotStrandedByWhereTheGroupEnded() {
-        // What a real ProcessPathways trace does: two threads doing the same four steps, but B's last
+        // What a real trace of the pathways job does: two threads doing the same four steps, but B's last
         // step starts just after the moment A's work finished. Ending the group there would leave B a
         // step short, and the two would no longer read as the same work done twice.
         final List<Span> spans = List.of(
