@@ -16,9 +16,9 @@
 
 package stroom.pathways.impl;
 
+import stroom.pathways.shared.PathwaysDoc;
 import stroom.pathways.shared.otel.trace.AnyValue;
 import stroom.pathways.shared.otel.trace.KeyValue;
-import stroom.pathways.shared.otel.trace.NanoDuration;
 import stroom.pathways.shared.otel.trace.NanoTime;
 import stroom.pathways.shared.otel.trace.Span;
 import stroom.util.shared.NullSafe;
@@ -46,7 +46,8 @@ import java.util.Set;
  * usual for short calls made from several threads at once. Groups cannot overlap each other, so they
  * are ordered by when they happened.
  *
- * <p>Within a group the order comes from which thread ran each span. Two spans of one thread cannot
+ * <p>Within a group the order comes from the document's grouping attribute, normally the name of the
+ * thread that ran each span. Two spans of one thread cannot
  * have run at the same time, so the order they ran in is the program's and is kept; which thread went
  * first is the scheduler's, so a thread's spans are laid out one after another rather than woven in
  * among another thread's. That also lets threads that did the same work be seen as the repeat they
@@ -61,11 +62,6 @@ import java.util.Set;
  */
 public class CanonicalSpanOrder {
 
-    /**
-     * Spans sharing a value of this attribute stay in one group and form one run within it. The
-     * tracing agent puts the running thread's name in it.
-     */
-    private static final String GROUPING_ATTRIBUTE_KEY = "thread.name";
     private static final String NO_GROUPING_VALUE = "";
 
 
@@ -77,17 +73,18 @@ public class CanonicalSpanOrder {
     private static final long DEFAULT_TOLERANCE_NANOS = 1_000_000L;
 
     private final long toleranceNanos;
+    // Spans sharing a value of this attribute stay in one group and form one run within it. Null
+    // where the document leaves it null or blank, which gives every span no value.
+    private final String groupingAttribute;
 
-    public CanonicalSpanOrder(final SimpleDuration simpleDuration) {
-        this.toleranceNanos = simpleDuration == null
-                ? DEFAULT_TOLERANCE_NANOS
-                : toNanos(simpleDuration);
-    }
-
-    public CanonicalSpanOrder(final NanoDuration tolerance) {
+    public CanonicalSpanOrder(final PathwaysDoc doc) {
+        final SimpleDuration tolerance = doc.getTemporalOrderingTolerance();
         this.toleranceNanos = tolerance == null
                 ? DEFAULT_TOLERANCE_NANOS
-                : tolerance.getNanos();
+                : toNanos(tolerance);
+        this.groupingAttribute = NullSafe.isBlankString(doc.getGroupingAttribute())
+                ? null
+                : doc.getGroupingAttribute();
     }
 
     /**
@@ -116,7 +113,7 @@ public class CanonicalSpanOrder {
 
         final List<Timed> timed = new ArrayList<>(spans.size());
         for (final Span span : spans) {
-            timed.add(Timed.of(span));
+            timed.add(Timed.of(span, groupingValue(span)));
         }
         // Start from a fixed order so the grouping below sees the same input for the same spans.
         timed.sort(Comparator.comparingLong((Timed t) -> t.start)
@@ -188,9 +185,12 @@ public class CanonicalSpanOrder {
     }
 
     // The span's value for the grouping attribute, or NO_GROUPING_VALUE where it has none.
-    private static String groupingValue(final Span span) {
+    private String groupingValue(final Span span) {
+        if (groupingAttribute == null) {
+            return NO_GROUPING_VALUE;
+        }
         for (final KeyValue attribute : NullSafe.list(span.getAttributes())) {
-            if (GROUPING_ATTRIBUTE_KEY.equals(attribute.getKey())) {
+            if (groupingAttribute.equals(attribute.getKey())) {
                 final String value = NullSafe.get(attribute.getValue(), AnyValue::getStringValue);
                 if (value != null) {
                     return value;
@@ -216,13 +216,13 @@ public class CanonicalSpanOrder {
     // timestamp until the year 2262.
     private record Timed(Span span, long start, long end, String groupingValue) {
 
-        private static Timed of(final Span span) {
+        private static Timed of(final Span span, final String groupingValue) {
             final long start = NanoTime.fromString(span.getStartTimeUnixNano()).toEpochNanos();
             // A span with no end has not finished, so it covers no more than its start.
             final long end = span.getEndTimeUnixNano() == null
                     ? start
                     : Math.max(start, NanoTime.fromString(span.getEndTimeUnixNano()).toEpochNanos());
-            return new Timed(span, start, end, CanonicalSpanOrder.groupingValue(span));
+            return new Timed(span, start, end, groupingValue);
         }
     }
 }

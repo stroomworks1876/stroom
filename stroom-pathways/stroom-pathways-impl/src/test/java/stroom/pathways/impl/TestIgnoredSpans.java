@@ -131,7 +131,7 @@ class TestIgnoredSpans {
     }
 
     private static NodeMutatorImpl mutator(final List<String> ignored) {
-        return new NodeMutatorImpl(new CanonicalSpanOrder(doc().getTemporalOrderingTolerance()),
+        return new NodeMutatorImpl(new CanonicalSpanOrder(doc()),
                 NO_IGNORED, new IgnoredSpans(ignored));
     }
 

@@ -143,7 +143,7 @@ class TestModelChangeDetection {
     }
 
     private static CanonicalSpanOrder spanOrder() {
-        return new CanonicalSpanOrder(doc().getTemporalOrderingTolerance());
+        return new CanonicalSpanOrder(doc());
     }
 
     private static NamePathKey key() {

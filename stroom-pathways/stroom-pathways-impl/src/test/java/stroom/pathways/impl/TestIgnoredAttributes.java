@@ -165,7 +165,7 @@ class TestIgnoredAttributes {
                                   final Trace trace) {
         final PathwaysDoc doc = doc();
         return new NodeMutatorImpl(
-                new CanonicalSpanOrder(doc.getTemporalOrderingTolerance()),
+                new CanonicalSpanOrder(doc),
                 new IgnoredAttributes(ignored),
                 new IgnoredSpans(List.of()))
                 .process(trace, new NamePathKey(OPERATION), current, (severity, message) -> {

@@ -62,6 +62,7 @@ public class PathwaysSettingsPresenter extends DocPresenter<PathwaysSettingsView
     @Override
     protected void onRead(final DocRef docRef, final PathwaysDoc doc, final boolean readOnly) {
         getView().setTemporalOrderingTolerance(doc.getTemporalOrderingTolerance());
+        getView().setGroupingAttribute(doc.getGroupingAttribute());
         getView().setIgnoredSpanNames(doc.getIgnoredSpanNames());
         getView().setIgnoredAttributes(doc.getIgnoredAttributes());
         getView().setNarrowingWindow(doc.getNarrowingWindow());
@@ -78,6 +79,7 @@ public class PathwaysSettingsPresenter extends DocPresenter<PathwaysSettingsView
         return doc
                 .copy()
                 .temporalOrderingTolerance(getView().getTemporalOrderingTolerance())
+                .groupingAttribute(getView().getGroupingAttribute())
                 .ignoredSpanNames(getView().getIgnoredSpanNames())
                 .ignoredAttributes(getView().getIgnoredAttributes())
                 .narrowingWindow(getView().getNarrowingWindow())
@@ -104,6 +106,10 @@ public class PathwaysSettingsPresenter extends DocPresenter<PathwaysSettingsView
         SimpleDuration getTemporalOrderingTolerance();
 
         void setTemporalOrderingTolerance(SimpleDuration temporalOrderingTolerance);
+
+        String getGroupingAttribute();
+
+        void setGroupingAttribute(String groupingAttribute);
 
         List<String> getIgnoredSpanNames();
 

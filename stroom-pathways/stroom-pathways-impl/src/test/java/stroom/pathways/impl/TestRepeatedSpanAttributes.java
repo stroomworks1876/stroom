@@ -57,7 +57,7 @@ class TestRepeatedSpanAttributes {
     void theModelTakesTheLastValueRatherThanThrowing() {
         final PathwaysDoc doc = doc();
         final NodeMutatorImpl mutator = new NodeMutatorImpl(
-                new CanonicalSpanOrder(doc.getTemporalOrderingTolerance()), NO_IGNORED,
+                new CanonicalSpanOrder(doc), NO_IGNORED,
                 new IgnoredSpans(List.of()));
         final PathKey pathKey = new NamePathKey(OPERATION);
 

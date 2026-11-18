@@ -112,7 +112,7 @@ class TestNodeChangeCounts {
 
     private static NodeMutatorImpl mutator() {
         return new NodeMutatorImpl(
-                new CanonicalSpanOrder(doc().getTemporalOrderingTolerance()),
+                new CanonicalSpanOrder(doc()),
                 new IgnoredAttributes(List.of()),
                 new IgnoredSpans(List.of()));
     }

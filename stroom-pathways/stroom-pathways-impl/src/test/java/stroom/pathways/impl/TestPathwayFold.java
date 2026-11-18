@@ -247,7 +247,7 @@ class TestPathwayFold {
     }
 
     private static NodeMutatorImpl mutator() {
-        return new NodeMutatorImpl(new CanonicalSpanOrder(doc().getTemporalOrderingTolerance()),
+        return new NodeMutatorImpl(new CanonicalSpanOrder(doc()),
                 NO_IGNORED, new IgnoredSpans(List.of()));
     }
 

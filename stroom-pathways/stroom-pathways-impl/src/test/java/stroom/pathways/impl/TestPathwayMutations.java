@@ -278,7 +278,7 @@ class TestPathwayMutations {
     void anAttributeNamedInTheConfigurationSaysItWasIgnored() {
         final IgnoredAttributes ignored = new IgnoredAttributes(List.of("http.method"));
         final NodeMutatorImpl mutator = new NodeMutatorImpl(
-                new CanonicalSpanOrder(doc().getTemporalOrderingTolerance()), ignored,
+                new CanonicalSpanOrder(doc()), ignored,
                 new IgnoredSpans(List.of()));
         mutator.process(trace("GET", 20, PING), key(), null, quiet(), doc());
 
@@ -374,7 +374,7 @@ class TestPathwayMutations {
 
     private static NodeMutatorImpl mutator(final List<String> ignoredAttributes) {
         return new NodeMutatorImpl(
-                new CanonicalSpanOrder(doc().getTemporalOrderingTolerance()),
+                new CanonicalSpanOrder(doc()),
                 new IgnoredAttributes(ignoredAttributes),
                 new IgnoredSpans(List.of()));
     }

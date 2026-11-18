@@ -410,7 +410,7 @@ public class TraceProcessor {
     }
 
     private NodeMutatorImpl mutatorFor(final PathwaysDoc doc) {
-        return new NodeMutatorImpl(new CanonicalSpanOrder(doc.getTemporalOrderingTolerance()),
+        return new NodeMutatorImpl(new CanonicalSpanOrder(doc),
                 ignoredAttributes, ignoredSpans);
     }
 

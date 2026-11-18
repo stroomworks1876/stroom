@@ -162,7 +162,7 @@ class TestPathsFolding {
     private Paths account(final String traceId, final int seconds, final String... children) {
         final PathwaysDoc doc = doc();
         final NodeMutatorImpl mutator = new NodeMutatorImpl(
-                new CanonicalSpanOrder(doc.getTemporalOrderingTolerance()), NO_IGNORED,
+                new CanonicalSpanOrder(doc), NO_IGNORED,
                 new IgnoredSpans(List.of()));
         model = mutator.process(walk(children), new NamePathKey(OPERATION), model,
                 (severity, message) -> {

@@ -33,6 +33,7 @@ import com.google.gwt.uibinder.client.UiField;
 import com.google.gwt.uibinder.client.UiHandler;
 import com.google.gwt.user.client.ui.SimplePanel;
 import com.google.gwt.user.client.ui.TextArea;
+import com.google.gwt.user.client.ui.TextBox;
 import com.google.gwt.user.client.ui.Widget;
 import com.google.inject.Inject;
 import com.gwtplatform.mvp.client.View;
@@ -57,6 +58,8 @@ public class PathwaysSettingsViewImpl
     SimplePanel infoFeed;
     @UiField
     DurationPicker temporalOrderingTolerance;
+    @UiField
+    TextBox groupingAttribute;
     @UiField
     DurationPicker narrowingWindow;
     @UiField
@@ -125,6 +128,16 @@ public class PathwaysSettingsViewImpl
     }
 
     @Override
+    public String getGroupingAttribute() {
+        return NullSafe.trim(groupingAttribute.getValue());
+    }
+
+    @Override
+    public void setGroupingAttribute(final String groupingAttribute) {
+        this.groupingAttribute.setValue(NullSafe.string(groupingAttribute));
+    }
+
+    @Override
     public List<String> getIgnoredSpanNames() {
         return textToList(ignoredSpanNames.getValue());
     }
@@ -185,6 +198,7 @@ public class PathwaysSettingsViewImpl
     @Override
     public void onReadOnly(final boolean readOnly) {
         temporalOrderingTolerance.setEnabled(!readOnly);
+        groupingAttribute.setEnabled(!readOnly);
         narrowingWindow.setEnabled(!readOnly);
         ignoredSpanNames.setEnabled(!readOnly);
         ignoredAttributes.setEnabled(!readOnly);
@@ -213,6 +227,16 @@ public class PathwaysSettingsViewImpl
 
     @UiHandler("ignoredSpanNames")
     public void onIgnoredSpanNames(final ValueChangeEvent<String> e) {
+        fireChange();
+    }
+
+    @UiHandler("groupingAttribute")
+    public void onGroupingAttributeTyped(final KeyUpEvent e) {
+        fireChange();
+    }
+
+    @UiHandler("groupingAttribute")
+    public void onGroupingAttribute(final ValueChangeEvent<String> e) {
         fireChange();
     }
 

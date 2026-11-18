@@ -16,9 +16,9 @@
 
 package stroom.pathways.impl;
 
+import stroom.pathways.shared.PathwaysDoc;
 import stroom.pathways.shared.otel.trace.AnyValue;
 import stroom.pathways.shared.otel.trace.KeyValue;
-import stroom.pathways.shared.otel.trace.NanoDuration;
 import stroom.pathways.shared.otel.trace.Span;
 
 import org.junit.jupiter.api.Test;
@@ -242,7 +242,7 @@ class TestCanonicalSpanOrder {
                 .as("a gap this small is the scheduler, not a step")
                 .containsExactly("a", "b");
 
-        assertThat(names(new CanonicalSpanOrder(NanoDuration.ofNanos(0)).sort(spans)))
+        assertThat(names(noTolerance().sort(spans)))
                 .as("with no tolerance only real overlap groups, so the gap separates them")
                 .containsExactly("b", "a");
     }
@@ -254,18 +254,85 @@ class TestCanonicalSpanOrder {
         assertThat(names(noTolerance().sort(List.of(span("only", 0, 100))))).containsExactly("only");
     }
 
+    @Test
+    void theDocumentNamesWhichAttributeSaysWhatRanInSequence() {
+        final List<Span> woven = List.of(
+                span("Ping", 100, 400, "worker", "A"),
+                span("Ping", 150, 450, "worker", "B"),
+                span("Commit", 410, 700, "worker", "A"),
+                span("Commit", 460, 750, "worker", "B"));
+
+        final CanonicalSpanOrder order = new CanonicalSpanOrder(doc()
+                .groupingAttribute("worker")
+                .build());
+
+        assertThat(names(order.sort(woven)))
+                .as("runs follow the attribute the document names, not thread.name")
+                .containsExactly("Ping", "Commit", "Ping", "Commit");
+    }
+
+    @Test
+    void aBlankGroupingAttributeTurnsTheGroupingOff() {
+        final List<Span> woven = List.of(
+                span("Ping", 100, 400, "A"),
+                span("Ping", 150, 450, "B"),
+                span("Commit", 410, 700, "A"),
+                span("Commit", 460, 750, "B"));
+
+        final CanonicalSpanOrder order = new CanonicalSpanOrder(doc()
+                .groupingAttribute("")
+                .build());
+
+        assertThat(names(order.sort(woven)))
+                .as("with nothing to group by, overlapping spans are one moment ordered by name")
+                .containsExactly("Commit", "Commit", "Ping", "Ping");
+    }
+
+    @Test
+    void aDocumentWithoutTheSettingHasTheGroupingOff() {
+        final List<Span> woven = List.of(
+                span("Ping", 100, 400, "A"),
+                span("Ping", 150, 450, "B"),
+                span("Commit", 410, 700, "A"),
+                span("Commit", 460, 750, "B"));
+
+        final CanonicalSpanOrder order = new CanonicalSpanOrder(doc()
+                .groupingAttribute(null)
+                .build());
+
+        assertThat(names(order.sort(woven)))
+                .as("null is the same as blank, so overlapping spans are ordered by name")
+                .containsExactly("Commit", "Commit", "Ping", "Ping");
+    }
+
+    @Test
+    void aNewDocumentGroupsByThreadName() {
+        final List<Span> woven = List.of(
+                span("Ping", 100, 400, "A"),
+                span("Ping", 150, 450, "B"),
+                span("Commit", 410, 700, "A"),
+                span("Commit", 460, 750, "B"));
+
+        assertThat(names(new CanonicalSpanOrder(doc().build()).sort(woven)))
+                .containsExactly("Ping", "Commit", "Ping", "Commit");
+    }
+
     // The tolerance a document carries when nobody has changed it, which is none: the settings view
     // offers zero nanoseconds and that is what gets stored. Said here so that what these tests check
     // is what the server does. Left out, the duration falls back to a default of a millisecond, and
     // every gap written below — tens of nanoseconds — disappears inside it, so the grouping is never
     // asked the questions these tests are about.
     private static CanonicalSpanOrder noTolerance() {
-        return new CanonicalSpanOrder(NanoDuration.ofNanos(0));
+        return new CanonicalSpanOrder(doc().build());
     }
 
     // A millisecond of give, which is only what the tolerance test needs.
     private static CanonicalSpanOrder order() {
-        return new CanonicalSpanOrder((stroom.util.shared.time.SimpleDuration) null);
+        return new CanonicalSpanOrder(doc().temporalOrderingTolerance(null).build());
+    }
+
+    private static PathwaysDoc.Builder doc() {
+        return PathwaysDoc.builder().uuid("test");
     }
 
     private static List<String> names(final List<Span> spans) {
@@ -284,11 +351,19 @@ class TestCanonicalSpanOrder {
                              final long startMicros,
                              final long endMicros,
                              final String thread) {
+        return span(name, startMicros, endMicros, "thread.name", thread);
+    }
+
+    private static Span span(final String name,
+                             final long startMicros,
+                             final long endMicros,
+                             final String key,
+                             final String value) {
         return Span.builder()
                 .name(name)
                 .startTimeUnixNano(Long.toString(startMicros * US))
                 .endTimeUnixNano(Long.toString(endMicros * US))
-                .attributes(List.of(new KeyValue("thread.name", AnyValue.stringValue(thread))))
+                .attributes(List.of(new KeyValue(key, AnyValue.stringValue(value))))
                 .build();
     }
 }

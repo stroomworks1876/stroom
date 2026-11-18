@@ -76,6 +76,7 @@ public class PathwaysDoc extends AbstractDoc implements PlanBDocument {
     private static final boolean DEFAULT_ALLOW_CONSTRAINT_CREATION = true;
     private static final boolean DEFAULT_ALLOW_CONSTRAINT_MUTATION = true;
     private static final SimpleDuration DEFAULT_NARROWING_WINDOW = new SimpleDuration(7L, TimeUnit.DAYS);
+    private static final String DEFAULT_GROUPING_ATTRIBUTE = "thread.name";
 
     public static final String TYPE = "Pathways";
     public static final DocumentType DOCUMENT_TYPE = DocumentTypeRegistry.PATHWAYS_DOCUMENT_TYPE;
@@ -84,6 +85,13 @@ public class PathwaysDoc extends AbstractDoc implements PlanBDocument {
     private final String description;
     @JsonProperty
     private final SimpleDuration temporalOrderingTolerance;
+    /**
+     * The span attribute that says which spans ran one after another, such as 'thread.name'. Children
+     * of a span that share a value of it are kept in the order they ran rather than mixed in among
+     * the others they overlapped. Null or blank turns this off. New documents start at 'thread.name'.
+     */
+    @JsonProperty
+    private final String groupingAttribute;
     /**
      * How far back a pathway is held to. What a trace teaches only ever widens the model, so an
      * envelope left to itself ends up admitting everything and saying nothing. Each night the model is
@@ -161,6 +169,7 @@ public class PathwaysDoc extends AbstractDoc implements PlanBDocument {
                        @JsonProperty("updateUser") final String updateUser,
                        @JsonProperty("description") final String description,
                        @JsonProperty("temporalOrderingTolerance") final SimpleDuration temporalOrderingTolerance,
+                       @JsonProperty("groupingAttribute") final String groupingAttribute,
                        @JsonProperty("narrowingWindow") final SimpleDuration narrowingWindow,
                        @JsonProperty("ignoredSpanNames") final List<String> ignoredSpanNames,
                        @JsonProperty("ignoredAttributes") final List<String> ignoredAttributes,
@@ -175,6 +184,7 @@ public class PathwaysDoc extends AbstractDoc implements PlanBDocument {
         super(TYPE, uuid, name, version, createTimeMs, updateTimeMs, createUser, updateUser);
         this.description = description;
         this.temporalOrderingTolerance = temporalOrderingTolerance;
+        this.groupingAttribute = groupingAttribute;
         this.narrowingWindow = narrowingWindow;
         // Held as given, empty included, because a document saved with nothing to ignore means exactly
         // that and must not be read as never having been asked.
@@ -239,6 +249,13 @@ public class PathwaysDoc extends AbstractDoc implements PlanBDocument {
 
     public SimpleDuration getTemporalOrderingTolerance() {
         return temporalOrderingTolerance;
+    }
+
+    /**
+     * The attribute spans are grouped by. Null or blank turns the grouping off.
+     */
+    public String getGroupingAttribute() {
+        return groupingAttribute;
     }
 
     /**
@@ -309,6 +326,7 @@ public class PathwaysDoc extends AbstractDoc implements PlanBDocument {
                allowConstraintMutation == that.allowConstraintMutation &&
                Objects.equals(description, that.description) &&
                Objects.equals(temporalOrderingTolerance, that.temporalOrderingTolerance) &&
+               Objects.equals(groupingAttribute, that.groupingAttribute) &&
                Objects.equals(narrowingWindow, that.narrowingWindow) &&
                Objects.equals(ignoredSpanNames, that.ignoredSpanNames) &&
                Objects.equals(ignoredAttributes, that.ignoredAttributes) &&
@@ -325,6 +343,7 @@ public class PathwaysDoc extends AbstractDoc implements PlanBDocument {
         return Objects.hash(super.hashCode(),
                 description,
                 temporalOrderingTolerance,
+                groupingAttribute,
                 narrowingWindow,
                 ignoredSpanNames,
                 ignoredAttributes,
@@ -342,6 +361,7 @@ public class PathwaysDoc extends AbstractDoc implements PlanBDocument {
         return "PathwaysDoc{" +
                "description='" + description + '\'' +
                ", temporalOrderingTolerance=" + temporalOrderingTolerance +
+               ", groupingAttribute='" + groupingAttribute + '\'' +
                ", narrowingWindow=" + narrowingWindow +
                ", pathways=" + pathways +
                ", allowPathwayCreation=" + allowPathwayCreation +
@@ -366,6 +386,7 @@ public class PathwaysDoc extends AbstractDoc implements PlanBDocument {
 
         private String description;
         private SimpleDuration temporalOrderingTolerance = new SimpleDuration(0L, TimeUnit.NANOSECONDS);
+        private String groupingAttribute = DEFAULT_GROUPING_ATTRIBUTE;
         private SimpleDuration narrowingWindow = DEFAULT_NARROWING_WINDOW;
         private List<String> ignoredSpanNames;
         private List<String> ignoredAttributes;
@@ -387,6 +408,7 @@ public class PathwaysDoc extends AbstractDoc implements PlanBDocument {
             super(pathwaysDoc);
             this.description = pathwaysDoc.description;
             this.temporalOrderingTolerance = pathwaysDoc.temporalOrderingTolerance;
+            this.groupingAttribute = pathwaysDoc.groupingAttribute;
             this.narrowingWindow = pathwaysDoc.narrowingWindow;
             this.ignoredSpanNames = pathwaysDoc.ignoredSpanNames;
             this.ignoredAttributes = pathwaysDoc.ignoredAttributes;
@@ -411,6 +433,11 @@ public class PathwaysDoc extends AbstractDoc implements PlanBDocument {
 
         public Builder temporalOrderingTolerance(final SimpleDuration temporalOrderingTolerance) {
             this.temporalOrderingTolerance = temporalOrderingTolerance;
+            return self();
+        }
+
+        public Builder groupingAttribute(final String groupingAttribute) {
+            this.groupingAttribute = groupingAttribute;
             return self();
         }
 
@@ -480,6 +507,7 @@ public class PathwaysDoc extends AbstractDoc implements PlanBDocument {
                     updateUser,
                     description,
                     temporalOrderingTolerance,
+                    groupingAttribute,
                     narrowingWindow,
                     ignoredSpanNames,
                     ignoredAttributes,

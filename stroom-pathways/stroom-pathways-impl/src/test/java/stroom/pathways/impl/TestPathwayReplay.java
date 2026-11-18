@@ -142,7 +142,7 @@ class TestPathwayReplay {
         // constraint away rather than put back a constraint holding no value.
         final IgnoredAttributes ignored = new IgnoredAttributes(List.of("http.method"));
         final NodeMutatorImpl mutator = new NodeMutatorImpl(
-                new CanonicalSpanOrder(doc().getTemporalOrderingTolerance()), ignored,
+                new CanonicalSpanOrder(doc()), ignored,
                 new IgnoredSpans(List.of()));
         final PathNode root = mutator.process(trace("GET", 20, PING), new NamePathKey(OPERATION), null,
                 quiet(), doc());
@@ -281,7 +281,7 @@ class TestPathwayReplay {
 
     private static NodeMutatorImpl mutator() {
         return new NodeMutatorImpl(
-                new CanonicalSpanOrder(doc().getTemporalOrderingTolerance()),
+                new CanonicalSpanOrder(doc()),
                 new IgnoredAttributes(List.of()),
                 new IgnoredSpans(List.of()));
     }

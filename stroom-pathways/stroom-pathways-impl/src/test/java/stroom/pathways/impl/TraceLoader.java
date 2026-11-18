@@ -24,7 +24,6 @@ import stroom.pathways.shared.TracePersistence;
 import stroom.pathways.shared.TraceWriter;
 import stroom.pathways.shared.TracesStore;
 import stroom.pathways.shared.otel.trace.ExportTraceServiceRequest;
-import stroom.pathways.shared.otel.trace.NanoDuration;
 import stroom.pathways.shared.otel.trace.ResourceSpans;
 import stroom.pathways.shared.otel.trace.ScopeSpans;
 import stroom.pathways.shared.otel.trace.Span;
@@ -37,6 +36,8 @@ import stroom.util.logging.LambdaLogger;
 import stroom.util.logging.LambdaLoggerFactory;
 import stroom.util.shared.NullSafe;
 import stroom.util.shared.PageRequest;
+import stroom.util.shared.time.SimpleDuration;
+import stroom.util.shared.time.TimeUnit;
 import stroom.util.string.StringIdUtil;
 
 import com.fasterxml.jackson.annotation.JsonInclude;
@@ -158,7 +159,9 @@ public class TraceLoader {
 
     private Map<PathKey, PathNode> buildPathways(final Collection<Trace> traces,
                                                  final MessageReceiver messageReceiver) {
-        final CanonicalSpanOrder spanOrder = new CanonicalSpanOrder(NanoDuration.ofMillis(10));
+        final CanonicalSpanOrder spanOrder = new CanonicalSpanOrder(PATHWAYS_DOC.copy()
+                .temporalOrderingTolerance(new SimpleDuration(10, TimeUnit.MILLISECONDS))
+                .build());
         final PathKeyFactory pathKeyFactory = new PathKeyFactoryImpl();
         final NodeMutatorImpl traceProcessor = new NodeMutatorImpl(spanOrder, NO_IGNORED, new IgnoredSpans(List.of()));
         final Map<PathKey, PathNode> pathRoots = new HashMap<>();
