@@ -49,7 +49,6 @@ import stroom.svg.shared.SvgImage;
 import stroom.util.shared.CriteriaFieldSort;
 import stroom.util.shared.NullSafe;
 import stroom.util.shared.PageRequest;
-import stroom.util.shared.PageResponse;
 import stroom.widget.button.client.ButtonView;
 import stroom.widget.customdatebox.client.ClientDateUtil;
 import stroom.widget.menu.client.presenter.IconMenuItem;
@@ -278,6 +277,7 @@ public class PathwayEditPresenter
         // counted here: the plot covers every row the range holds, and those are capped, so one
         // counted from the rows in hand would understate a pathway with a long history.
         mutationListPresenter.setPlotChangeHandler(this::fetchPlot);
+        mutationListPresenter.setNodeMenu(this::changeNodeItems);
 
         registerHandler(pathwayTreePresenter.getSelectionModel()
                 .addSelectionChangeHandler(e -> {
@@ -757,6 +757,18 @@ public class PathwayEditPresenter
                 .enabled(filter != PathwayMutationListPresenter.Filter.OFF)
                 .build());
         return items;
+    }
+
+    // Offered on a change's node: the same node on the drawing. Greyed out where the model on show has
+    // no such node, which is the drawing wound back to before the change that added it.
+    private List<Item> changeNodeItems(final List<String> path) {
+        final PathNode node = pathwayTreePresenter.findNode(path);
+        return List.of(new IconMenuItem.Builder()
+                .icon(SvgImage.LOCATE)
+                .text("Locate node")
+                .command(() -> pathwayTreePresenter.showNode(node))
+                .enabled(node != null)
+                .build());
     }
 
     private List<Item> pathFilterItems() {

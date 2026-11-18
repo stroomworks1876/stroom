@@ -394,6 +394,32 @@ public class PathwayTreePresenter
     }
 
     /**
+     * The node at this path in the model on show, or null where it has none — as it will not while the
+     * model is wound back to before the change that added the node.
+     */
+    public PathNode findNode(final List<String> path) {
+        for (final PathNode node : nodeMap.values()) {
+            if (Objects.equals(node.getNodePath(), path)) {
+                return node;
+            }
+        }
+        return null;
+    }
+
+    /**
+     * Picks the node out, as clicking it would, and puts it in the middle of the view — zoomed in to
+     * the size it is drawn at where the drawing is shown smaller, so it can be read.
+     */
+    public void showNode(final PathNode node) {
+        final Element element = ElementUtil.findChild(html.getElement(),
+                candidate -> node.getUuid().equals(candidate.getAttribute("uuid")));
+        select(node, element);
+        if (element != null) {
+            viewport.focus(element);
+        }
+    }
+
+    /**
      * Whether the model is being shown as a graph rather than as a tree.
      */
     public boolean isGraphShown() {

@@ -390,6 +390,39 @@ class PathwayViewport {
         return true;
     }
 
+    /**
+     * Puts this in the middle of the view. A drawing shown smaller than it is drawn is first brought
+     * up to that size, so what is centred can be read; one zoomed in further than that is left there.
+     */
+    void focus(final Element on) {
+        if (zoom < 1) {
+            zoom = 1;
+            applyZoom();
+            // After the browser has taken the new size, for the same reason as fitting.
+            Scheduler.get().scheduleDeferred(() -> scrollToMiddle(on));
+        } else {
+            scrollToMiddle(on);
+        }
+    }
+
+    // Measured on the screen against the drawing rather than from the element's offsets, which run
+    // from whichever ancestor happens to be positioned and so differ between the graph and the tree.
+    // Both edges are measured after scaling, so the gap between them is divided by the zoom to get
+    // back to the drawing's own size.
+    private void scrollToMiddle(final Element on) {
+        final Element scroller = scroller();
+        final Element canvas = canvas();
+        if (scroller == null || canvas == null || zoom <= 0) {
+            return;
+        }
+        final double x = ((on.getAbsoluteLeft() - canvas.getAbsoluteLeft()) / zoom)
+                         + (on.getOffsetWidth() / 2.0);
+        final double y = ((on.getAbsoluteTop() - canvas.getAbsoluteTop()) / zoom)
+                         + (on.getOffsetHeight() / 2.0);
+        scroller.setScrollLeft((int) Math.round((x * zoom) + slackX() - (scroller.getClientWidth() / 2.0)));
+        scroller.setScrollTop((int) Math.round((y * zoom) + slackY() - (scroller.getClientHeight() / 2.0)));
+    }
+
     // Whatever was in the middle of the view stays in the middle of it. Scaling moves everything away
     // from the drawing's top left corner, so without an anchor the picture slides out from under the
     // reader towards the corner they are not looking at.

@@ -41,6 +41,7 @@ import stroom.util.shared.Expander;
 import stroom.util.shared.NullSafe;
 import stroom.widget.button.client.ButtonView;
 import stroom.widget.button.client.InlineSvgToggleButton;
+import stroom.widget.menu.client.presenter.Item;
 import stroom.widget.util.client.HtmlBuilder;
 import stroom.widget.util.client.HtmlBuilder.Attribute;
 import stroom.widget.util.client.MultiSelectionModelImpl;
@@ -49,6 +50,8 @@ import stroom.widget.util.client.SvgImageUtil;
 import com.google.gwt.dom.client.Document;
 import com.google.gwt.dom.client.Element;
 import com.google.gwt.safehtml.shared.SafeHtml;
+import com.google.gwt.safehtml.shared.SafeHtmlBuilder;
+import com.google.gwt.safehtml.shared.SafeHtmlUtils;
 import com.google.gwt.user.cellview.client.Column;
 import com.google.gwt.user.cellview.client.Header;
 import com.google.gwt.user.cellview.client.SafeHtmlHeader;
@@ -193,6 +196,8 @@ public class PathwayMutationListPresenter extends MyPresenterWidget<PagerView> {
     private List<HistoryBar> bars = List.of();
     // Told when the filter goes on or comes off, so the plot can be counted again to match.
     private Runnable plotChangeHandler;
+    // What right clicking a row's node offers, by the node's path.
+    private Function<List<String>, List<Item>> nodeMenu = path -> List.of();
     // True while setData is replacing the rows, which brings its own plot with it.
     private boolean replacing;
     // What the reader had set up, to be carried onto the rows replacing the ones on screen. All
@@ -645,6 +650,14 @@ public class PathwayMutationListPresenter extends MyPresenterWidget<PagerView> {
     }
 
     /**
+     * What right clicking a change's node offers, given the node's path. Supplied from outside because
+     * what it offers acts on the drawing, which this table knows nothing of.
+     */
+    public void setNodeMenu(final Function<List<String>, List<Item>> nodeMenu) {
+        this.nodeMenu = nodeMenu;
+    }
+
+    /**
      * The plot on its own, counted over the same rows for whichever node the table is narrowed to.
      *
      * <p>Apart from {@link #setData}, because the rows have not changed: replacing them would shut
@@ -687,6 +700,33 @@ public class PathwayMutationListPresenter extends MyPresenterWidget<PagerView> {
             }
         };
         dataGrid.addResizableColumn(column, PathwayMutation.FIELD_TRACE_ID, TRACE_ID_COL);
+    }
+
+    // The node the change was made to. Right clicking it offers whatever the view around this one
+    // offers for a node; a trace row names no node, so it offers nothing.
+    private void addNodeColumn() {
+        final Column<MutationRow, List<String>> column = new Column<MutationRow, List<String>>(
+                new HasContextMenusCell<List<String>>((context, path) ->
+                        NullSafe.isEmptyCollection(path)
+                                ? List.of()
+                                : nodeMenu.apply(path)) {
+                    @Override
+                    public void render(final Context context,
+                                       final List<String> path,
+                                       final SafeHtmlBuilder sb) {
+                        if (path != null) {
+                            sb.append(SafeHtmlUtils.fromString(String.join(" / ", path)));
+                        }
+                    }
+                }) {
+            @Override
+            public List<String> getValue(final MutationRow row) {
+                return row.isParent()
+                        ? null
+                        : row.getRow().getNodePath();
+            }
+        };
+        dataGrid.addResizableColumn(column, PathwayMutation.FIELD_PATH, 400);
     }
 
     // When the trace actually ran. Not the time beside it in the table: that is when the model learnt
@@ -865,9 +905,7 @@ public class PathwayMutationListPresenter extends MyPresenterWidget<PagerView> {
                 row -> ofRow(row, HistoryRow::getSpanId),
                 SPAN_ID_COL);
 
-        addColumn(PathwayMutation.FIELD_PATH,
-                row -> ofRow(row, value -> String.join(" / ", NullSafe.list(value.getNodePath()))),
-                400);
+        addNodeColumn();
         addColumn(PathwayMutation.FIELD_CONSTRAINT,
                 row -> ofRow(row, HistoryRow::getConstraint),
                 ColumnSizeConstants.MEDIUM_COL);
