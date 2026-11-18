@@ -63,6 +63,9 @@ public class NodeInfoPresenter extends MyPresenterWidget<PagerView> {
         dataGrid.setTableName("Node Info");
         selectionModel = dataGrid.addDefaultSelectionModel(true);
         view.setDataWidget(dataGrid);
+        // What this shows is the node picked out on the drawing, so it has nothing of its own to fetch
+        // again. Refreshing is done where the model is fetched, and this follows.
+        view.getRefreshButton().setVisible(false);
 
         addColumn("Name", NAME_COL, Fact::name);
         addColumn("Value", ColumnSizeConstants.BIG_COL, Fact::value);

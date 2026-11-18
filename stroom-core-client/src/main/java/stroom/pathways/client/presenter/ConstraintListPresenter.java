@@ -88,6 +88,9 @@ public class ConstraintListPresenter
         dataGrid.setTableName("Constraints");
         selectionModel = dataGrid.addDefaultSelectionModel(true);
         pagerView.setDataWidget(dataGrid);
+        // What this shows is the node picked out on the drawing, so it has nothing of its own to fetch
+        // again. Refreshing is done where the model is fetched, and this follows.
+        pagerView.getRefreshButton().setVisible(false);
 
         this.constraintEditPresenter = constraintEditPresenter;
 
