@@ -562,7 +562,11 @@ class TestPublish {
                 .resolve(PlanBConstants.formatShardIndex(0))
                 .resolve(dayLabel);
         assertThat(bucket.resolve(PlanBConstants.VERSION_FILE_NAME)).exists();
-        try (final TraceDb archive = TraceDb.create(bucket, BYTE_BUFFERS, BYTE_BUFFER_FACTORY, doc, true)) {
+        // A bucket is published compressed, so it is read the way the app reads one: copied down and
+        // decompressed into a local directory, and opened there.
+        final Path readBack = Files.createDirectory(tempDir.resolve("read_back"));
+        assertThat(publisher.copyArchiveDown(bucket, readBack.resolve(PlanBConstants.DATA_FILE_NAME))).isTrue();
+        try (final TraceDb archive = TraceDb.create(readBack, BYTE_BUFFERS, BYTE_BUFFER_FACTORY, doc, true)) {
             assertThat(traceIds(archive)).containsExactly(TRACE_A, TRACE_B);
         }
     }

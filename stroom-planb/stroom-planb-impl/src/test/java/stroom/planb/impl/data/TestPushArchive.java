@@ -123,7 +123,7 @@ class TestPushArchive {
         publisher.pushArchive(doc, SHARD_INDEX, stagedBatch("batch2", TRACE_B));
 
         assertThat(listNames(bucketDir()))
-                .containsExactlyInAnyOrder(PlanBConstants.DATA_FILE_NAME, PlanBConstants.VERSION_FILE_NAME);
+                .containsExactlyInAnyOrder(PlanBConstants.DATA_ZST_FILE_NAME, PlanBConstants.VERSION_FILE_NAME);
     }
 
     // -----------------------------------------------------------------------
@@ -164,7 +164,7 @@ class TestPushArchive {
     void firstPush_writesDataAndVersion() throws IOException {
         publisher.pushArchive(doc, SHARD_INDEX, stagedBatch("batch1", TRACE_A));
 
-        assertThat(bucketDir().resolve(PlanBConstants.DATA_FILE_NAME)).exists();
+        assertThat(bucketDir().resolve(PlanBConstants.DATA_ZST_FILE_NAME)).exists();
         assertThat(bucketDir().resolve(PlanBConstants.VERSION_FILE_NAME)).exists();
         assertThat(archivedTraceIds()).containsExactly(TRACE_A);
     }
@@ -230,7 +230,7 @@ class TestPushArchive {
                 .isEqualTo(versionBefore);
         assertThat(archivedTraceIds()).containsExactly(TRACE_A);
         assertThat(listNames(bucketDir()))
-                .containsExactlyInAnyOrder(PlanBConstants.DATA_FILE_NAME, PlanBConstants.VERSION_FILE_NAME);
+                .containsExactlyInAnyOrder(PlanBConstants.DATA_ZST_FILE_NAME, PlanBConstants.VERSION_FILE_NAME);
     }
 
     // -----------------------------------------------------------------------
@@ -254,7 +254,7 @@ class TestPushArchive {
 
         assertThat(orphan).doesNotExist();
         assertThat(listNames(bucketDir()))
-                .containsExactlyInAnyOrder(PlanBConstants.DATA_FILE_NAME, PlanBConstants.VERSION_FILE_NAME);
+                .containsExactlyInAnyOrder(PlanBConstants.DATA_ZST_FILE_NAME, PlanBConstants.VERSION_FILE_NAME);
         // The sweep must not disturb the data itself.
         assertThat(archivedTraceIds()).containsExactly(TRACE_A, TRACE_B);
     }
@@ -332,9 +332,14 @@ class TestPushArchive {
         return new StagedArchive(DAY_LABEL, dir);
     }
 
-    private List<String> archivedTraceIds() {
+    // A bucket is published compressed, so it is read the way the app reads one: copied down and
+    // decompressed into a fresh local directory, and opened there.
+    private List<String> archivedTraceIds() throws IOException {
+        final Path readBack = Files.createTempDirectory(tempDir, "read_back");
+        assertThat(publisher.copyArchiveDown(bucketDir(), readBack.resolve(PlanBConstants.DATA_FILE_NAME)))
+                .isTrue();
         try (final TraceDb archive = TraceDb.create(
-                bucketDir(), BYTE_BUFFERS, BYTE_BUFFER_FACTORY, doc, true)) {
+                readBack, BYTE_BUFFERS, BYTE_BUFFER_FACTORY, doc, true)) {
             final TracesResultPage page = archive.findTraces(new FindTraceCriteria(
                     new PageRequest(0, 1000), null, null));
             return page.getValues().stream().map(TraceRoot::getTraceId).sorted().toList();
