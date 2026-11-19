@@ -232,11 +232,13 @@ public class PathwayEditPresenter
             // than in showOver, because opening a pathway goes through that too and must not carry
             // the row from whichever pathway was open before.
             //
-            // Only the row. A different range is a different set of changes, so what the table was
-            // narrowed to is let go rather than aimed at rows that were not asked for.
+            // The row, and the node picked out on the drawing. A different range is a different set
+            // of changes, so the narrowing is let go rather than aimed at rows that were not asked
+            // for. The node is kept because the drawing keeps it picked out without saying so again,
+            // and a table that forgot it would have nothing to narrow to when asked.
             keptRow = mutationListPresenter.getSelectionModel().getSelected();
             keptFilter = null;
-            keptNode = null;
+            keptNode = pathwayTreePresenter.getSelectionModel().getSelectedObject();
             showOver(e.getValue());
         }));
 
