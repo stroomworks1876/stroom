@@ -95,6 +95,8 @@ public class TraceOverviewWidget extends Composite implements TaskMonitorFactory
     private NanoDuration windowEnd = NanoDuration.ZERO;
     private boolean resizingPanel;
     private int spanInfoWidth = 340;
+    private boolean resizingOperations;
+    private int operationsWidth = 400;
 
     // ---- Large-trace (paged) mode ----------------------------------------------------------------
     // A trace too large to load whole is shown from a TraceRoot (extents + total count) with the detail
@@ -109,6 +111,7 @@ public class TraceOverviewWidget extends Composite implements TaskMonitorFactory
     // vertically compressed to fill the strip so none are clipped.
     private static final int SPAN_INFO_MIN_WIDTH = 240;
     private static final int WATERFALL_MIN_WIDTH = 240;
+    private static final int OPERATIONS_MIN_WIDTH = 150;
     private static final int OVERVIEW_STRIP_PX = 40;
     private static final int OVERVIEW_ROW_PX = 3;   // fixed row stride when the set fits
     private static final int OVERVIEW_BAR_PX = 2;   // bar height at the fixed stride
@@ -247,6 +250,11 @@ public class TraceOverviewWidget extends Composite implements TaskMonitorFactory
                 capture();
                 resizingPanel = true;
 
+            } else if ("operationsResize".equals(element.getId())) {
+                startX = e.getClientX();
+                capture();
+                resizingOperations = true;
+
             } else {
                 // An expander click toggles that span's open/closed state (checked before the generic
                 // span-row click so it doesn't also open the Span Info panel).
@@ -275,6 +283,7 @@ public class TraceOverviewWidget extends Composite implements TaskMonitorFactory
             resizingStart = false;
             resizingEnd = false;
             resizingPanel = false;
+            resizingOperations = false;
         });
         panel.addMouseMoveHandler(e -> {
             if (resizingPanel) {
@@ -284,6 +293,17 @@ public class TraceOverviewWidget extends Composite implements TaskMonitorFactory
                 final int max = Math.max(SPAN_INFO_MIN_WIDTH,
                         panel.getElement().getClientWidth() - WATERFALL_MIN_WIDTH);
                 spanInfoWidth = Math.max(SPAN_INFO_MIN_WIDTH, Math.min(max, spanInfoWidth + delta));
+                refresh();
+                return;
+            }
+            if (resizingOperations) {
+                final int delta = e.getClientX() - startX;
+                startX = e.getClientX();
+                final Element operations = ElementUtil.findChild(panel.getElement(), "service-operations");
+                final int max = operations == null
+                        ? operationsWidth
+                        : Math.max(OPERATIONS_MIN_WIDTH, operations.getClientWidth() - WATERFALL_MIN_WIDTH);
+                operationsWidth = Math.max(OPERATIONS_MIN_WIDTH, Math.min(max, operationsWidth + delta));
                 refresh();
                 return;
             }
@@ -825,13 +845,20 @@ public class TraceOverviewWidget extends Composite implements TaskMonitorFactory
             appendGridLines(div);
             appendSectionHeader(div);
             appendOperationList(div);
+            // Right-edge drag handle for resizing the service and operation column.
+            div.div("",
+                    Attribute.className("operations-resize"),
+                    Attribute.id("operationsResize"),
+                    Attribute.style("left: " + (operationsWidth - 2) + "px;"));
 
         }, Attribute.className("service-operations"));
     }
 
     private void appendGridLines(final HtmlBuilder hb) {
         final String style = computeGridStyle(windowStart.getNanos(), windowEnd.subtract(windowStart).getNanos());
-        hb.div("", Attribute.className("grid-lines"), Attribute.style(style));
+        hb.div("",
+                Attribute.className("grid-lines"),
+                Attribute.style("left: " + operationsWidth + "px;" + style));
     }
 
     private String computeGridStyle(final long start,
@@ -1027,7 +1054,7 @@ public class TraceOverviewWidget extends Composite implements TaskMonitorFactory
             nameHtml.span(name, Attribute.className("operation-name"), Attribute.title(name));
             CopyTextUtil.render(name, nameHtml.toSafeHtml(), c, false);
         }, Attribute.className("operation-content"),
-                Attribute.style("padding-left: " + (depth * 30) + "px;"));
+                Attribute.style("width: " + operationsWidth + "px; padding-left: " + (depth * 30) + "px;"));
     }
 
     // The expander cell: a clickable +/- for a span with children (▾ open, ▸ collapsed), or a leaf spacer

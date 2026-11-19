@@ -329,7 +329,7 @@
 .grid-lines {
     position: absolute;
     top: 0;
-    left: 400px;
+    left: 400px;              /* base; overridden by an inline left when the column is resized */
     right: 50px;
     bottom: 0;
     background-image:
@@ -440,6 +440,20 @@
     background-color: rgba(255, 140, 66, 0.4);
 }
 
+/* Drag handle on the right edge of the service and operation column; its left is set inline. */
+.operations-resize {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    width: 5px;
+    cursor: ew-resize;
+    z-index: 1;
+}
+
+.operations-resize:hover {
+    background-color: rgba(255, 140, 66, 0.4);
+}
+
 .span-info-header {
     flex: 0 0 auto;
     position: relative;       /* anchors the absolutely-positioned close button */
@@ -528,7 +542,7 @@
 .operation-content {
     display: flex;
     align-items: center;
-    width: 400px;
+    width: 400px;             /* base; overridden by an inline width when resized */
     position: relative;
     flex-shrink: 0;
 }
