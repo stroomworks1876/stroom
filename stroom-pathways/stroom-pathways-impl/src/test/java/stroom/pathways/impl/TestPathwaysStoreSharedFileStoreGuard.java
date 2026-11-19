@@ -161,14 +161,16 @@ class TestPathwaysStoreSharedFileStoreGuard {
 
         // Running as root defeats permission removal, so there would be nothing to observe.
         Assumptions.assumeThat(System.getProperty("user.name")).isNotEqualTo("root");
-        unreadable.toFile().setReadable(false, false);
+        // Execute, not read: looking a name up inside a directory needs execute permission on it, so
+        // without it the check fails with "Permission denied" rather than answering "not there".
+        unreadable.toFile().setExecutable(false, false);
         try {
             when(store.readDocument(any())).thenReturn(doc(4, unreadable));
 
             assertThatThrownBy(() -> storeImpl.writeDocument(doc(8, unreadable)))
                     .isInstanceOf(EntityServiceException.class);
         } finally {
-            unreadable.toFile().setReadable(true, true);
+            unreadable.toFile().setExecutable(true, true);
         }
     }
 
