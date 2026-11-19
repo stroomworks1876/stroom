@@ -152,7 +152,7 @@ public class MutationCounts {
         private Map<String, NodeChange> counted() {
             final Map<String, NodeChange> counted = new HashMap<>();
             traces.forEach((key, traceIds) ->
-                    counted.put(key, new NodeChange(traceIds.size(), times.get(key))));
+                    counted.put(key, new NodeChange((long) traceIds.size(), times.get(key))));
             return counted;
         }
     }

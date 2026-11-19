@@ -611,7 +611,7 @@ public class ShardedPathwayReader {
         final List<HistoryBar> bars = new ArrayList<>(CHANGE_BARS);
         for (int i = 0; i < CHANGE_BARS; i++) {
             final long start = first + ((long) i * width);
-            bars.add(new HistoryBar(start, (start + width) - 1, counted.get(i).size(), false));
+            bars.add(new HistoryBar(start, (start + width) - 1, (long) counted.get(i).size(), false));
         }
         return bars;
     }

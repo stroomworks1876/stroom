@@ -52,14 +52,14 @@ public class HistoryBar {
     private final boolean wholeDay;
 
     @JsonCreator
-    public HistoryBar(@JsonProperty("fromMs") final long fromMs,
-                      @JsonProperty("toMs") final long toMs,
-                      @JsonProperty("count") final long count,
-                      @JsonProperty("wholeDay") final boolean wholeDay) {
-        this.fromMs = fromMs;
-        this.toMs = toMs;
-        this.count = count;
-        this.wholeDay = wholeDay;
+    public HistoryBar(@JsonProperty("fromMs") final Long fromMs,
+                      @JsonProperty("toMs") final Long toMs,
+                      @JsonProperty("count") final Long count,
+                      @JsonProperty("wholeDay") final Boolean wholeDay) {
+        this.fromMs = Objects.requireNonNullElse(fromMs, 0L);
+        this.toMs = Objects.requireNonNullElse(toMs, 0L);
+        this.count = Objects.requireNonNullElse(count, 0L);
+        this.wholeDay = Objects.requireNonNullElse(wholeDay, false);
     }
 
     public long getFromMs() {

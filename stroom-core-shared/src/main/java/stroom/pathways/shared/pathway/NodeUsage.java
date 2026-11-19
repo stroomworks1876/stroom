@@ -40,10 +40,10 @@ public class NodeUsage {
 
     @JsonCreator
     public NodeUsage(@JsonProperty("nodeUuid") final String nodeUuid,
-                     @JsonProperty("timesUsed") final long timesUsed,
+                     @JsonProperty("timesUsed") final Long timesUsed,
                      @JsonProperty("lastUsedTime") final NanoTime lastUsedTime) {
         this.nodeUuid = nodeUuid;
-        this.timesUsed = timesUsed;
+        this.timesUsed = Objects.requireNonNullElse(timesUsed, 0L);
         this.lastUsedTime = lastUsedTime;
     }
 

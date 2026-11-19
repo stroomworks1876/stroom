@@ -22,6 +22,7 @@ import com.fasterxml.jackson.annotation.JsonInclude.Include;
 import com.fasterxml.jackson.annotation.JsonProperty;
 
 import java.util.List;
+import java.util.Objects;
 
 /**
  * How much every node of a pathway had been used at one point in its history.
@@ -43,9 +44,9 @@ public class PathwayUsage {
     private final List<NodeUsage> nodes;
 
     @JsonCreator
-    public PathwayUsage(@JsonProperty("sequence") final long sequence,
+    public PathwayUsage(@JsonProperty("sequence") final Long sequence,
                         @JsonProperty("nodes") final List<NodeUsage> nodes) {
-        this.sequence = sequence;
+        this.sequence = Objects.requireNonNullElse(sequence, 0L);
         this.nodes = nodes;
     }
 

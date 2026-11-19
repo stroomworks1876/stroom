@@ -19,6 +19,7 @@ package stroom.pathways.shared.pathway;
 import stroom.pathways.shared.otel.trace.NanoTime;
 
 import com.fasterxml.jackson.annotation.JsonCreator;
+import com.fasterxml.jackson.annotation.JsonIgnore;
 import com.fasterxml.jackson.annotation.JsonInclude;
 import com.fasterxml.jackson.annotation.JsonInclude.Include;
 import com.fasterxml.jackson.annotation.JsonProperty;
@@ -66,6 +67,7 @@ public class PathwayMutation implements HistoryRow {
      * beside the applied time rather than instead of it: the list is ordered by the order things were
      * learnt, and replay depends on that order, so what a row shows has to stay the applied time.
      */
+    @JsonProperty
     private final NanoTime traceTime;
     /**
      * Which trace store the trace came from, as a position in the source list on {@link Paths}, or
@@ -106,30 +108,30 @@ public class PathwayMutation implements HistoryRow {
     private final ConstraintValue newValue;
 
     @JsonCreator
-    public PathwayMutation(@JsonProperty("sequence") final long sequence,
+    public PathwayMutation(@JsonProperty("sequence") final Long sequence,
                            @JsonProperty("time") final NanoTime time,
                            @JsonProperty("traceTime") final NanoTime traceTime,
-                           @JsonProperty("source") final int source,
+                           @JsonProperty("source") final Integer source,
                            @JsonProperty("traceId") final String traceId,
                            @JsonProperty("spanId") final String spanId,
                            @JsonProperty("nodePath") final List<String> nodePath,
                            @JsonProperty("nodeUuid") final String nodeUuid,
                            @JsonProperty("constraint") final String constraint,
                            @JsonProperty("type") final MutationType type,
-                           @JsonProperty("optional") final boolean optional,
+                           @JsonProperty("optional") final Boolean optional,
                            @JsonProperty("oldValue") final ConstraintValue oldValue,
                            @JsonProperty("newValue") final ConstraintValue newValue) {
-        this.sequence = sequence;
+        this.sequence = Objects.requireNonNullElse(sequence, 0L);
         this.nodeUuid = nodeUuid;
         this.time = time;
         this.traceTime = traceTime;
-        this.source = source;
+        this.source = Objects.requireNonNullElse(source, 0);
         this.traceId = traceId;
         this.spanId = spanId;
         this.nodePath = nodePath;
         this.constraint = constraint;
         this.type = type;
-        this.optional = optional;
+        this.optional = Objects.requireNonNullElse(optional, false);
         this.oldValue = oldValue;
         this.newValue = newValue;
     }
@@ -253,6 +255,7 @@ public class PathwayMutation implements HistoryRow {
     }
 
 
+    @JsonIgnore
     @Override
     public String getTypeDisplayValue() {
         return type == null

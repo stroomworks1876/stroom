@@ -29,6 +29,7 @@ import com.fasterxml.jackson.annotation.JsonProperty;
 
 import java.util.Collections;
 import java.util.Map;
+import java.util.Objects;
 
 /**
  * One pathway as it stood at one moment, with everything a drawing of it needs.
@@ -87,11 +88,11 @@ public class PathwayAsAt {
                        @JsonProperty("changes") final Map<String, NodeChange> changes,
                        @JsonProperty("usage") final Map<String, NodeUsage> usage,
                        @JsonProperty("asAt") final NanoTime asAt,
-                       @JsonProperty("changeCeiling") final long changeCeiling,
-                       @JsonProperty("usageCeiling") final long usageCeiling,
-                       @JsonProperty("folded") final boolean folded,
+                       @JsonProperty("changeCeiling") final Long changeCeiling,
+                       @JsonProperty("usageCeiling") final Long usageCeiling,
+                       @JsonProperty("folded") final Boolean folded,
                        @JsonProperty("layout") final PathNode layout) {
-        this.folded = folded;
+        this.folded = Objects.requireNonNullElse(folded, false);
         this.layout = layout;
         this.pathway = pathway;
         this.changes = changes == null
@@ -101,8 +102,8 @@ public class PathwayAsAt {
                 ? Collections.emptyMap()
                 : usage;
         this.asAt = asAt;
-        this.changeCeiling = changeCeiling;
-        this.usageCeiling = usageCeiling;
+        this.changeCeiling = Objects.requireNonNullElse(changeCeiling, 0L);
+        this.usageCeiling = Objects.requireNonNullElse(usageCeiling, 0L);
     }
 
     /**

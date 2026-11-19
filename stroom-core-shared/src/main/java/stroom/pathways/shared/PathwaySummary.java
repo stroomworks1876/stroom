@@ -72,20 +72,20 @@ public class PathwaySummary {
                           @JsonProperty("createTime") final NanoTime createTime,
                           @JsonProperty("updateTime") final NanoTime updateTime,
                           @JsonProperty("lastUsedTime") final NanoTime lastUsedTime,
-                          @JsonProperty("timesUsed") final long timesUsed,
-                          @JsonProperty("timesUpdated") final long timesUpdated,
-                          @JsonProperty("nodes") final int nodes,
-                          @JsonProperty("paths") final int paths,
-                          @JsonProperty("sizeBytes") final long sizeBytes) {
+                          @JsonProperty("timesUsed") final Long timesUsed,
+                          @JsonProperty("timesUpdated") final Long timesUpdated,
+                          @JsonProperty("nodes") final Integer nodes,
+                          @JsonProperty("paths") final Integer paths,
+                          @JsonProperty("sizeBytes") final Long sizeBytes) {
         this.name = name;
         this.createTime = createTime;
         this.updateTime = updateTime;
         this.lastUsedTime = lastUsedTime;
-        this.timesUsed = timesUsed;
-        this.timesUpdated = timesUpdated;
-        this.nodes = nodes;
-        this.paths = paths;
-        this.sizeBytes = sizeBytes;
+        this.timesUsed = Objects.requireNonNullElse(timesUsed, 0L);
+        this.timesUpdated = Objects.requireNonNullElse(timesUpdated, 0L);
+        this.nodes = Objects.requireNonNullElse(nodes, 0);
+        this.paths = Objects.requireNonNullElse(paths, 0);
+        this.sizeBytes = Objects.requireNonNullElse(sizeBytes, 0L);
     }
 
     public String getName() {

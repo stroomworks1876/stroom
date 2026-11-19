@@ -53,8 +53,8 @@ public class Pathway {
                    @JsonProperty("createTime") final NanoTime createTime,
                    @JsonProperty("updateTime") final NanoTime updateTime,
                    @JsonProperty("lastUsedTime") final NanoTime lastUsedTime,
-                   @JsonProperty("timesUsed") final long timesUsed,
-                   @JsonProperty("timesUpdated") final long timesUpdated,
+                   @JsonProperty("timesUsed") final Long timesUsed,
+                   @JsonProperty("timesUpdated") final Long timesUpdated,
                    @JsonProperty("pathKey") final PathKey pathKey,
                    @JsonProperty("root") final PathNode root,
                    @JsonProperty("paths") final Paths paths) {
@@ -62,8 +62,8 @@ public class Pathway {
         this.createTime = createTime;
         this.updateTime = updateTime;
         this.lastUsedTime = lastUsedTime;
-        this.timesUsed = timesUsed;
-        this.timesUpdated = timesUpdated;
+        this.timesUsed = Objects.requireNonNullElse(timesUsed, 0L);
+        this.timesUpdated = Objects.requireNonNullElse(timesUpdated, 0L);
         this.pathKey = pathKey;
         this.root = root;
         this.paths = paths == null

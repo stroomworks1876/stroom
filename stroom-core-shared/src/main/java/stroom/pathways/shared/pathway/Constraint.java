@@ -44,12 +44,12 @@ public class Constraint {
     public Constraint(@JsonProperty("name") final String name,
                       @JsonProperty("value") final ConstraintValue value,
                       @JsonProperty("optional") final Boolean optional,
-                      @JsonProperty("timesUsed") final long timesUsed,
+                      @JsonProperty("timesUsed") final Long timesUsed,
                       @JsonProperty("lastUsedTime") final NanoTime lastUsedTime) {
         this.name = name;
         this.value = value;
         this.optional = Objects.requireNonNullElse(optional, false);
-        this.timesUsed = timesUsed;
+        this.timesUsed = Objects.requireNonNullElse(timesUsed, 0L);
         this.lastUsedTime = lastUsedTime;
     }
 

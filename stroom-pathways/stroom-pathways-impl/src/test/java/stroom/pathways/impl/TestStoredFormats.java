@@ -336,7 +336,7 @@ class TestStoredFormats {
                                 new PathStep(0, List.of(0, 1))),
                         List.of(new PathUse(
                                 2,
-                                19,
+                                19L,
                                 NanoTime.ofMillis(4),
                                 NanoTime.ofMillis(5),
                                 "0a0b0c0d",

@@ -20,6 +20,7 @@ import stroom.pathways.shared.otel.trace.NanoTime;
 import stroom.util.shared.AbstractBuilder;
 
 import com.fasterxml.jackson.annotation.JsonCreator;
+import com.fasterxml.jackson.annotation.JsonIgnore;
 import com.fasterxml.jackson.annotation.JsonInclude;
 import com.fasterxml.jackson.annotation.JsonInclude.Include;
 import com.fasterxml.jackson.annotation.JsonProperty;
@@ -70,8 +71,8 @@ public class PathNode {
                     @JsonProperty("nodePath") final List<String> nodePath,
                     @JsonProperty("children") final List<PathNode> children,
                     @JsonProperty("constraints") final Map<String, Constraint> constraints,
-                    @JsonProperty("timesUsed") final long timesUsed,
-                    @JsonProperty("timesChanged") final long timesChanged,
+                    @JsonProperty("timesUsed") final Long timesUsed,
+                    @JsonProperty("timesChanged") final Long timesChanged,
                     @JsonProperty("lastUsedTime") final NanoTime lastUsedTime,
                     @JsonProperty("lastChangedTime") final NanoTime lastChangedTime,
                     @JsonProperty("retiredTime") final NanoTime retiredTime) {
@@ -82,8 +83,8 @@ public class PathNode {
                 ? new ArrayList<>()
                 : new ArrayList<>(children);
         this.constraints = constraints;
-        this.timesUsed = timesUsed;
-        this.timesChanged = timesChanged;
+        this.timesUsed = Objects.requireNonNullElse(timesUsed, 0L);
+        this.timesChanged = Objects.requireNonNullElse(timesChanged, 0L);
         this.lastUsedTime = lastUsedTime;
         this.lastChangedTime = lastChangedTime;
         this.retiredTime = retiredTime;
@@ -181,6 +182,7 @@ public class PathNode {
     }
 
     /** Whether no trace within the document's narrowing window has carried this node. */
+    @JsonIgnore
     public boolean isRetired() {
         return retiredTime != null;
     }

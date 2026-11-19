@@ -56,6 +56,7 @@ public class PathUse {
      * When the trace that first took this path actually ran, as against {@link #firstUsedTime}, which
      * is when the model learnt from it. The two differ by however long the trace waited to be applied.
      */
+    @JsonProperty
     private final NanoTime traceTime;
     /**
      * When the newest trace to take this path ran, as against {@link #lastUsedTime}, which is when the
@@ -75,22 +76,22 @@ public class PathUse {
     private final int source;
 
     @JsonCreator
-    public PathUse(@JsonProperty("root") final int root,
-                    @JsonProperty("timesUsed") final long timesUsed,
+    public PathUse(@JsonProperty("root") final Integer root,
+                    @JsonProperty("timesUsed") final Long timesUsed,
                     @JsonProperty("firstUsedTime") final NanoTime firstUsedTime,
                     @JsonProperty("lastUsedTime") final NanoTime lastUsedTime,
                     @JsonProperty("createdByTraceId") final String createdByTraceId,
                    @JsonProperty("traceTime") final NanoTime traceTime,
                    @JsonProperty("lastTraceTime") final NanoTime lastTraceTime,
-                   @JsonProperty("source") final int source) {
-        this.root = root;
-        this.timesUsed = timesUsed;
+                   @JsonProperty("source") final Integer source) {
+        this.root = Objects.requireNonNullElse(root, 0);
+        this.timesUsed = Objects.requireNonNullElse(timesUsed, 0L);
         this.firstUsedTime = firstUsedTime;
         this.lastUsedTime = lastUsedTime;
         this.createdByTraceId = createdByTraceId;
         this.traceTime = traceTime;
         this.lastTraceTime = lastTraceTime;
-        this.source = source;
+        this.source = Objects.requireNonNullElse(source, 0);
     }
 
     /**

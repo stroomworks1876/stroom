@@ -82,9 +82,9 @@ public class PathStep {
 
 
     @JsonCreator
-    public PathStep(@JsonProperty("node") final int node,
+    public PathStep(@JsonProperty("node") final Integer node,
                      @JsonProperty("steps") final List<Integer> steps) {
-        this.node = node;
+        this.node = Objects.requireNonNullElse(node, 0);
         this.steps = steps == null
                 ? Collections.emptyList()
                 : new ArrayList<>(steps);

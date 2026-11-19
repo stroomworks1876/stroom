@@ -19,6 +19,7 @@ package stroom.pathways.shared.pathway;
 import stroom.pathways.shared.otel.trace.NanoTime;
 
 import com.fasterxml.jackson.annotation.JsonCreator;
+import com.fasterxml.jackson.annotation.JsonIgnore;
 import com.fasterxml.jackson.annotation.JsonInclude;
 import com.fasterxml.jackson.annotation.JsonInclude.Include;
 import com.fasterxml.jackson.annotation.JsonProperty;
@@ -76,7 +77,7 @@ public class PathwayDifference implements HistoryRow {
      *                  and over a day those are usually but not always the same trace
      */
     @JsonCreator
-    public PathwayDifference(@JsonProperty("day") final int day,
+    public PathwayDifference(@JsonProperty("day") final Integer day,
                              @JsonProperty("nodePath") final List<String> nodePath,
                              @JsonProperty("nodeUuid") final String nodeUuid,
                              @JsonProperty("constraint") final String constraint,
@@ -86,7 +87,7 @@ public class PathwayDifference implements HistoryRow {
                              @JsonProperty("traceId") final String traceId,
                              @JsonProperty("spanId") final String spanId,
                              @JsonProperty("ranAt") final NanoTime ranAt) {
-        this.day = day;
+        this.day = Objects.requireNonNullElse(day, 0);
         this.nodePath = nodePath;
         this.nodeUuid = nodeUuid;
         this.constraint = constraint;
@@ -117,6 +118,7 @@ public class PathwayDifference implements HistoryRow {
         return constraint;
     }
 
+    @JsonIgnore
     @Override
     public String getTypeDisplayValue() {
         return type == null

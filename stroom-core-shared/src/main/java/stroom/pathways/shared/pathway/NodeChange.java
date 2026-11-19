@@ -23,6 +23,8 @@ import com.fasterxml.jackson.annotation.JsonInclude;
 import com.fasterxml.jackson.annotation.JsonInclude.Include;
 import com.fasterxml.jackson.annotation.JsonProperty;
 
+import java.util.Objects;
+
 /**
  * How many traces have changed one node, and when it last changed, worked out from the stored changes.
  *
@@ -42,9 +44,9 @@ public class NodeChange {
     private final NanoTime lastUpdated;
 
     @JsonCreator
-    public NodeChange(@JsonProperty("count") final long count,
+    public NodeChange(@JsonProperty("count") final Long count,
                       @JsonProperty("lastUpdated") final NanoTime lastUpdated) {
-        this.count = count;
+        this.count = Objects.requireNonNullElse(count, 0L);
         this.lastUpdated = lastUpdated;
     }
 
