@@ -47,7 +47,7 @@ public class PathwaysSettingsViewImpl
         extends ViewWithUiHandlers<PathwaysSettingsUiHandlers>
         implements PathwaysSettingsView, ReadOnlyChangeHandler {
 
-    private static final SimpleDuration DEFAULT_NARROWING_WINDOW = new SimpleDuration(7, TimeUnit.DAYS);
+    private static final SimpleDuration DEFAULT_NARROWING_WINDOW = new SimpleDuration(7L, TimeUnit.DAYS);
 
     private final Widget widget;
     private final SharedFileStoreSettingsWidget sharedFileStoreWidget;
@@ -75,7 +75,7 @@ public class PathwaysSettingsViewImpl
         sharedFileStoreWidget.setUiHandlers(this::fireChange);
         sharedFileStore.setWidget(sharedFileStoreWidget.asWidget());
         temporalOrderingTolerance.smallTimeMode();
-        temporalOrderingTolerance.setValue(new SimpleDuration(0, TimeUnit.NANOSECONDS));
+        temporalOrderingTolerance.setValue(new SimpleDuration(0L, TimeUnit.NANOSECONDS));
         // Counted in whole days whatever is typed, so the form offers nothing finer.
         narrowingWindow.wholeDaysMode();
         narrowingWindow.setValue(DEFAULT_NARROWING_WINDOW);
@@ -109,7 +109,7 @@ public class PathwaysSettingsViewImpl
             return DEFAULT_NARROWING_WINDOW;
         }
         return window.getTimeUnit().getPrimitiveValue() < TimeUnit.DAYS.getPrimitiveValue()
-                ? new SimpleDuration(1, TimeUnit.DAYS)
+                ? new SimpleDuration(1L, TimeUnit.DAYS)
                 : window;
     }
 
@@ -121,7 +121,7 @@ public class PathwaysSettingsViewImpl
     @Override
     public void setTemporalOrderingTolerance(final SimpleDuration temporalOrderingTolerance) {
         if (temporalOrderingTolerance == null) {
-            this.temporalOrderingTolerance.setValue(new SimpleDuration(0, TimeUnit.NANOSECONDS));
+            this.temporalOrderingTolerance.setValue(new SimpleDuration(0L, TimeUnit.NANOSECONDS));
         } else {
             this.temporalOrderingTolerance.setValue(temporalOrderingTolerance);
         }

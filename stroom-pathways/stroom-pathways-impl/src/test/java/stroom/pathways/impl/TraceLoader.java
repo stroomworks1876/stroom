@@ -54,7 +54,6 @@ import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
-import java.util.Comparator;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -160,7 +159,7 @@ public class TraceLoader {
     private Map<PathKey, PathNode> buildPathways(final Collection<Trace> traces,
                                                  final MessageReceiver messageReceiver) {
         final CanonicalSpanOrder spanOrder = new CanonicalSpanOrder(PATHWAYS_DOC.copy()
-                .temporalOrderingTolerance(new SimpleDuration(10, TimeUnit.MILLISECONDS))
+                .temporalOrderingTolerance(new SimpleDuration(10L, TimeUnit.MILLISECONDS))
                 .build());
         final PathKeyFactory pathKeyFactory = new PathKeyFactoryImpl();
         final NodeMutatorImpl traceProcessor = new NodeMutatorImpl(spanOrder, NO_IGNORED, new IgnoredSpans(List.of()));
