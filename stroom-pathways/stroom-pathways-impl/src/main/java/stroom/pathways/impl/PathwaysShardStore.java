@@ -43,7 +43,6 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.function.Consumer;
 import java.util.function.Function;
 import java.util.function.Predicate;
 import java.util.stream.Stream;
@@ -205,21 +204,22 @@ public class PathwaysShardStore {
     }
 
     /**
-     * Merges records into one week's bucket and publishes it.
+     * Changes one week's bucket and publishes it, if the change says it altered anything.
      *
      * <p>The bucket already there is copied down first, so what is written unions with it rather than
      * replacing it: late records keep arriving for an old week, and a bucket rewritten from one batch
      * would lose every batch before it.
      *
-     * <p>Nothing opens an environment on the shared store. The merge runs against a local copy and
-     * only the finished file goes back up.
+     * <p>Nothing opens an environment on the shared store. The work runs against a local copy and
+     * only the finished file goes back up. A bucket the work did not change is not published, because
+     * publishing moves the whole compressed week.
      *
-     * @param work given a database open on the local copy, adds what is being archived to it.
+     * @param work given a database open on the local copy, changes it and returns whether it did.
      */
     public void withBucket(final PathwaysDoc doc,
                            final int shardIndex,
                            final String dateLabel,
-                           final Consumer<PathwaysDb> work) throws IOException {
+                           final Predicate<PathwaysDb> work) throws IOException {
         final SharedFileStoreSettings settings = doc.getSharedFileStore();
         if (settings == null) {
             throw new IOException("Pathways document " + doc.getName() + " names no shared file store");
@@ -232,8 +232,12 @@ public class PathwaysShardStore {
         Files.createDirectories(localDir);
         try {
             bucketData.copyDown(bucketDir, localDir.resolve(PlanBConstants.DATA_FILE_NAME));
+            final boolean changed;
             try (final PathwaysDb db = PathwaysDb.create(localDir, byteBuffers, false)) {
-                work.accept(db);
+                changed = work.test(db);
+            }
+            if (!changed) {
+                return;
             }
             // The archive layout is a data file and a version, nothing else. The lock file LMDB made
             // locally is recreated on the next open.

@@ -142,12 +142,13 @@ class TestPathwayBuckets {
         return found;
     }
 
-    private static void put(final PathwaysDb db, final Map<String, String> records) {
+    private static boolean put(final PathwaysDb db, final Map<String, String> records) {
         try (final LmdbWriter writer = db.createWriter()) {
             records.forEach((key, value) ->
                     db.getObservedValues().insert(writer, bytes(key), bytes(value)));
             writer.commit();
         }
+        return true;
     }
 
     private static ByteBuffer bytes(final String text) {

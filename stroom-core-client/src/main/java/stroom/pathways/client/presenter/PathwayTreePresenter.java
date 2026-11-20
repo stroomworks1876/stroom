@@ -545,9 +545,12 @@ public class PathwayTreePresenter
 
         // Where the nodes go. A model with nodes missing from it - wound back, or folded out of day
         // records - is laid out from the tree the server sends with it, so that what is left stays
-        // where it was. A whole model is its own layout and the server sends none.
-        this.layout = NullSafe.getOrElse(asAt, PathwayAsAt::getLayout,
-                NullSafe.get(asAt, PathwayAsAt::getPathway, Pathway::getRoot));
+        // where it was. A whole model is its own layout and the server sends none. With nothing
+        // selected there is no model, so there is no layout either.
+        final PathNode sent = NullSafe.get(asAt, PathwayAsAt::getLayout);
+        this.layout = sent != null
+                ? sent
+                : NullSafe.get(asAt, PathwayAsAt::getPathway, Pathway::getRoot);
 
         // The moment the drawing describes, which the server states on every answer. How long ago a
         // node changed is measured from here, so winding back an hour does not age every node by an

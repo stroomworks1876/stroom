@@ -80,6 +80,7 @@ public class BucketArchiver {
                         put(writer, db.getMutations(), logRows);
                         writer.commit();
                     }
+                    return true;
                 });
             } catch (final IOException e) {
                 throw new UncheckedIOException(e);
@@ -108,6 +109,7 @@ public class BucketArchiver {
                 days.forEach((key, seen) -> fold(writer, db, key.bytes(), seen));
                 writer.commit();
             }
+            return true;
         });
     }
 
