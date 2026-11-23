@@ -18,6 +18,7 @@ package stroom.pathways.impl;
 
 import stroom.bytebuffer.impl6.ByteBuffers;
 import stroom.cluster.lock.api.ClusterLockService;
+import stroom.docref.DocRef;
 import stroom.docstore.api.DocumentNotFoundException;
 import stroom.pathways.shared.AddPathway;
 import stroom.pathways.shared.DeletePathway;
@@ -28,15 +29,28 @@ import stroom.pathways.shared.PathwayAsAt;
 import stroom.pathways.shared.PathwayMutationResultPage;
 import stroom.pathways.shared.PathwayResultPage;
 import stroom.pathways.shared.PathwaysDoc;
+import stroom.pathways.shared.RemoveNode;
 import stroom.pathways.shared.UpdatePathway;
+import stroom.pathways.shared.otel.trace.NanoTime;
+import stroom.pathways.shared.pathway.MutationType;
+import stroom.pathways.shared.pathway.PathNode;
+import stroom.pathways.shared.pathway.PathStep;
+import stroom.pathways.shared.pathway.PathUse;
+import stroom.pathways.shared.pathway.Paths;
+import stroom.pathways.shared.pathway.Pathway;
+import stroom.pathways.shared.pathway.PathwayMutation;
 import stroom.planb.impl.dao.LmdbWriter;
 import stroom.planb.impl.dao.ShardKeyRouter;
+import stroom.planb.impl.dao.trace.NanoTimeUtil;
 import stroom.planb.impl.dao.trace.PathwaysDb;
 import stroom.planb.shared.SharedFileStoreSettings;
+import stroom.security.api.SecurityContext;
+import stroom.security.shared.DocumentPermission;
 import stroom.util.logging.LambdaLogger;
 import stroom.util.logging.LambdaLoggerFactory;
 import stroom.util.logging.LogUtil;
 import stroom.util.shared.NullSafe;
+import stroom.util.shared.PermissionException;
 
 import jakarta.inject.Inject;
 import jakarta.inject.Singleton;
@@ -46,6 +60,13 @@ import java.io.UncheckedIOException;
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
+import java.time.Instant;
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Consumer;
 
@@ -60,6 +81,8 @@ public class PathwaysService {
     private final ClusterLockService clusterLockService;
     private final ByteBuffers byteBuffers;
     private final MutationLog mutationLog;
+    private final PathwaySerde pathwaySerde;
+    private final SecurityContext securityContext;
 
     @Inject
     public PathwaysService(final ShardedPathwayReader shardedPathwayReader,
@@ -67,13 +90,17 @@ public class PathwaysService {
                            final PathwaysShardStore shardStore,
                            final ClusterLockService clusterLockService,
                            final ByteBuffers byteBuffers,
-                           final MutationLog mutationLog) {
+                           final MutationLog mutationLog,
+                           final PathwaySerde pathwaySerde,
+                           final SecurityContext securityContext) {
         this.shardedPathwayReader = shardedPathwayReader;
         this.pathwaysStore = pathwaysStore;
         this.shardStore = shardStore;
         this.clusterLockService = clusterLockService;
         this.byteBuffers = byteBuffers;
         this.mutationLog = mutationLog;
+        this.pathwaySerde = pathwaySerde;
+        this.securityContext = securityContext;
     }
 
     public PathwayResultPage findPathways(final FindPathwayCriteria criteria) {
@@ -147,6 +174,7 @@ public class PathwaysService {
         if (doc == null) {
             throw new DocumentNotFoundException(deletePathway.getDocRef());
         }
+        checkEdit(doc);
         final String name = deletePathway.getName();
         final SharedFileStoreSettings settings = doc.getSharedFileStore();
         if (settings == null
@@ -170,6 +198,15 @@ public class PathwaysService {
             }
         });
         return removed.get();
+    }
+
+    private void checkEdit(final PathwaysDoc doc) {
+        final DocRef docRef = doc.asDocRef();
+        if (!securityContext.hasDocumentPermission(docRef, DocumentPermission.EDIT)) {
+            throw new PermissionException(
+                    securityContext.getUserRef(),
+                    LogUtil.message("You are not authorised to change {}", docRef));
+        }
     }
 
     // Everything the live shard holds about this pathway: what it learnt and all of its history. Said
@@ -207,6 +244,204 @@ public class PathwaysService {
             }
             return history > 0;
         }
+    }
+
+    /**
+     * Removes one node of a learnt pathway, and everything under it, until a trace carries it again.
+     *
+     * <p>Each node is retired and its constraints are wiped, with a change row for each, so that the
+     * model shown for an earlier moment still has the node as it was. The next trace to carry a node
+     * revives it and learns its constraints again from what that trace shows. Every path that runs
+     * through a removed node is dropped.
+     *
+     * <p>Takes the same shard lock as {@link #deletePathway}. Only the live shard is changed: the
+     * week buckets hold history, which this adds to rather than rewrites.
+     *
+     * @return whether anything was removed. Never the root, because removing that is deleting the
+     * pathway, and never a node already retired, whose constraints may have been learnt since the
+     * caller last saw it.
+     */
+    public Boolean removeNode(final RemoveNode removeNode) {
+        final PathwaysDoc doc = pathwaysStore.readDocument(removeNode.getDocRef());
+        if (doc == null) {
+            throw new DocumentNotFoundException(removeNode.getDocRef());
+        }
+        checkEdit(doc);
+        final String name = removeNode.getName();
+        final String uuid = removeNode.getNodeUuid();
+        final SharedFileStoreSettings settings = doc.getSharedFileStore();
+        if (settings == null
+            || NullSafe.isBlankString(settings.getSharedPath())
+            || NullSafe.isBlankString(name)
+            || NullSafe.isBlankString(uuid)) {
+            return Boolean.FALSE;
+        }
+
+        final int shard = ShardKeyRouter.computeShardIndex(name, Math.max(1, settings.getShardCount()));
+        final byte[] pathwayKey = name.getBytes(StandardCharsets.UTF_8);
+        final AtomicBoolean removed = new AtomicBoolean();
+        clusterLockService.lock(PathwaysProcessor.lockName(doc.getUuid(), shard), () -> {
+            try {
+                shardStore.withShard(doc, shard, localDir -> {
+                    removed.set(removeFromModel(localDir, name, pathwayKey, uuid));
+                    return removed.get();
+                });
+            } catch (final IOException e) {
+                throw new UncheckedIOException(e);
+            }
+        });
+        return removed.get();
+    }
+
+    // Not private so that what it does to a shard can be tested without a cluster lock and a document
+    // store standing behind it.
+    boolean removeFromModel(final Path localDir,
+                            final String name,
+                            final byte[] pathwayKey,
+                            final String uuid) {
+        try (final PathwaysDb db = PathwaysDb.create(localDir, byteBuffers, false)) {
+            try (final LmdbWriter writer = db.createWriter()) {
+                final Pathway[] found = {null};
+                withKey(pathwayKey, key -> found[0] = db.getPathways().get(writer.getWriteTxn(), key,
+                        value -> value == null
+                                ? null
+                                : pathwaySerde.readPathway(value)));
+                final PathNode root = NullSafe.get(found[0], Pathway::getRoot);
+                if (root == null || uuid.equals(root.getUuid())) {
+                    return false;
+                }
+                // Already removed or retired, perhaps since the caller's drawing was made. Removing it
+                // again would wipe constraints it has learnt since, which the caller has not seen.
+                final PathNode target = find(root, uuid);
+                if (target == null || target.isRetired()) {
+                    return false;
+                }
+
+                final NanoTime now = NanoTimeUtil.fromInstant(Instant.now());
+                final List<PathwayMutation> mutations = new ArrayList<>();
+                final Set<String> gone = new HashSet<>();
+                PathNode newRoot = without(root, uuid, false, now, mutations, gone);
+                if (gone.isEmpty()) {
+                    return false;
+                }
+                final Paths paths = withoutPathsThrough(found[0].getPaths(), gone, root, now, mutations);
+                // A dropped path is counted against the root by the change rows, so the root says when.
+                if (paths != found[0].getPaths()) {
+                    newRoot = newRoot.copy().lastChangedTime(now).build();
+                }
+
+                final Pathway updated = found[0].copy().root(newRoot).paths(paths).build();
+                byteBuffers.useBytes(pathwayKey, (Consumer<ByteBuffer>) keyByteBuffer ->
+                        pathwaySerde.writePathway(updated, 0, valueByteBuffer ->
+                                db.getPathways().insert(writer, keyByteBuffer, valueByteBuffer)));
+                final PathwayHistory history = mutationLog.history(writer, db, pathwayKey);
+                mutationLog.append(writer, db, pathwayKey, mutations, newRoot, -1, history);
+                mutationLog.writeCounts(writer, db, pathwayKey, history);
+                writer.commit();
+                LOGGER.info(() -> LogUtil.message("Removed {} node(s) from pathway {} at {}",
+                        gone.size(), name, uuid));
+                return true;
+            }
+        }
+    }
+
+    private static PathNode find(final PathNode node, final String uuid) {
+        if (uuid.equals(node.getUuid())) {
+            return node;
+        }
+        for (final PathNode child : NullSafe.list(node.getChildren())) {
+            final PathNode found = find(child, uuid);
+            if (found != null) {
+                return found;
+            }
+        }
+        return null;
+    }
+
+    // The tree with the named node, and everything under it, retired and its constraints wiped. A node
+    // the narrowing had already retired keeps the time it was retired at and gets no removal row, so
+    // winding back past the removal leaves it retired as it was.
+    private static PathNode without(final PathNode node,
+                                    final String uuid,
+                                    final boolean inside,
+                                    final NanoTime now,
+                                    final List<PathwayMutation> mutations,
+                                    final Set<String> gone) {
+        final boolean here = inside || uuid.equals(node.getUuid());
+        final PathNode.Builder builder = node.copy();
+        if (here) {
+            gone.add(node.getUuid());
+            // The removal ahead of the constraints it wiped, so going back to that row puts them back.
+            if (!node.isRetired()) {
+                mutations.add(new PathwayMutation(0L, now, now, -1, null, null, node.getNodePath(),
+                        node.getUuid(), null, MutationType.NODE_REMOVED, false, null, null));
+                builder.retiredTime(now);
+            }
+            NullSafe.map(node.getConstraints()).forEach((name, constraint) ->
+                    mutations.add(new PathwayMutation(0L, now, now, -1, null, null, node.getNodePath(),
+                            node.getUuid(), name, MutationType.CONSTRAINT_CLEARED, constraint.isOptional(),
+                            constraint.getValue(), null)));
+            builder.constraints(new HashMap<>()).lastChangedTime(now);
+        }
+        final List<PathNode> children = new ArrayList<>();
+        NullSafe.list(node.getChildren()).forEach(child ->
+                children.add(without(child, uuid, here, now, mutations, gone)));
+        return builder.children(children).build();
+    }
+
+    // The paths with every one that runs through a removed node left out. The shapes they were built
+    // from stay where they are, as they do when the narrowing drops a path, because the paths that
+    // remain name shapes by position.
+    private static Paths withoutPathsThrough(final Paths paths,
+                                             final Set<String> gone,
+                                             final PathNode root,
+                                             final NanoTime now,
+                                             final List<PathwayMutation> mutations) {
+        if (paths == null) {
+            return null;
+        }
+        final Map<Integer, Boolean> known = new HashMap<>();
+        final List<PathUse> kept = new ArrayList<>();
+        for (final PathUse path : NullSafe.list(paths.getPaths())) {
+            if (reaches(path.getRoot(), paths, gone, known)) {
+                mutations.add(new PathwayMutation(0L, now, now, -1, null, null, root.getNodePath(),
+                        null, null, MutationType.PATH_DROPPED, false, null, null));
+            } else {
+                kept.add(path);
+            }
+        }
+        return kept.size() == NullSafe.list(paths.getPaths()).size()
+                ? paths
+                : new Paths(paths.getNodes(), paths.getSteps(), kept, paths.getSources());
+    }
+
+    // Whether a shape, or any shape under it, is a visit to a removed node. Answers are kept by shape,
+    // because paths share shapes and a pathway can hold many of them.
+    private static boolean reaches(final int shape,
+                                   final Paths paths,
+                                   final Set<String> gone,
+                                   final Map<Integer, Boolean> known) {
+        final List<PathStep> steps = NullSafe.list(paths.getSteps());
+        if (shape < 0 || shape >= steps.size()) {
+            return false;
+        }
+        final Boolean answer = known.get(shape);
+        if (answer != null) {
+            return answer;
+        }
+        final PathStep step = steps.get(shape);
+        final List<String> nodes = NullSafe.list(paths.getNodes());
+        boolean result = step.getNode() >= 0
+                         && step.getNode() < nodes.size()
+                         && gone.contains(nodes.get(step.getNode()));
+        for (final Integer child : step.getSteps()) {
+            if (result) {
+                break;
+            }
+            result = reaches(child, paths, gone, known);
+        }
+        known.put(shape, result);
+        return result;
     }
 
     // Every row about one pathway other than its model: each change and usage reading, each day's

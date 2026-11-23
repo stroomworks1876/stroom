@@ -29,6 +29,7 @@ import stroom.pathways.shared.pathway.DifferenceType;
 import stroom.pathways.shared.pathway.HistoryBar;
 import stroom.pathways.shared.pathway.HistoryRow;
 import stroom.pathways.shared.pathway.MutationCounts;
+import stroom.pathways.shared.pathway.MutationType;
 import stroom.pathways.shared.pathway.NodeChange;
 import stroom.pathways.shared.pathway.NodeUsage;
 import stroom.pathways.shared.pathway.PathNode;
@@ -281,6 +282,10 @@ public class ShardedPathwayReader {
         if (window != null) {
             mutations.removeIf(mutation -> outside(mutation, window));
         }
+        // A removal wipes every constraint of every node it takes, a row apiece, and the Node Removed
+        // row already says what happened. They are kept in the log because winding back past the
+        // removal reads them from there to put the constraints back, not from this list.
+        mutations.removeIf(mutation -> MutationType.CONSTRAINT_CLEARED.equals(mutation.getType()));
 
         final List<HistoryRow> rows = new ArrayList<>(
                 differences(doc, shard, keyBytes, found[0], window));

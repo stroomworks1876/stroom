@@ -45,16 +45,16 @@ import java.util.Set;
  * The model as a network: the operation at the centre and everything seen beneath it on rings around
  * it, one ring per level.
  *
- * <p>Says two things the tree cannot. How large a node is drawn is how much has gone through it, so a
- * node one trace reaches forty times stands out from one it reaches once. What colour it is drawn is
- * when it last changed, so the parts of the model still being learnt can be told at a glance from the
- * parts that settled long ago.
+ * <p>How large a node is drawn is how much has gone through it, so a node one trace reaches forty
+ * times stands out from one it reaches once. What colour it is drawn is when it last changed, so the
+ * parts of the model still being learnt can be told at a glance from the parts that settled long ago.
  *
- * <p>Edges are drawn in SVG behind markers drawn in HTML, the way the tree draws its curves, so the
- * element a click lands on is an HTML one — selecting puts a class on it, and that does not work on an
- * SVG element.
+ * <p>Edges are drawn in SVG behind markers drawn in HTML, so the element a click lands on is an HTML
+ * one — selecting puts a class on it, and that does not work on an SVG element. Each marker carries a
+ * {@code uuid} attribute, which is how a click and a reselection after the model is wound back find
+ * the node it stands for. The drawing is one outer element, which is what scrolls.
  */
-class PathwayGraphRenderer implements PathwayRenderer {
+class PathwayGraphRenderer {
 
     private static final int RING = 170;
     // Room outside the outermost nodes. Wider to the sides than above and below, because a name is
@@ -165,12 +165,19 @@ class PathwayGraphRenderer implements PathwayRenderer {
     /** The number inside the badge, named so whatever times the walk can write it. */
     static final String WALK_BADGE_TEXT_CLASS = "pathway-graph-walk-badge-text";
 
-    @Override
+    /**
+     * Which part of the drawing the model is in. What the view fits to the panel and centres, rather
+     * than the drawing's own size — the two part company because the drawing keeps its box while the
+     * model within it shrinks.
+     */
     public DrawnArea drawnArea() {
         return drawnArea;
     }
 
-    @Override
+    /**
+     * Brings the drawing up to date with how far it is being scaled, without drawing it again: a line
+     * thinner than a pixel is drawn faint rather than thin, and vanishes in stretches.
+     */
     public void rescale(final Element element, final double zoom) {
         final int was = minEdge;
         minEdge = minEdge(zoom);
@@ -191,30 +198,14 @@ class PathwayGraphRenderer implements PathwayRenderer {
         }
     }
 
-    @Override
-    public boolean opensCentred() {
-        // The root sits in the middle of the drawing and the rings grow out around it, so a view
-        // starting at the top left would be looking at empty space in a corner.
-        return true;
-    }
-
-    @Override
-    public boolean isPannable() {
-        return true;
-    }
-
-    @Override
-    public boolean isZoomable() {
-        return true;
-    }
-
-    @Override
-    public boolean usesHistory() {
-        // How much a node has changed is its size, and how long ago is its colour.
-        return true;
-    }
-
-    @Override
+    /**
+     * Acts on a click on one of the drawing's own buttons.
+     *
+     * @param id       the id of the element clicked, or of the nearest parent carrying one.
+     * @param controls what the button can ask the view around the drawing to do.
+     * @return whether the click was on one of the drawing's buttons, in which case it was not a click
+     * on the drawing itself.
+     */
     public boolean onControl(final String id, final PathwayControls controls) {
         if (ZOOM_IN_ID.equals(id)) {
             controls.zoomIn();
@@ -332,7 +323,6 @@ class PathwayGraphRenderer implements PathwayRenderer {
                 : request.getLayout();
     }
 
-    @Override
     public SafeHtml render(final RenderRequest request) {
         final PathNode root = layoutRoot(request);
         if (root == null) {
@@ -390,7 +380,6 @@ class PathwayGraphRenderer implements PathwayRenderer {
      * <p>Refuses where the drawing is laid out differently from the one on the screen, or where it
      * cannot find what it expects. The caller then builds the whole thing, which is always correct.
      */
-    @Override
     public boolean update(final Element element, final RenderRequest request) {
         final PathNode root = layoutRoot(request);
         if (root == null || element == null) {
@@ -1172,8 +1161,6 @@ class PathwayGraphRenderer implements PathwayRenderer {
         return onPath.isEmpty() || onPath.contains(node.getUuid());
     }
 
-    // Straight, not the curves the tree draws: those bend towards a left-to-right layout, and on a
-    // ring the bend would point the edge away from the node it joins.
     // A gradient of its own for each link, laid along the line it paints. Along the line rather than
     // across the drawing, which is what gradientUnits="userSpaceOnUse" with the line's own ends does —
     // the default would measure against the shape's box and turn with it.
@@ -1205,7 +1192,7 @@ class PathwayGraphRenderer implements PathwayRenderer {
         return "pathwayEdge" + drawingId + "-" + uuid;
     }
 
-
+    // Straight, not curved: on a ring a bend would point the edge away from the node it joins.
     private void line(final HtmlBuilder svg, final String uuid, final EdgeAppearance want) {
         svg.elem(SafeHtmlUtil.from("line"),
                 // Which node this line arrives at, so the line can be found again rather than drawn

@@ -241,7 +241,7 @@ public class PathwayPathListPresenter extends MyPresenterWidget<PagerView> {
 
     /**
      * Which nodes the selected path ran, each named by its own path down from the root, so they can be
-     * picked out on the tree and the graph. Empty where nothing is selected.
+     * picked out on the drawing. Empty where nothing is selected.
      */
     public List<List<List<String>>> getSelectedNodePaths() {
         return nodePathsIn(selectionModel.getSelected());

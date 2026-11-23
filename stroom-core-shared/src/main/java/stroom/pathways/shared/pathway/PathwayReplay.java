@@ -81,8 +81,14 @@ public final class PathwayReplay {
         if (MutationType.NODE_ADDED.equals(type)) {
             return removeNode(root, mutation.getNodePath());
         }
-        if (MutationType.NODE_RETIRED.equals(type)) {
+        if (MutationType.NODE_RETIRED.equals(type) || MutationType.NODE_REMOVED.equals(type)) {
             return change(root, mutation.getNodePath(), node -> node.copy().retiredTime(null).build());
+        }
+        if (MutationType.CONSTRAINT_CLEARED.equals(type)) {
+            // The constraint is gone from the node by now, so the flag comes from the change rather
+            // than from what the node holds.
+            return change(root, mutation.getNodePath(), node -> withConstraint(node, mutation.getConstraint(),
+                    rebuild(null, mutation.getConstraint(), mutation.getOldValue(), mutation.isOptional())));
         }
         if (MutationType.NODE_REVIVED.equals(type)) {
             // Put back as retired. When it was retired is not kept on the change, and the drawing only
@@ -118,9 +124,13 @@ public final class PathwayReplay {
         if (MutationType.NODE_ADDED.equals(type)) {
             return addNode(root, mutation);
         }
-        if (MutationType.NODE_RETIRED.equals(type)) {
+        if (MutationType.NODE_RETIRED.equals(type) || MutationType.NODE_REMOVED.equals(type)) {
             return change(root, mutation.getNodePath(),
                     node -> node.copy().retiredTime(mutation.getTime()).build());
+        }
+        if (MutationType.CONSTRAINT_CLEARED.equals(type)) {
+            return change(root, mutation.getNodePath(),
+                    node -> withConstraint(node, mutation.getConstraint(), null));
         }
         if (MutationType.NODE_REVIVED.equals(type)) {
             return change(root, mutation.getNodePath(), node -> node.copy().retiredTime(null).build());
@@ -160,6 +170,17 @@ public final class PathwayReplay {
         // constraint was born optional rather than made so later.
         constraints.put(mutation.getConstraint(), rebuild(constraints.get(mutation.getConstraint()),
                 mutation.getConstraint(), mutation.getNewValue(), mutation.isOptional()));
+        return node.copy().constraints(constraints).build();
+    }
+
+    // The node with one constraint set, or taken off where the constraint given is null.
+    private static PathNode withConstraint(final PathNode node, final String name, final Constraint constraint) {
+        final Map<String, Constraint> constraints = new HashMap<>(NullSafe.map(node.getConstraints()));
+        if (constraint == null) {
+            constraints.remove(name);
+        } else {
+            constraints.put(name, constraint);
+        }
         return node.copy().constraints(constraints).build();
     }
 

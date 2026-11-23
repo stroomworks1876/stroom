@@ -331,6 +331,123 @@ class TestPathwayNarrowing {
     }
 
     @Test
+    void removingANodeRetiresItWipesItsConstraintsAndDropsItsPaths(@TempDir final Path tempDir) {
+        applied(tempDir, List.of(withChildren(0, "Ping", "Commit"), withChildren(1, "Ping")));
+        final int pathsBefore = onlyPathway(tempDir).getPaths().getPaths().size();
+
+        assertThat(removed(tempDir, "Commit")).isTrue();
+
+        final PathNode commit = child(tempDir, "Commit");
+        assertThat(commit.isRetired()).isTrue();
+        assertThat(commit.getConstraints()).isEmpty();
+        assertThat(child(tempDir, "Ping").isRetired())
+                .as("only the node asked for, and what is under it")
+                .isFalse();
+        assertThat(onlyPathway(tempDir).getPaths().getPaths())
+                .as("the path that ran Commit is dropped and the one that did not is kept")
+                .hasSize(pathsBefore - 1);
+        assertThat(mutations(tempDir)).anyMatch(m -> MutationType.PATH_DROPPED.equals(m.getType()));
+    }
+
+    @Test
+    void theRootCannotBeRemoved(@TempDir final Path tempDir) {
+        applied(tempDir, List.of(withChildren(0, "Ping")));
+
+        assertThat(removeFromModel(tempDir, onlyPathway(tempDir).getRoot().getUuid())).isFalse();
+        assertThat(onlyPathway(tempDir).getRoot().isRetired()).isFalse();
+    }
+
+    @Test
+    void aReplayFromBeforeTheRemovalShowsTheNodeAsItWas(@TempDir final Path tempDir) {
+        applied(tempDir, List.of(withChildren(0, "Ping", "Commit")));
+        final PathNode was = child(tempDir, "Commit");
+
+        removed(tempDir, "Commit");
+        final PathNode before = PathwayReplay.rewind(onlyPathway(tempDir).getRoot(),
+                from(tempDir, MutationType.NODE_REMOVED));
+
+        assertThat(child(before, "Commit").isRetired()).isFalse();
+        assertThat(child(before, "Commit").getConstraints())
+                .as("every constraint back with its value and whether it was optional")
+                .usingRecursiveComparison()
+                .comparingOnlyFields("name", "value", "optional")
+                .isEqualTo(was.getConstraints());
+    }
+
+    @Test
+    void theNarrowingDoesNotBringBackARemovedNodeFromWhatItSawBefore(@TempDir final Path tempDir) {
+        applied(tempDir, List.of(withChildren(0, "Ping", "Commit"), withChildren(1, "Ping", "Commit")));
+        removed(tempDir, "Commit");
+
+        narrow(tempDir, day(0));
+
+        assertThat(child(tempDir, "Commit").isRetired())
+                .as("the window saw it run, but only before it was removed")
+                .isTrue();
+    }
+
+    @Test
+    void aTraceThatCarriesARemovedNodeBringsItBackAndLearnsItAgain(@TempDir final Path tempDir) {
+        applied(tempDir, List.of(withChildren(0, "Ping", "Commit")));
+        removed(tempDir, "Commit");
+
+        applied(tempDir, List.of(withChildren(2, "Ping", "Commit")));
+
+        final PathNode commit = child(tempDir, "Commit");
+        assertThat(commit.isRetired()).isFalse();
+        assertThat(commit.getConstraints()).isNotEmpty();
+        final long removal = from(tempDir, MutationType.NODE_REMOVED).getLast().getSequence();
+        assertThat(mutations(tempDir))
+                .as("learnt from the trace that brought it back, as a node seen for the first time is")
+                .anyMatch(m -> MutationType.CONSTRAINT_ADDED.equals(m.getType())
+                               && m.getSequence() > removal
+                               && "Commit".equals(m.getNodePath().getLast()));
+    }
+
+    @Test
+    void aTraceThatMissesARemovedNodeTeachesItNothing(@TempDir final Path tempDir) {
+        applied(tempDir, List.of(withChildren(0, "Ping", "Commit")));
+        removed(tempDir, "Commit");
+        final long removal = mutations(tempDir).stream().mapToLong(PathwayMutation::getSequence).max().orElseThrow();
+
+        applied(tempDir, List.of(withChildren(1, "Ping")));
+
+        assertThat(child(tempDir, "Commit").getConstraints())
+                .as("not told it can be absent while it is removed")
+                .isEmpty();
+        assertThat(mutations(tempDir))
+                .noneMatch(m -> m.getSequence() > removal && "Commit".equals(m.getNodePath().getLast()));
+
+        applied(tempDir, List.of(withChildren(2, "Ping", "Commit")));
+
+        assertThat(occurrences(tempDir, "Commit"))
+                .as("learnt from the trace that brought it back alone")
+                .isNotEqualTo(new IntegerSet(Set.of(0, 1)));
+    }
+
+    @Test
+    void aNodeAlreadyRemovedIsNotRemovedAgain(@TempDir final Path tempDir) {
+        applied(tempDir, List.of(withChildren(0, "Ping", "Commit")));
+        assertThat(removed(tempDir, "Commit")).isTrue();
+        final int rows = mutations(tempDir).size();
+
+        assertThat(removed(tempDir, "Commit"))
+                .as("whoever asked was looking at a model from before the first removal")
+                .isFalse();
+        assertThat(mutations(tempDir)).hasSize(rows);
+    }
+
+    private static boolean removed(final Path dir, final String name) {
+        return removeFromModel(dir, child(dir, name).getUuid());
+    }
+
+    private static boolean removeFromModel(final Path dir, final String uuid) {
+        final String name = onlyPathway(dir).getName();
+        return new PathwaysService(null, null, null, null, BYTE_BUFFERS, mutationLog(), serde(), null)
+                .removeFromModel(dir, name, name.getBytes(StandardCharsets.UTF_8), uuid);
+    }
+
+    @Test
     void aWindowOfSevenDaysKeepsTheSevenDaysBeforeNow() {
         final Instant midnight = Instant.ofEpochMilli(BASE + (10 * DAY_MS));
 

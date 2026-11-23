@@ -356,6 +356,14 @@ public class NodeMutatorImpl {
                 record(child, MutationType.NODE_ADDED);
             }
 
+            // A retired child this trace did not carry is left as it is. It learns nothing until a
+            // trace runs it again, so one a user removed starts afresh from that trace rather than
+            // already holding that it can be absent.
+            if (spans == null && child.isRetired()) {
+                children.add(child);
+                continue;
+            }
+
             // Fold every span of this name into the one child, then record how many there were. A
             // child the model knows about that this trace did not carry happened no times.
             if (spans != null) {

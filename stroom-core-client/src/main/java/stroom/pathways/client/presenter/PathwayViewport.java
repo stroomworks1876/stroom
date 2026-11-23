@@ -55,10 +55,8 @@ class PathwayViewport {
     private static final int DRAG_THRESHOLD = 3;
 
     private final HTML panel;
-    // Where the drawing on show has put the model. Asked rather than given, because fitting is a
-    // button press and the answer is different at every step of a replay — and because which drawing
-    // is on show changes under this. Answering null means the whole drawing, which is what a drawing
-    // that does not keep its box between steps always means.
+    // Where the drawing has put the model. Asked rather than given, because fitting is a button press
+    // and the answer is different at every step of a replay. Answering null means the whole drawing.
     private Supplier<DrawnArea> area = () -> null;
     // Told whenever the drawing is scaled, so that whatever is drawn in screen pixels rather than in
     // the drawing's own units can be put right. Scaling does not redraw anything, so nothing else
@@ -68,12 +66,6 @@ class PathwayViewport {
     private double zoom = 1;
     private int scrollLeft;
     private int scrollTop;
-    // Where the drawing that is not on show was last left. The two drawings of a model are scrolled
-    // differently — a tree is read from its top left and a graph from its middle — so each is given
-    // back its own place rather than whatever the other happened to be showing.
-    private int otherScrollLeft;
-    private int otherScrollTop;
-    private boolean swapping;
     // Whether the drawing being made is one the reader has not seen, and so opens showing all of
     // itself rather than at the size and place the one before it was left at.
     private boolean fitWanted;
@@ -105,7 +97,7 @@ class PathwayViewport {
 
     /**
      * Where to ask what part of the drawing the model is in, which is what fitting and centring work
-     * from. Given once; which drawing is on show is the caller's business.
+     * from. Given once.
      */
     double scale() {
         return zoom;
@@ -187,73 +179,44 @@ class PathwayViewport {
     }
 
     /**
-     * The drawing being replaced is the other one, so the reader gets back where they left that one
-     * rather than being carried to wherever this one happens to be. Takes effect on the next draw.
-     */
-    void swapDrawing() {
-        swapping = true;
-    }
-
-    /**
      * Remembers where the drawing is scrolled to, before it is replaced by another.
      */
     void beforeDraw() {
         final Element scroller = scroller();
-        final int left = scroller == null
+        scrollLeft = scroller == null
                 ? 0
                 : scroller.getScrollLeft();
-        final int top = scroller == null
+        scrollTop = scroller == null
                 ? 0
                 : scroller.getScrollTop();
-
-        if (swapping) {
-            swapping = false;
-            // The two change places: what is on show now is what will be put back when it returns,
-            // and what is arriving is given the place it was left at.
-            scrollLeft = otherScrollLeft;
-            scrollTop = otherScrollTop;
-            otherScrollLeft = left;
-            otherScrollTop = top;
-        } else {
-            scrollLeft = left;
-            scrollTop = top;
-        }
     }
 
     /**
      * @param keepScroll whether the drawing just made is the same model as the one it replaced, in
      *                   which case the reader is left where they were rather than moved.
-     * @param centred    whether this drawing opens in the middle rather than at its top left.
      * @param centreOn   what to put in the middle, asked for only once there is something to measure.
      */
     void afterDraw(final boolean keepScroll,
-                   final boolean centred,
-                   final boolean zoomable,
                    final Supplier<Element> centreOn) {
         // Before the scroll is touched: the scrollbars only reach the scaled size once the box
         // carrying it has been resized.
-        if (zoomable) {
-            applyZoom();
-        }
+        applyZoom();
 
         final Element scroller = scroller();
         if (scroller != null) {
             if (keepScroll) {
                 scroller.setScrollLeft(scrollLeft);
                 scroller.setScrollTop(scrollTop);
-            } else if (centred || (zoomable && fitWanted)) {
-                centreWanted = true;
             } else {
-                scroller.setScrollLeft(0);
-                scroller.setScrollTop(0);
+                centreWanted = true;
             }
         }
         if (centreWanted) {
             hide();
-            // Only a drawing that can be scaled can be fitted; the rest are centred as before. The
-            // asking is not cleared here: a drawing made before there is a panel to put it in cannot
-            // be fitted yet, and what wants fitting has to outlive the attempt that could not.
-            final boolean fit = zoomable && fitWanted;
+            // Fitted where that was asked for, centred otherwise. The asking is not cleared here: a
+            // drawing made before there is a panel to put it in cannot be fitted yet, and what wants
+            // fitting has to outlive the attempt that could not.
+            final boolean fit = fitWanted;
             Scheduler.get().scheduleDeferred(() -> {
                 if (fit) {
                     fitOrCentre(centreOn, FIT_ATTEMPTS);
@@ -406,7 +369,7 @@ class PathwayViewport {
     }
 
     // Measured on the screen against the drawing rather than from the element's offsets, which run
-    // from whichever ancestor happens to be positioned and so differ between the graph and the tree.
+    // from whichever ancestor happens to be positioned rather than from the drawing.
     // Both edges are measured after scaling, so the gap between them is divided by the zoom to get
     // back to the drawing's own size.
     private void scrollToMiddle(final Element on) {

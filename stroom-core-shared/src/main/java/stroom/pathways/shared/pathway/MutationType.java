@@ -83,7 +83,17 @@ public enum MutationType implements HasDisplayValue, HasPrimitiveValue {
      * A node that had stopped being part of the work is part of it again. The same node as before, so
      * what it was and how it was used are still its own.
      */
-    NODE_REVIVED("Node Revived", 17);
+    NODE_REVIVED("Node Revived", 17),
+    /**
+     * A constraint wiped because a user removed its node, so the next trace to carry the node learns it
+     * again from scratch. Holds the value and the optional flag it had, so a replay can put both back.
+     */
+    CONSTRAINT_CLEARED("Constraint Cleared", 18),
+    /**
+     * A node a user removed from the model. Handled exactly as {@link #NODE_RETIRED}; it is a separate
+     * type only so the history says a user did it rather than traces no longer carrying the node.
+     */
+    NODE_REMOVED("Node Removed", 19);
 
     public static final PrimitiveValueConverter<MutationType> PRIMITIVE_VALUE_CONVERTER =
             PrimitiveValueConverter.create(MutationType.class, MutationType.values());

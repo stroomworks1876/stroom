@@ -57,7 +57,8 @@ public class PathNode {
      * When this node stopped being part of the work, or null while it is still part of it.
      *
      * <p>Set by the narrowing where no trace within the document's narrowing window carried the
-     * node, and cleared the moment a trace carries it again. The node is kept either way: a path's steps name
+     * node, or by a user removing the node, and cleared the moment a trace carries it again. The node
+     * is kept either way: a path's steps name
      * nodes by position, a replay puts them back by uuid, and a drawing follows one from frame to
      * frame by uuid — so removing one would invalidate every path that ran through it, and a node that
      * came back would come back a stranger.
@@ -181,7 +182,7 @@ public class PathNode {
         return retiredTime;
     }
 
-    /** Whether no trace within the document's narrowing window has carried this node. */
+    /** Whether this node has stopped being part of the work or was removed, and no trace has carried it since. */
     @JsonIgnore
     public boolean isRetired() {
         return retiredTime != null;

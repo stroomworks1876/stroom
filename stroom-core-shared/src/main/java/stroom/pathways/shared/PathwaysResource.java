@@ -108,4 +108,12 @@ public interface PathwaysResource extends RestResource, DirectRestService, Fetch
             operationId = "deletePathway")
     Boolean deletePathway(
             @Parameter(description = "change", required = true) DeletePathway deletePathway);
+
+    @POST
+    @Path("/removeNode")
+    @Operation(
+            summary = "Remove a node and everything under it from a learnt pathway",
+            operationId = "removePathwayNode")
+    Boolean removeNode(
+            @Parameter(description = "change", required = true) RemoveNode removeNode);
 }

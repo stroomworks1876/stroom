@@ -259,7 +259,7 @@ public class PathwayNarrower {
 
         final NanoTime now = NanoTimeUtil.fromInstant(Instant.now());
         final List<PathwayMutation> mutations = new ArrayList<>();
-        final PathNode narrowedRoot = narrowNode(pathway.getRoot(), window.values(), now, false, mutations);
+        final PathNode narrowedRoot = narrowNode(pathway.getRoot(), window, now, false, mutations);
         final Paths paths = stillTaken(pathway, oldestDay, now, mutations);
         // A dropped path is counted against the root by the change rows, so the root says when too.
         final PathNode root = narrowedRoot != null && paths != pathway.getPaths()
@@ -340,15 +340,16 @@ public class PathwayNarrower {
         return expired.size();
     }
 
-    // Everything the window still covers, folded into one account per model, node and constraint.
-    // Days that have fallen out of it leave on the way past, which is the only thing that bounds what
-    // this table holds.
+    // Everything the window still covers, folded into one account per model, node and constraint, and
+    // the last day in it each node ran. Days that have fallen out of it leave on the way past, which is
+    // the only thing that bounds what this table holds.
     private Map<String, Window> valuesInWindow(final LmdbWriter writer,
                                                final PathwaysDb pathwaysDb,
                                                final int oldestDay,
                                                final Map<String, List<Row>> expired) {
         final SimpleDb db = pathwaysDb.getObservedValues();
         final Map<String, Map<List<String>, Map<String, ConstraintValue>>> byPathway = new LinkedHashMap<>();
+        final Map<String, Map<List<String>, Integer>> lastRanBy = new LinkedHashMap<>();
         final Map<String, Integer> droppedBy = new LinkedHashMap<>();
         db.iterate(writer.getWriteTxn(), (key, value) -> {
             final String owner = ownerOf(key);
@@ -361,8 +362,11 @@ public class PathwayNarrower {
                 droppedBy.merge(owner, 1, Integer::sum);
                 return;
             }
+            final int day = TraceProcessor.dayOf(key);
             final Map<List<String>, Map<String, ConstraintValue>> window =
                     byPathway.computeIfAbsent(owner, uuid -> new LinkedHashMap<>());
+            final Map<List<String>, Integer> lastRan =
+                    lastRanBy.computeIfAbsent(owner, uuid -> new LinkedHashMap<>());
             // Only the values are wanted here. What else a day record carries - what is optional,
             // how busy a node was, the trace behind a bound - is for building a model from the
             // records, which is not what holding one to its window does.
@@ -371,6 +375,10 @@ public class PathwayNarrower {
                         window.computeIfAbsent(path, reached -> new LinkedHashMap<>());
                 seen.constraints().forEach((name, observed) ->
                         node.merge(name, observed.value(), ObservedValues::add));
+                final DayRecord.ObservedConstraint occurrences = seen.constraints().get(OCCURRENCES);
+                if (occurrences != null && ranAtAll(occurrences.value())) {
+                    lastRan.merge(path, day, Math::max);
+                }
             });
         });
 
@@ -378,9 +386,11 @@ public class PathwayNarrower {
 
         final Map<String, Window> windows = new LinkedHashMap<>();
         byPathway.forEach((owner, values) ->
-                windows.put(owner, new Window(values, droppedBy.getOrDefault(owner, 0))));
+                windows.put(owner, new Window(values,
+                        lastRanBy.getOrDefault(owner, Map.of()),
+                        droppedBy.getOrDefault(owner, 0))));
         droppedBy.forEach((owner, dropped) ->
-                windows.computeIfAbsent(owner, key -> new Window(Map.of(), dropped)));
+                windows.computeIfAbsent(owner, key -> new Window(Map.of(), Map.of(), dropped)));
         return windows;
     }
 
@@ -467,10 +477,13 @@ public class PathwayNarrower {
         return sb.toString();
     }
 
-    // What the window still covers, and how many days were dropped on the way to working it out.
-    private record Window(Map<List<String>, Map<String, ConstraintValue>> values, int dropped) {
+    // What the window still covers, the last day in it each node ran, and how many days were dropped
+    // on the way to working it out.
+    private record Window(Map<List<String>, Map<String, ConstraintValue>> values,
+                          Map<List<String>, Integer> lastRan,
+                          int dropped) {
 
-        private static final Window NOTHING = new Window(Map.of(), 0);
+        private static final Window NOTHING = new Window(Map.of(), Map.of(), 0);
     }
 
     // The paths still being taken, with those nothing has taken within the window left out. A pathway
@@ -507,22 +520,26 @@ public class PathwayNarrower {
                 : new Paths(paths.getNodes(), paths.getSteps(), kept, paths.getSources());
     }
 
+    private static int dayOf(final NanoTime time) {
+        return (int) (time.toEpochMillis() / TraceProcessor.MILLIS_PER_DAY);
+    }
+
     private static boolean withinWindow(final NanoTime time, final int oldestDay) {
-        return time != null && (int) (time.toEpochMillis() / TraceProcessor.MILLIS_PER_DAY) >= oldestDay;
+        return time != null && dayOf(time) >= oldestDay;
     }
 
     // Every node of a model, narrowed to what the window still covers. A constraint the window says
     // nothing about is left alone: no values were given to it lately, which is a node that has gone
     // quiet rather than a constraint that should stop allowing what it allows.
     private static PathNode narrowNode(final PathNode node,
-                                       final Map<List<String>, Map<String, ConstraintValue>> window,
+                                       final Window window,
                                        final NanoTime time,
                                        final boolean parentRetired,
                                        final List<PathwayMutation> mutations) {
         if (node == null) {
             return null;
         }
-        final Map<String, ConstraintValue> seen = window.get(node.getNodePath());
+        final Map<String, ConstraintValue> seen = window.values().get(node.getNodePath());
         final int changesBefore = mutations.size();
         final Map<String, Constraint> constraints = new LinkedHashMap<>(NullSafe.map(node.getConstraints()));
         if (seen != null) {
@@ -541,7 +558,8 @@ public class PathwayNarrower {
 
         // Settled before the children are reached, because whether this node is still part of the work
         // decides the same question for everything under it.
-        final NanoTime retiredTime = retirement(node, seen, time, parentRetired, mutations);
+        final NanoTime retiredTime = retirement(node, seen, window.lastRan().get(node.getNodePath()), time,
+                parentRetired, mutations);
         // The change rows count a narrowing as a change to the node, so the node says when it was too.
         final boolean changed = mutations.size() > changesBefore;
 
@@ -571,8 +589,13 @@ public class PathwayNarrower {
     // Keeps what it was given where nothing was recorded and the parent is still part of the work:
     // that is a parent nothing reached either, which says nothing about this node one way or the
     // other.
+    //
+    // Revives a retired node only where the window saw it run on a later day than the one it was
+    // retired on. Running before then is what the node did before it was retired or removed, and is
+    // no reason to bring it back.
     private static NanoTime retirement(final PathNode node,
                                        final Map<String, ConstraintValue> seen,
+                                       final Integer lastRan,
                                        final NanoTime time,
                                        final boolean parentRetired,
                                        final List<PathwayMutation> mutations) {
@@ -587,7 +610,7 @@ public class PathwayNarrower {
             mutations.add(change(node, time, MutationType.NODE_RETIRED));
             return time;
         }
-        if (ranAtAll && node.isRetired()) {
+        if (ranAtAll && node.isRetired() && lastRan != null && lastRan > dayOf(node.getRetiredTime())) {
             mutations.add(change(node, time, MutationType.NODE_REVIVED));
             return null;
         }

@@ -17,6 +17,7 @@
 package stroom.pathways.impl;
 
 import stroom.docref.DocRef;
+import stroom.event.logging.api.DocumentEventLog;
 import stroom.event.logging.rs.api.AutoLogged;
 import stroom.event.logging.rs.api.AutoLogged.OperationType;
 import stroom.pathways.shared.AddPathway;
@@ -29,6 +30,7 @@ import stroom.pathways.shared.PathwayMutationResultPage;
 import stroom.pathways.shared.PathwayResultPage;
 import stroom.pathways.shared.PathwaysDoc;
 import stroom.pathways.shared.PathwaysResource;
+import stroom.pathways.shared.RemoveNode;
 import stroom.pathways.shared.UpdatePathway;
 import stroom.util.shared.EntityServiceException;
 
@@ -39,14 +41,23 @@ import jakarta.inject.Provider;
 @AutoLogged
 class PathwaysResourceImpl implements PathwaysResource {
 
+    private static final String REMOVE_NODE_EVENT = "RemovePathwayNode";
+    private static final String REMOVE_NODE_DESCRIPTION =
+            "Removing a node and everything under it from learnt pathway";
+    private static final String DELETE_PATHWAY_EVENT = "DeletePathway";
+    private static final String DELETE_PATHWAY_DESCRIPTION = "Deleting learnt pathway and all its history";
+
     private final Provider<PathwaysStore> pathwaysStoreProvider;
     private final Provider<PathwaysService> pathwaysServiceProvider;
+    private final Provider<DocumentEventLog> documentEventLogProvider;
 
     @Inject
     PathwaysResourceImpl(final Provider<PathwaysStore> pathwaysStoreProvider,
-                         final Provider<PathwaysService> pathwaysServiceProvider) {
+                         final Provider<PathwaysService> pathwaysServiceProvider,
+                         final Provider<DocumentEventLog> documentEventLogProvider) {
         this.pathwaysStoreProvider = pathwaysStoreProvider;
         this.pathwaysServiceProvider = pathwaysServiceProvider;
+        this.documentEventLogProvider = documentEventLogProvider;
     }
 
     @Override
@@ -116,9 +127,33 @@ class PathwaysResourceImpl implements PathwaysResource {
         return pathwaysServiceProvider.get().updatePathway(updatePathway);
     }
 
-    @AutoLogged(OperationType.UNLOGGED)
+    @AutoLogged(OperationType.MANUALLY_LOGGED)
     @Override
     public Boolean deletePathway(final DeletePathway deletePathway) {
-        return pathwaysServiceProvider.get().deletePathway(deletePathway);
+        try {
+            final Boolean deleted = pathwaysServiceProvider.get().deletePathway(deletePathway);
+            documentEventLogProvider.get()
+                    .delete(deletePathway, DELETE_PATHWAY_EVENT, DELETE_PATHWAY_DESCRIPTION, null);
+            return deleted;
+        } catch (final RuntimeException e) {
+            documentEventLogProvider.get()
+                    .delete(deletePathway, DELETE_PATHWAY_EVENT, DELETE_PATHWAY_DESCRIPTION, e);
+            throw e;
+        }
+    }
+
+    @AutoLogged(OperationType.MANUALLY_LOGGED)
+    @Override
+    public Boolean removeNode(final RemoveNode removeNode) {
+        try {
+            final Boolean removed = pathwaysServiceProvider.get().removeNode(removeNode);
+            documentEventLogProvider.get()
+                    .delete(removeNode, REMOVE_NODE_EVENT, REMOVE_NODE_DESCRIPTION, null);
+            return removed;
+        } catch (final RuntimeException e) {
+            documentEventLogProvider.get()
+                    .delete(removeNode, REMOVE_NODE_EVENT, REMOVE_NODE_DESCRIPTION, e);
+            throw e;
+        }
     }
 }

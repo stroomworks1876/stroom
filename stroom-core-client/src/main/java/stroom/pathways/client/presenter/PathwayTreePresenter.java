@@ -24,10 +24,8 @@ import stroom.pathways.shared.pathway.NodeChange;
 import stroom.pathways.shared.pathway.PathNode;
 import stroom.pathways.shared.pathway.Pathway;
 import stroom.svg.client.Preset;
-import stroom.svg.shared.SvgImage;
 import stroom.util.shared.NullSafe;
 import stroom.widget.button.client.ButtonView;
-import stroom.widget.button.client.InlineSvgToggleButton;
 import stroom.widget.popup.client.presenter.PopupPosition;
 import stroom.widget.tab.client.view.GlobalResizeObserver;
 import stroom.widget.util.client.ElementUtil;
@@ -58,8 +56,6 @@ import java.util.function.BiConsumer;
 public class PathwayTreePresenter
         extends MyPresenterWidget<PathwayTreeView> {
 
-    private static final int ROW_HEIGHT = 22;
-    private static final int INDENT = 20;
     private static final String SELECTED_CLASS = "pathway-nodeName--selected";
     private static final String HIGHLIGHT_CLASS = "pathway-node--changed";
     // The same marking, over once rather than over and over. While the model is being stepped
@@ -79,19 +75,14 @@ public class PathwayTreePresenter
     // What marks a node the walk has reached, and how long one of those takes. Said here rather than
     // only in the stylesheet because a node can be reached more than once, and only the walk knows
     // that — a rule can hold one run, not a list of them.
-    private static final String GRAPH_PULSE = "pathway-node-changed-ring";
-    private static final String TREE_PULSE = "pathway-node-changed";
+    private static final String PULSE = "pathway-node-changed-ring";
     private static final int PULSE_MS = 1100;
     // How long the walk waits between one node and the next. The same for every path however many
     // nodes it has: worked out from the length instead, a long path would travel so fast that the
     // walk could not be followed, which is the whole of what it is for.
     private static final int PATH_STAGGER_MS = 400;
-    private static final String GRAPH_TITLE = "Show as a graph";
-    private static final String TREE_TITLE = "Show as a tree";
 
-    private final InlineSvgToggleButton viewButton;
     private final PathwayViewport viewport;
-    private Runnable viewChangeHandler;
     // Told when a node is asked about on the drawing, so whoever knows what can be done with one can
     // offer it. Not decided here: this draws the model and says what was picked, and what a reader may
     // do with a node belongs with the things that would do it.
@@ -106,12 +97,7 @@ public class PathwayTreePresenter
 
     private final HTML html;
     private final MySingleSelectionModel<PathNode> selectionModel = new MySingleSelectionModel<PathNode>();
-    private final PathwayRenderer treeRenderer = new PathwayTreeRenderer();
-    private final PathwayRenderer graphRenderer = new PathwayGraphRenderer();
-    // The graph to begin with: it says how much has gone through each part of the model and how
-    // recently, which is what a reader opening a pathway is usually after. The tree is a click away
-    // for reading the structure itself.
-    private PathwayRenderer renderer = graphRenderer;
+    private final PathwayGraphRenderer renderer = new PathwayGraphRenderer();
     // What the server worked out for the moment on show: how much each node had changed and when it
     // last did, by uuid. Never read off the node here: the node holds those as they stand now, and
     // only the server can say what they were at the moment on show.
@@ -148,27 +134,13 @@ public class PathwayTreePresenter
                                 final PathwayTreeView view,
                                 final DefaultResources resources) {
         super(eventBus, view);
-        // Which way the model is drawn, not what is drawn, so it sits with the tree rather than with
-        // the buttons that change the model. It holds which drawing is on show, so nothing else has to.
-        //
-        // Made but not put on the toolbar, so the graph is the only drawing a reader gets. Kept rather
-        // than taken out because what it holds is where the choice lives, and putting it back is the
-        // one line that adds it.
-        viewButton = new InlineSvgToggleButton();
-        viewButton.setSvg(SvgImage.NODES);
-        // Turned on to match the drawing it starts on, so the button and what is on show agree.
-        viewButton.setState(true);
-        viewButton.setTitle(TREE_TITLE);
-
         html = new HTML();
         html.addStyleName("max");
         // What the graph's key is placed against. The drawing inside scrolls and is scaled; the key
         // is neither, so it hangs off the panel rather than off the drawing.
         html.getElement().getStyle().setPosition(Position.RELATIVE);
         viewport = new PathwayViewport(html);
-        // Asked of whichever drawing is on show rather than of the one on show now, because the
-        // toolbar swaps them and fitting is a button press that can come at any time after that.
-        viewport.setArea(() -> renderer.drawnArea());
+        viewport.setArea(renderer::drawnArea);
         // Scaling the drawing does not draw it again, so what it measures in screen pixels rather
         // than in its own units is put right here instead.
         viewport.setScaleHandler(() -> renderer.rescale(html.getElement(), viewport.scale()));
@@ -191,17 +163,7 @@ public class PathwayTreePresenter
         });
 
         super.onBind();
-        // Follows the button rather than deciding for itself which clicks count: the button turns
-        // itself over on any click it accepts, and a drawing that disagreed with the icon on it would
-        // be worse than a drawing swapped by an unusual click.
-        registerHandler(viewButton.addClickHandler(e -> swapView()));
         registerHandler(html.addMouseDownHandler(e -> {
-            // Only the graph is dragged. The tree scrolls a row at a time and reads top to bottom;
-            // there is nothing to move around in it.
-            if (!renderer.isPannable()) {
-                return;
-            }
-
             // Not from the buttons sitting over the drawing: they are there to be pressed.
             if (isControl(e.getNativeEvent().getEventTarget().cast())) {
                 return;
@@ -211,13 +173,9 @@ public class PathwayTreePresenter
 
         registerHandler(html.addMouseMoveHandler(e -> viewport.drag(e.getClientX(), e.getClientY())));
 
-        // The wheel scales the drawing rather than scrolling it. Only the graph: the tree is a list
-        // read top to bottom, where a wheel means what it means everywhere else. The browser's own
-        // answer is refused, or the panel would scroll as well as scale.
+        // The wheel scales the drawing rather than scrolling it. The browser's own answer is refused,
+        // or the panel would scroll as well as scale.
         registerHandler(html.addMouseWheelHandler(e -> {
-            if (!renderer.isPannable()) {
-                return;
-            }
             e.preventDefault();
             if (e.isNorth()) {
                 viewport.zoomIn(e.getClientX(), e.getClientY());
@@ -230,7 +188,7 @@ public class PathwayTreePresenter
         // does, so a node is picked out as well as moved in on, which is what someone double clicking
         // a node is asking for.
         registerHandler(html.addDoubleClickHandler(e -> {
-            if (!renderer.isPannable() || isControl(e.getNativeEvent().getEventTarget().cast())) {
+            if (isControl(e.getNativeEvent().getEventTarget().cast())) {
                 return;
             }
             viewport.zoomIn(e.getClientX(), e.getClientY());
@@ -308,7 +266,7 @@ public class PathwayTreePresenter
                 NullSafe.isNonBlankString(element.getId()), 3) != null;
     }
 
-    // Selecting must not redraw the tree. Rebuilding it throws away where the view is scrolled to, so
+    // Selecting must not redraw the drawing. Rebuilding it throws away where the view is scrolled to, so
     // the picture jumps back to the top every time a node is clicked. Only the two nodes whose state
     // changed are touched.
     private void select(final PathNode pathNode, final Element element) {
@@ -329,29 +287,6 @@ public class PathwayTreePresenter
             selectionModel.clear();
         } else {
             selectionModel.setSelected(pathNode, true);
-        }
-    }
-
-    // The two drawings answer different questions of the same model, so which one is on show is not
-    // worth a redraw of anything but the drawing. What is selected is kept: a node is the same node
-    // however it is drawn.
-    //
-    // The button has already turned itself over by the time this runs — it handles its own click
-    // before the one registered here — so which drawing to use is read from it rather than tracked.
-    private void swapView() {
-        renderer = viewButton.getState()
-                ? graphRenderer
-                : treeRenderer;
-        viewButton.setTitle(viewButton.getState()
-                ? TREE_TITLE
-                : GRAPH_TITLE);
-
-        // Where the drawing arriving was last left, rather than the middle. Only the first sight of a
-        // model opens in the middle; after that the reader put it where they wanted it.
-        viewport.swapDrawing();
-        refresh(true);
-        if (viewChangeHandler != null) {
-            viewChangeHandler.run();
         }
     }
 
@@ -384,23 +319,23 @@ public class PathwayTreePresenter
     }
 
     /**
-     * Puts the drawing back in the middle, for a panel that has changed size around it. Only for a
-     * drawing that opens in the middle: a tree is read from its top left and would jump.
+     * Puts the drawing back in the middle, for a panel that has changed size around it.
      */
     public void centre() {
-        if (renderer.opensCentred()) {
-            viewport.recentre(this::rootElement);
-        }
+        viewport.recentre(this::rootElement);
     }
 
     /**
-     * The node at this path in the model on show, or null where it has none — as it will not while the
-     * model is wound back to before the change that added the node.
+     * The node at this path in the model on show, or null where it is not drawn: where the model is
+     * wound back to before the change that added the node, or the node is retired or removed at the
+     * moment shown.
      */
     public PathNode findNode(final List<String> path) {
         for (final PathNode node : nodeMap.values()) {
             if (Objects.equals(node.getNodePath(), path)) {
-                return node;
+                return node.isRetired()
+                        ? null
+                        : node;
             }
         }
         return null;
@@ -420,13 +355,6 @@ public class PathwayTreePresenter
     }
 
     /**
-     * Whether the model is being shown as a graph rather than as a tree.
-     */
-    public boolean isGraphShown() {
-        return renderer == graphRenderer;
-    }
-
-    /**
      * Whether the model is being stepped through rather than looked at a change at a time. What
      * changed is marked once and left, instead of going on drawing the eye to a node that is about
      * to be replaced.
@@ -435,16 +363,8 @@ public class PathwayTreePresenter
         this.stepping = stepping;
     }
 
-    /**
-     * Told whenever the drawing is swapped for the other one, so a view around this one can offer
-     * whatever only makes sense against one of them.
-     */
     public void setNodeMenuHandler(final BiConsumer<PathNode, PopupPosition> nodeMenuHandler) {
         this.nodeMenuHandler = nodeMenuHandler;
-    }
-
-    public void setViewChangeHandler(final Runnable viewChangeHandler) {
-        this.viewChangeHandler = viewChangeHandler;
     }
 
     public void read(final Pathway pathway) {
@@ -577,7 +497,7 @@ public class PathwayTreePresenter
     // Whether the figures the drawing is made from have arrived. Drawn without them, every node
     // would appear at its smallest in the colour of never having changed, and then jump.
     private boolean waiting() {
-        return figures == null && renderer.usesHistory();
+        return figures == null;
     }
 
     private void reselect(final String uuid) {
@@ -681,8 +601,7 @@ public class PathwayTreePresenter
             // be taken off it first and put back on the one that replaces it.
             viewport.beforeDraw();
             html.setHTML(renderer.render(request));
-            viewport.afterDraw(keep, renderer.opensCentred(), renderer.isZoomable(),
-                    this::rootElement);
+            viewport.afterDraw(keep, this::rootElement);
         }
         reselect(restore);
         if (!wanted.isEmpty()) {
@@ -764,9 +683,7 @@ public class PathwayTreePresenter
         if (!highlightedPath) {
             return null;
         }
-        return renderer == graphRenderer
-                ? GRAPH_PULSE
-                : TREE_PULSE;
+        return PULSE;
     }
 
     // One run of the marking for every time the walk reaches this node. A single hold off can only say

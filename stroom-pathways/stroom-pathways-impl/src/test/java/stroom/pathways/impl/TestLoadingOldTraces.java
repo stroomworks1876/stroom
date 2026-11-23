@@ -27,6 +27,7 @@ import stroom.pathways.shared.PathwaysDoc;
 import stroom.pathways.shared.pathway.DifferenceType;
 import stroom.pathways.shared.pathway.HistoryBar;
 import stroom.pathways.shared.pathway.HistoryRow;
+import stroom.pathways.shared.pathway.MutationType;
 import stroom.pathways.shared.pathway.NamePathKey;
 import stroom.pathways.shared.pathway.NodeChange;
 import stroom.pathways.shared.pathway.PathNode;
@@ -793,6 +794,30 @@ class TestLoadingOldTraces {
         assertThat(asAt.getPathway().getRoot().getTimesUsed())
                 .as("yesterday's seven traces, not the three from a year ago")
                 .isEqualTo(7L);
+    }
+
+    @Test
+    void theConstraintsARemovalClearedAreNotListed() throws IOException {
+        load(Instant.now(), 1, 20L, "Commit");
+        final String commit = reader().fetchPathwayAsAt(doc, OPERATION, null, null)
+                .orElseThrow().getPathway().getRoot().getChildren().getFirst().getUuid();
+        shardStore.withShard(doc, 0, localDir ->
+                new PathwaysService(null, null, null, null, BYTE_BUFFERS,
+                        new MutationLog(BYTE_BUFFERS, new PathwaySerde(BYTE_BUFFER_FACTORY)),
+                        new PathwaySerde(BYTE_BUFFER_FACTORY), null)
+                        .removeFromModel(localDir, OPERATION, keyBytes(), commit));
+
+        final List<MutationType> listed = reader().findMutations(doc,
+                        new FindPathwayMutationCriteria(new PageRequest(0, 1000), List.of(), null, OPERATION,
+                                null)).getValues().stream()
+                .filter(row -> row instanceof PathwayMutation)
+                .map(row -> ((PathwayMutation) row).getType())
+                .toList();
+
+        assertThat(listed).contains(MutationType.NODE_REMOVED);
+        assertThat(listed)
+                .as("kept in the log for winding back, but the Node Removed row already says it")
+                .doesNotContain(MutationType.CONSTRAINT_CLEARED);
     }
 
     @Test

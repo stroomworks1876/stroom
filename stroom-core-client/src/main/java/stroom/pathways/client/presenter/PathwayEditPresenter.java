@@ -32,6 +32,7 @@ import stroom.pathways.shared.FindPathwayMutationCriteria;
 import stroom.pathways.shared.PathwayAsAt;
 import stroom.pathways.shared.PathwaysDoc;
 import stroom.pathways.shared.PathwaysResource;
+import stroom.pathways.shared.RemoveNode;
 import stroom.pathways.shared.UpdatePathway;
 import stroom.pathways.shared.otel.trace.NanoTime;
 import stroom.pathways.shared.pathway.HistoryRow;
@@ -53,6 +54,7 @@ import stroom.widget.button.client.ButtonView;
 import stroom.widget.customdatebox.client.ClientDateUtil;
 import stroom.widget.menu.client.presenter.IconMenuItem;
 import stroom.widget.menu.client.presenter.Item;
+import stroom.widget.menu.client.presenter.Separator;
 import stroom.widget.menu.client.presenter.ShowMenuEvent;
 import stroom.widget.popup.client.presenter.PopupPosition;
 import stroom.widget.tab.client.presenter.TabData;
@@ -255,19 +257,16 @@ public class PathwayEditPresenter
         // looked at.
         registerHandler(mutationListPresenter.getView().getRefreshButton().addClickHandler(e -> refresh()));
         registerHandler(pathListPresenter.getView().getRefreshButton().addClickHandler(e -> refresh()));
-        // Constraints are the only thing on this screen that writes, and they are written straight
-        // into the model the moment the constraint dialog is accepted. This is how the tab learns
-        // there is something to save.
+        // Constraints are written straight into the model the moment the constraint dialog is
+        // accepted, and wait for Save. This is how the tab learns there is something to save.
+        // Removing a node is not one of these: it is sent to the server there and then.
         registerHandler(constraintListPresenter.addDirtyHandler(e -> setDirty(true)));
         registerHandler(playButton.addClickHandler(e -> play()));
         registerHandler(stopButton.addClickHandler(e -> stop()));
-        // Still driven by which drawing is on show: only the graph is worth watching change, and the
-        // tree says the same thing a row at a time.
-        pathwayTreePresenter.setViewChangeHandler(this::showPlayButtons);
 
         // What a reader can ask of a node, offered where the node is. Built here rather than on the
-        // drawing because everything it offers narrows the table beside it, and the drawing knows
-        // nothing of that.
+        // drawing because what it offers narrows the table beside it or removes the node from the
+        // model, and the drawing knows nothing of either.
         pathwayTreePresenter.setNodeMenuHandler(this::showNodeMenu);
 
         // Narrowing the table to one node narrows the plot over it too. Asked for rather than
@@ -660,16 +659,27 @@ public class PathwayEditPresenter
         showPlayButtons();
     }
 
-    // Narrowing the paths to a node, from the drawing. The node has already been picked out by the
-    // time this runs, so every entry acts on the one the reader asked about.
+    // Narrowing the table to a node, or removing it, from the drawing. The node has already been
+    // picked out by the time this runs, so every entry acts on the one the reader asked about.
     private void showNodeMenu(final PathNode node, final PopupPosition position) {
         if (node == null) {
             return;
         }
         // What the menu offers is what the table under it can do, so it follows whichever tab is up.
-        final List<Item> items = changesTab.equals(selectedTab)
+        final List<Item> items = new ArrayList<>(changesTab.equals(selectedTab)
                 ? changeFilterItems()
-                : pathFilterItems();
+                : pathFilterItems());
+        // Not on the root, because removing that is deleting the pathway, which the list does.
+        if (!readOnly && NullSafe.list(node.getNodePath()).size() > 1) {
+            items.add(new Separator(10));
+            items.add(new IconMenuItem.Builder()
+                    .priority(11)
+                    .icon(SvgImage.DELETE)
+                    .text("Remove node")
+                    .command(() -> confirmRemove(node))
+                    .enabled(latest())
+                    .build());
+        }
 
         ShowMenuEvent
                 .builder()
@@ -678,13 +688,59 @@ public class PathwayEditPresenter
                 .fire(this);
     }
 
-    private void showPlayButtons() {
-        final boolean graph = pathwayTreePresenter.isGraphShown();
-        playButton.setVisible(graph && !stepper.isRunning());
-        stopButton.setVisible(graph && stepper.isRunning());
-        if (!graph) {
-            stepper.cancel();
+    private void confirmRemove(final PathNode node) {
+        final int under = count(node) - 1;
+        final String what = under == 0
+                ? "'" + node.getName() + "'"
+                : "'" + node.getName() + "' and the " + under + " node(s) under it";
+        ConfirmEvent.fire(this,
+                "Remove " + what + " from the model? Every path through them is dropped. Each node comes "
+                + "back, and learns its constraints again, the next time a trace carries it.",
+                ok -> {
+                    if (ok) {
+                        removeNode(node);
+                    }
+                });
+    }
+
+    // Whether the drawing is the pathway as it stands, which is what a removal acts on. The server
+    // sends no layout, and folds nothing, only when that is what it sent; a node drawn as it was at an
+    // earlier moment may already have been removed since.
+    private boolean latest() {
+        return asAt != null && !asAt.isFolded() && asAt.getLayout() == null;
+    }
+
+    // The model and the changes are both asked for again once it lands, because the removal added rows
+    // to the one as well as changing the other. Asked for again on a refusal too: the model on show is
+    // out of date, which is the reason the server gives one.
+    private void removeNode(final PathNode node) {
+        restFactory
+                .create(PATHWAYS_RESOURCE)
+                .method(res -> res.removeNode(new RemoveNode(docRef, name, node.getUuid())))
+                .onSuccess(removed -> {
+                    if (!Boolean.TRUE.equals(removed)) {
+                        AlertEvent.fireWarn(this, "'" + node.getName() + "' was not removed. It has "
+                                               + "already been removed or retired since this was drawn.",
+                                null);
+                    }
+                    refresh();
+                })
+                .onFailure(new DefaultErrorHandler(this, null))
+                .taskMonitorFactory(this)
+                .exec();
+    }
+
+    private static int count(final PathNode node) {
+        int count = 1;
+        for (final PathNode child : NullSafe.list(node.getChildren())) {
+            count += count(child);
         }
+        return count;
+    }
+
+    private void showPlayButtons() {
+        playButton.setVisible(!stepper.isRunning());
+        stopButton.setVisible(stepper.isRunning());
     }
 
     // The model as it stood at the change being looked at, or as it stands now where none is.
@@ -756,8 +812,8 @@ public class PathwayEditPresenter
         return items;
     }
 
-    // Offered on a change's node: the same node on the drawing. Greyed out where the model on show has
-    // no such node, which is the drawing wound back to before the change that added it.
+    // Offered on a change's node: the same node on the drawing. Greyed out where the drawing does not
+    // show it - wound back to before the change that added it, or with the node retired or removed.
     private List<Item> changeNodeItems(final List<String> path) {
         final PathNode node = pathwayTreePresenter.findNode(path);
         return List.of(new IconMenuItem.Builder()
@@ -843,7 +899,11 @@ public class PathwayEditPresenter
     }
 
     private void showSettledConstraints() {
-        final PathNode node = pathwayTreePresenter.getSelectionModel().getSelectedObject();
+        final PathNode selected = pathwayTreePresenter.getSelectionModel().getSelectedObject();
+        // A retired or not-yet-added node keeps its selection but is not on the drawing.
+        final PathNode node = selected == null
+                ? null
+                : pathwayTreePresenter.findNode(selected.getNodePath());
         constraintListPresenter.setData(node,
                 readOnly,
                 mutationListPresenter.getSelectedConstraints(NullSafe.get(node, PathNode::getNodePath)));
