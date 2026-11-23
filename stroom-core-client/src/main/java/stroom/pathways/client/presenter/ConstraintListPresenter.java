@@ -48,6 +48,7 @@ import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.function.Consumer;
 import java.util.function.Function;
 import java.util.stream.Collectors;
 
@@ -72,6 +73,8 @@ public class ConstraintListPresenter
 
     //    private String filter;
     private boolean readOnly = true;
+    private boolean removable;
+    private Consumer<List<String>> removeHandler;
 
     @Inject
     public ConstraintListPresenter(final EventBus eventBus,
@@ -152,15 +155,8 @@ public class ConstraintListPresenter
 
     private void enableButtons() {
         newButton.setEnabled(!readOnly);
-        if (!readOnly) {
-            final Constraint selectedElement = selectionModel.getSelected();
-            final boolean enabled = selectedElement != null;
-            editButton.setEnabled(enabled);
-            removeButton.setEnabled(enabled);
-        } else {
-            editButton.setEnabled(false);
-            removeButton.setEnabled(false);
-        }
+        editButton.setEnabled(!readOnly && selectionModel.getSelected() != null);
+        removeButton.setEnabled(!readOnly && removable && !selectionModel.getSelectedItems().isEmpty());
 
         if (readOnly) {
             newButton.setTitle("New constraint disabled as read only");
@@ -169,7 +165,9 @@ public class ConstraintListPresenter
         } else {
             newButton.setTitle("New Constraint");
             editButton.setTitle("Edit Constraint");
-            removeButton.setTitle("Remove Constraint");
+            removeButton.setTitle(removable
+                    ? "Remove Constraint"
+                    : "Remove constraint only works on the model as it stands now");
         }
     }
 
@@ -285,18 +283,14 @@ public class ConstraintListPresenter
     private void onRemove() {
         final List<Constraint> list = selectionModel.getSelectedItems();
         if (list != null && !list.isEmpty()) {
-            String message = "Are you sure you want to delete the selected constraint?";
-            if (list.size() > 1) {
-                message = "Are you sure you want to delete the selected constraints?";
-            }
+            final String message = "Are you sure you want to delete the selected constraint"
+                                   + (list.size() > 1 ? "s?" : "?");
 
             ConfirmEvent.fire(this, message, result -> {
-                if (result) {
-                    for (final Constraint constraint : list) {
-                        pathNode.getConstraints().remove(constraint.getName());
-                    }
-                    refresh();
-                    DirtyEvent.fire(this, true);
+                if (result && removeHandler != null) {
+                    removeHandler.accept(list.stream()
+                            .map(Constraint::getName)
+                            .collect(Collectors.toList()));
                 }
             });
         }
@@ -313,16 +307,28 @@ public class ConstraintListPresenter
         return addHandlerToSource(DirtyEvent.getType(), handler);
     }
 
+    public void setRemoveHandler(final Consumer<List<String>> removeHandler) {
+        this.removeHandler = removeHandler;
+    }
+
     /**
+     * @param removable whether removing constraints is allowed, which is only so while the node shown
+     *                  is the model as it stands now.
      * @param changed the constraints the change being looked at moved, which are marked so the reader
      *                can see which of a node's constraints that change was about. Empty where no
      *                change is being looked at.
      */
-    public void setData(final PathNode pathNode, final boolean readOnly, final Set<String> changed) {
+    public void setData(final PathNode pathNode,
+                        final boolean readOnly,
+                        final boolean removable,
+                        final Set<String> changed) {
         this.pathNode = pathNode;
         this.readOnly = readOnly;
+        this.removable = removable;
         this.changed = NullSafe.set(changed);
+        selectionModel.clear(false);
         refresh();
+        enableButtons();
     }
 
     private void refresh() {

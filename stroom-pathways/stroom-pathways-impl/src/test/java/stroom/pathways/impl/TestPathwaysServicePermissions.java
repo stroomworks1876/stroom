@@ -20,6 +20,7 @@ import stroom.cluster.lock.api.ClusterLockService;
 import stroom.docref.DocRef;
 import stroom.pathways.shared.DeletePathway;
 import stroom.pathways.shared.PathwaysDoc;
+import stroom.pathways.shared.RemoveConstraints;
 import stroom.pathways.shared.RemoveNode;
 import stroom.planb.shared.SharedFileStoreSettings;
 import stroom.security.api.SecurityContext;
@@ -30,6 +31,8 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.Mock;
 import org.mockito.MockitoAnnotations;
+
+import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -91,6 +94,16 @@ class TestPathwaysServicePermissions {
     }
 
     @Test
+    void removeConstraintsRefusedWithoutEdit() {
+        assertThatThrownBy(() -> service.removeConstraints(
+                new RemoveConstraints(docRef, PATHWAY, "node-uuid", List.of("duration"))))
+                .isInstanceOf(PermissionException.class);
+
+        verify(securityContext).hasDocumentPermission(docRef, DocumentPermission.EDIT);
+        verifyNoInteractions(clusterLockService, shardStore);
+    }
+
+    @Test
     void deletePathwayRefusedWithoutEdit() {
         assertThatThrownBy(() -> service.deletePathway(new DeletePathway(docRef, PATHWAY)))
                 .isInstanceOf(PermissionException.class);
@@ -104,6 +117,17 @@ class TestPathwaysServicePermissions {
         grantEditOnly();
 
         assertThatCode(() -> service.removeNode(new RemoveNode(docRef, PATHWAY, "node-uuid")))
+                .doesNotThrowAnyException();
+
+        verify(clusterLockService).lock(anyString(), any());
+    }
+
+    @Test
+    void removeConstraintsAllowedWithEdit() {
+        grantEditOnly();
+
+        assertThatCode(() -> service.removeConstraints(
+                new RemoveConstraints(docRef, PATHWAY, "node-uuid", List.of("duration"))))
                 .doesNotThrowAnyException();
 
         verify(clusterLockService).lock(anyString(), any());

@@ -26,6 +26,7 @@ import stroom.pathways.shared.otel.trace.NanoDuration;
 import stroom.pathways.shared.otel.trace.Span;
 import stroom.pathways.shared.otel.trace.SpanKind;
 import stroom.pathways.shared.otel.trace.Trace;
+import stroom.pathways.shared.pathway.MutationType;
 import stroom.pathways.shared.pathway.PathNode;
 import stroom.pathways.shared.pathway.PathwayMutation;
 import stroom.planb.impl.PlanBPaths;
@@ -270,6 +271,69 @@ class TestReadingArchivedChanges {
         archiveToBucketWithoutDropping();
 
         assertThat(changesListed().getPageResponse().getTotal()).isEqualTo(total);
+    }
+
+    @Test
+    void aConstraintDeletedOnItsOwnIsListed() throws IOException {
+        apply(withChildren("a", 10, 5, 7));
+        final PathNode commit = childOf(asAt(null), "Commit");
+        final String constraint = commit.getConstraints().keySet().iterator().next();
+
+        deleteConstraint(commit.getUuid(), constraint);
+
+        assertThat(listed(MutationType.CONSTRAINT_REMOVED))
+                .extracting(PathwayMutation::getConstraint)
+                .containsExactly(constraint);
+    }
+
+    @Test
+    void aNodeRemovalIsListedWithoutTheConstraintsItRemoved() throws IOException {
+        apply(withChildren("a", 10, 5, 7));
+        final PathNode commit = childOf(asAt(null), "Commit");
+        final String constraint = commit.getConstraints().keySet().iterator().next();
+        deleteConstraint(commit.getUuid(), constraint);
+
+        removeNode(childOf(asAt(null), "Fetch").getUuid());
+
+        assertThat(liveChanges())
+                .as("the removal did write removed rows for the node's constraints")
+                .filteredOn(m -> MutationType.CONSTRAINT_REMOVED.equals(m.getType()))
+                .hasSizeGreaterThan(1);
+        assertThat(listed(MutationType.NODE_REMOVED)).hasSize(1);
+        assertThat(listed(MutationType.CONSTRAINT_REMOVED))
+                .as("only the constraint deleted on its own, not the ones the removal removed")
+                .extracting(PathwayMutation::getConstraint)
+                .containsExactly(constraint);
+    }
+
+    private List<PathwayMutation> listed(final MutationType type) {
+        return changesListed().getValues().stream()
+                .filter(PathwayMutation.class::isInstance)
+                .map(PathwayMutation.class::cast)
+                .filter(m -> type.equals(m.getType()))
+                .toList();
+    }
+
+    private static PathNode childOf(final PathwayAsAt asAt, final String name) {
+        return asAt.getPathway().getRoot().getChildren().stream()
+                .filter(node -> name.equals(node.getName()))
+                .findFirst()
+                .orElseThrow();
+    }
+
+    private void deleteConstraint(final String uuid, final String constraint) throws IOException {
+        shardStore.withShard(doc, shard(), localDir -> service().removeConstraintsFromModel(
+                localDir, OPERATION, keyBytes(), uuid, List.of(constraint)));
+    }
+
+    private void removeNode(final String uuid) throws IOException {
+        shardStore.withShard(doc, shard(), localDir ->
+                service().removeFromModel(localDir, OPERATION, keyBytes(), uuid));
+    }
+
+    private static PathwaysService service() {
+        return new PathwaysService(null, null, null, null, BYTE_BUFFERS, new MutationLog(BYTE_BUFFERS,
+                new PathwaySerde(BYTE_BUFFER_FACTORY)), new PathwaySerde(BYTE_BUFFER_FACTORY), null);
     }
 
     @Test

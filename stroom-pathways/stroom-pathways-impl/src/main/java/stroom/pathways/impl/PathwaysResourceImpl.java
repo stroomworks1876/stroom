@@ -30,6 +30,7 @@ import stroom.pathways.shared.PathwayMutationResultPage;
 import stroom.pathways.shared.PathwayResultPage;
 import stroom.pathways.shared.PathwaysDoc;
 import stroom.pathways.shared.PathwaysResource;
+import stroom.pathways.shared.RemoveConstraints;
 import stroom.pathways.shared.RemoveNode;
 import stroom.pathways.shared.UpdatePathway;
 import stroom.util.shared.EntityServiceException;
@@ -44,6 +45,9 @@ class PathwaysResourceImpl implements PathwaysResource {
     private static final String REMOVE_NODE_EVENT = "RemovePathwayNode";
     private static final String REMOVE_NODE_DESCRIPTION =
             "Removing a node and everything under it from learnt pathway";
+    private static final String REMOVE_CONSTRAINTS_EVENT = "RemovePathwayConstraints";
+    private static final String REMOVE_CONSTRAINTS_DESCRIPTION =
+            "Removing constraints from a node of learnt pathway";
     private static final String DELETE_PATHWAY_EVENT = "DeletePathway";
     private static final String DELETE_PATHWAY_DESCRIPTION = "Deleting learnt pathway and all its history";
 
@@ -153,6 +157,21 @@ class PathwaysResourceImpl implements PathwaysResource {
         } catch (final RuntimeException e) {
             documentEventLogProvider.get()
                     .delete(removeNode, REMOVE_NODE_EVENT, REMOVE_NODE_DESCRIPTION, e);
+            throw e;
+        }
+    }
+
+    @AutoLogged(OperationType.MANUALLY_LOGGED)
+    @Override
+    public Boolean removeConstraints(final RemoveConstraints removeConstraints) {
+        try {
+            final Boolean removed = pathwaysServiceProvider.get().removeConstraints(removeConstraints);
+            documentEventLogProvider.get()
+                    .delete(removeConstraints, REMOVE_CONSTRAINTS_EVENT, REMOVE_CONSTRAINTS_DESCRIPTION, null);
+            return removed;
+        } catch (final RuntimeException e) {
+            documentEventLogProvider.get()
+                    .delete(removeConstraints, REMOVE_CONSTRAINTS_EVENT, REMOVE_CONSTRAINTS_DESCRIPTION, e);
             throw e;
         }
     }

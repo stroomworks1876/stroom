@@ -29,9 +29,11 @@ import stroom.pathways.shared.PathwayAsAt;
 import stroom.pathways.shared.PathwayMutationResultPage;
 import stroom.pathways.shared.PathwayResultPage;
 import stroom.pathways.shared.PathwaysDoc;
+import stroom.pathways.shared.RemoveConstraints;
 import stroom.pathways.shared.RemoveNode;
 import stroom.pathways.shared.UpdatePathway;
 import stroom.pathways.shared.otel.trace.NanoTime;
+import stroom.pathways.shared.pathway.Constraint;
 import stroom.pathways.shared.pathway.MutationType;
 import stroom.pathways.shared.pathway.PathNode;
 import stroom.pathways.shared.pathway.PathStep;
@@ -331,18 +333,124 @@ public class PathwaysService {
                 }
 
                 final Pathway updated = found[0].copy().root(newRoot).paths(paths).build();
-                byteBuffers.useBytes(pathwayKey, (Consumer<ByteBuffer>) keyByteBuffer ->
-                        pathwaySerde.writePathway(updated, 0, valueByteBuffer ->
-                                db.getPathways().insert(writer, keyByteBuffer, valueByteBuffer)));
-                final PathwayHistory history = mutationLog.history(writer, db, pathwayKey);
-                mutationLog.append(writer, db, pathwayKey, mutations, newRoot, -1, history);
-                mutationLog.writeCounts(writer, db, pathwayKey, history);
-                writer.commit();
+                save(writer, db, pathwayKey, updated, mutations);
                 LOGGER.info(() -> LogUtil.message("Removed {} node(s) from pathway {} at {}",
                         gone.size(), name, uuid));
                 return true;
             }
         }
+    }
+
+    private void save(final LmdbWriter writer,
+                      final PathwaysDb db,
+                      final byte[] pathwayKey,
+                      final Pathway updated,
+                      final List<PathwayMutation> mutations) {
+        byteBuffers.useBytes(pathwayKey, (Consumer<ByteBuffer>) keyByteBuffer ->
+                pathwaySerde.writePathway(updated, 0, valueByteBuffer ->
+                        db.getPathways().insert(writer, keyByteBuffer, valueByteBuffer)));
+        final PathwayHistory history = mutationLog.history(writer, db, pathwayKey);
+        mutationLog.append(writer, db, pathwayKey, mutations, updated.getRoot(), -1, history);
+        mutationLog.writeCounts(writer, db, pathwayKey, history);
+        writer.commit();
+    }
+
+    /**
+     * Removes the named constraints from one node of a learnt pathway, with a change row for each.
+     * The next trace that carries one of them learns it again.
+     *
+     * <p>Takes the same shard lock as {@link #removeNode}.
+     *
+     * @return whether anything was removed. False when the node has been removed or retired, or holds
+     * none of the named constraints, since the caller last saw it.
+     */
+    public Boolean removeConstraints(final RemoveConstraints removeConstraints) {
+        final PathwaysDoc doc = pathwaysStore.readDocument(removeConstraints.getDocRef());
+        if (doc == null) {
+            throw new DocumentNotFoundException(removeConstraints.getDocRef());
+        }
+        checkEdit(doc);
+        final String name = removeConstraints.getName();
+        final String uuid = removeConstraints.getNodeUuid();
+        final SharedFileStoreSettings settings = doc.getSharedFileStore();
+        if (settings == null
+            || NullSafe.isBlankString(settings.getSharedPath())
+            || NullSafe.isBlankString(name)
+            || NullSafe.isBlankString(uuid)) {
+            return Boolean.FALSE;
+        }
+
+        final int shard = ShardKeyRouter.computeShardIndex(name, Math.max(1, settings.getShardCount()));
+        final byte[] pathwayKey = name.getBytes(StandardCharsets.UTF_8);
+        final AtomicBoolean removed = new AtomicBoolean();
+        clusterLockService.lock(PathwaysProcessor.lockName(doc.getUuid(), shard), () -> {
+            try {
+                shardStore.withShard(doc, shard, localDir -> {
+                    removed.set(removeConstraintsFromModel(localDir, name, pathwayKey, uuid,
+                            removeConstraints.getConstraints()));
+                    return removed.get();
+                });
+            } catch (final IOException e) {
+                throw new UncheckedIOException(e);
+            }
+        });
+        return removed.get();
+    }
+
+    // Not private so that what it does to a shard can be tested without a cluster lock and a document
+    // store standing behind it.
+    boolean removeConstraintsFromModel(final Path localDir,
+                                       final String name,
+                                       final byte[] pathwayKey,
+                                       final String uuid,
+                                       final List<String> names) {
+        try (final PathwaysDb db = PathwaysDb.create(localDir, byteBuffers, false)) {
+            try (final LmdbWriter writer = db.createWriter()) {
+                final Pathway[] found = {null};
+                withKey(pathwayKey, key -> found[0] = db.getPathways().get(writer.getWriteTxn(), key,
+                        value -> value == null
+                                ? null
+                                : pathwaySerde.readPathway(value)));
+                final PathNode root = NullSafe.get(found[0], Pathway::getRoot);
+                final PathNode target = root == null
+                        ? null
+                        : find(root, uuid);
+                if (target == null || target.isRetired()) {
+                    return false;
+                }
+
+                final NanoTime now = NanoTimeUtil.fromInstant(Instant.now());
+                final List<PathwayMutation> mutations = new ArrayList<>();
+                final Map<String, Constraint> kept = new HashMap<>(NullSafe.map(target.getConstraints()));
+                for (final String constraintName : NullSafe.list(names)) {
+                    final Constraint constraint = kept.remove(constraintName);
+                    if (constraint != null) {
+                        mutations.add(new PathwayMutation(0L, now, now, -1, null, null, target.getNodePath(),
+                                target.getUuid(), constraintName, MutationType.CONSTRAINT_REMOVED,
+                                constraint.isOptional(), constraint.getValue(), null));
+                    }
+                }
+                if (mutations.isEmpty()) {
+                    return false;
+                }
+
+                final PathNode changed = target.copy().constraints(kept).lastChangedTime(now).build();
+                final PathNode newRoot = replace(root, uuid, changed);
+                save(writer, db, pathwayKey, found[0].copy().root(newRoot).build(), mutations);
+                LOGGER.info(() -> LogUtil.message("Removed {} constraint(s) from pathway {} at {}",
+                        mutations.size(), name, uuid));
+                return true;
+            }
+        }
+    }
+
+    private static PathNode replace(final PathNode node, final String uuid, final PathNode with) {
+        if (uuid.equals(node.getUuid())) {
+            return with;
+        }
+        final List<PathNode> children = new ArrayList<>();
+        NullSafe.list(node.getChildren()).forEach(child -> children.add(replace(child, uuid, with)));
+        return node.copy().children(children).build();
     }
 
     private static PathNode find(final PathNode node, final String uuid) {
@@ -379,7 +487,7 @@ public class PathwaysService {
             }
             NullSafe.map(node.getConstraints()).forEach((name, constraint) ->
                     mutations.add(new PathwayMutation(0L, now, now, -1, null, null, node.getNodePath(),
-                            node.getUuid(), name, MutationType.CONSTRAINT_CLEARED, constraint.isOptional(),
+                            node.getUuid(), name, MutationType.CONSTRAINT_REMOVED, constraint.isOptional(),
                             constraint.getValue(), null)));
             builder.constraints(new HashMap<>()).lastChangedTime(now);
         }

@@ -116,4 +116,12 @@ public interface PathwaysResource extends RestResource, DirectRestService, Fetch
             operationId = "removePathwayNode")
     Boolean removeNode(
             @Parameter(description = "change", required = true) RemoveNode removeNode);
+
+    @POST
+    @Path("/removeConstraints")
+    @Operation(
+            summary = "Remove constraints from a node of a learnt pathway",
+            operationId = "removePathwayConstraints")
+    Boolean removeConstraints(
+            @Parameter(description = "change", required = true) RemoveConstraints removeConstraints);
 }

@@ -85,10 +85,11 @@ public enum MutationType implements HasDisplayValue, HasPrimitiveValue {
      */
     NODE_REVIVED("Node Revived", 17),
     /**
-     * A constraint wiped because a user removed its node, so the next trace to carry the node learns it
-     * again from scratch. Holds the value and the optional flag it had, so a replay can put both back.
+     * A constraint a user removed, either on its own or along with its node. The next trace that carries
+     * it learns it again from scratch. Holds the value and the optional flag it had, so a replay can put
+     * both back.
      */
-    CONSTRAINT_CLEARED("Constraint Cleared", 18),
+    CONSTRAINT_REMOVED("Constraint Removed", 18),
     /**
      * A node a user removed from the model. Handled exactly as {@link #NODE_RETIRED}; it is a separate
      * type only so the history says a user did it rather than traces no longer carrying the node.

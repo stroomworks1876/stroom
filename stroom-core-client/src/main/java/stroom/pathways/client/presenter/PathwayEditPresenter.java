@@ -32,6 +32,7 @@ import stroom.pathways.shared.FindPathwayMutationCriteria;
 import stroom.pathways.shared.PathwayAsAt;
 import stroom.pathways.shared.PathwaysDoc;
 import stroom.pathways.shared.PathwaysResource;
+import stroom.pathways.shared.RemoveConstraints;
 import stroom.pathways.shared.RemoveNode;
 import stroom.pathways.shared.UpdatePathway;
 import stroom.pathways.shared.otel.trace.NanoTime;
@@ -259,8 +260,10 @@ public class PathwayEditPresenter
         registerHandler(pathListPresenter.getView().getRefreshButton().addClickHandler(e -> refresh()));
         // Constraints are written straight into the model the moment the constraint dialog is
         // accepted, and wait for Save. This is how the tab learns there is something to save.
-        // Removing a node is not one of these: it is sent to the server there and then.
+        // Removing a node or a constraint is not one of these: it is sent to the server there and
+        // then.
         registerHandler(constraintListPresenter.addDirtyHandler(e -> setDirty(true)));
+        constraintListPresenter.setRemoveHandler(this::removeConstraints);
         registerHandler(playButton.addClickHandler(e -> play()));
         registerHandler(stopButton.addClickHandler(e -> stop()));
 
@@ -730,6 +733,30 @@ public class PathwayEditPresenter
                 .exec();
     }
 
+    private void removeConstraints(final List<String> names) {
+        final PathNode node = shownNode();
+        if (node == null) {
+            return;
+        }
+        restFactory
+                .create(PATHWAYS_RESOURCE)
+                .method(res -> res.removeConstraints(
+                        new RemoveConstraints(docRef, name, node.getUuid(), names)))
+                .onSuccess(removed -> {
+                    if (!Boolean.TRUE.equals(removed)) {
+                        AlertEvent.fireWarn(this, "The constraints were not removed from '"
+                                                  + node.getName() + "'. The node has been removed or "
+                                                  + "retired, or the constraints have gone, since this "
+                                                  + "was drawn.",
+                                null);
+                    }
+                    refresh();
+                })
+                .onFailure(new DefaultErrorHandler(this, null))
+                .taskMonitorFactory(this)
+                .exec();
+    }
+
     private static int count(final PathNode node) {
         int count = 1;
         for (final PathNode child : NullSafe.list(node.getChildren())) {
@@ -898,14 +925,19 @@ public class PathwayEditPresenter
         });
     }
 
-    private void showSettledConstraints() {
+    private PathNode shownNode() {
         final PathNode selected = pathwayTreePresenter.getSelectionModel().getSelectedObject();
         // A retired or not-yet-added node keeps its selection but is not on the drawing.
-        final PathNode node = selected == null
+        return selected == null
                 ? null
                 : pathwayTreePresenter.findNode(selected.getNodePath());
+    }
+
+    private void showSettledConstraints() {
+        final PathNode node = shownNode();
         constraintListPresenter.setData(node,
                 readOnly,
+                !readOnly && latest(),
                 mutationListPresenter.getSelectedConstraints(NullSafe.get(node, PathNode::getNodePath)));
         // How often the model has been taught something about this node is not on the node — the
         // changes say it. Asked of the drawing, which has already worked it out to size the node by,

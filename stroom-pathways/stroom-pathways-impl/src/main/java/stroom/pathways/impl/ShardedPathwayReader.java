@@ -75,6 +75,7 @@ import java.util.TreeMap;
 import java.util.TreeSet;
 import java.util.function.Consumer;
 import java.util.function.Function;
+import java.util.stream.Collectors;
 
 /**
  * Answers a pathway search from every shard of a document's model.
@@ -282,10 +283,16 @@ public class ShardedPathwayReader {
         if (window != null) {
             mutations.removeIf(mutation -> outside(mutation, window));
         }
-        // A removal wipes every constraint of every node it takes, a row apiece, and the Node Removed
-        // row already says what happened. They are kept in the log because winding back past the
-        // removal reads them from there to put the constraints back, not from this list.
-        mutations.removeIf(mutation -> MutationType.CONSTRAINT_CLEARED.equals(mutation.getType()));
+        // A removal wipes every constraint of every node it takes, a row apiece, all stamped with the
+        // time of its Node Removed row, and that row already says what happened. Those rows are left out
+        // here; they stay in the log because winding back past the removal reads them from there to
+        // put the constraints back. A constraint removed on its own has a time of its own and is listed.
+        final Set<NanoTime> removalTimes = mutations.stream()
+                .filter(mutation -> MutationType.NODE_REMOVED.equals(mutation.getType()))
+                .map(PathwayMutation::getTime)
+                .collect(Collectors.toSet());
+        mutations.removeIf(mutation -> MutationType.CONSTRAINT_REMOVED.equals(mutation.getType())
+                                       && removalTimes.contains(mutation.getTime()));
 
         final List<HistoryRow> rows = new ArrayList<>(
                 differences(doc, shard, keyBytes, found[0], window));

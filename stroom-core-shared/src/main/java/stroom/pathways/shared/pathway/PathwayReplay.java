@@ -84,7 +84,7 @@ public final class PathwayReplay {
         if (MutationType.NODE_RETIRED.equals(type) || MutationType.NODE_REMOVED.equals(type)) {
             return change(root, mutation.getNodePath(), node -> node.copy().retiredTime(null).build());
         }
-        if (MutationType.CONSTRAINT_CLEARED.equals(type)) {
+        if (MutationType.CONSTRAINT_REMOVED.equals(type)) {
             // The constraint is gone from the node by now, so the flag comes from the change rather
             // than from what the node holds.
             return change(root, mutation.getNodePath(), node -> withConstraint(node, mutation.getConstraint(),
@@ -128,7 +128,7 @@ public final class PathwayReplay {
             return change(root, mutation.getNodePath(),
                     node -> node.copy().retiredTime(mutation.getTime()).build());
         }
-        if (MutationType.CONSTRAINT_CLEARED.equals(type)) {
+        if (MutationType.CONSTRAINT_REMOVED.equals(type)) {
             return change(root, mutation.getNodePath(),
                     node -> withConstraint(node, mutation.getConstraint(), null));
         }

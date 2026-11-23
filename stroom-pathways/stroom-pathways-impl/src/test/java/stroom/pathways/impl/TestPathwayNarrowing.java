@@ -448,6 +448,80 @@ class TestPathwayNarrowing {
     }
 
     @Test
+    void removingAConstraintClearsItAndWritesOneChangeRow(@TempDir final Path tempDir) {
+        applied(tempDir, List.of(withChildren(0, "Ping", "Commit")));
+        final PathNode was = child(tempDir, "Commit");
+        final String constraint = was.getConstraints().keySet().iterator().next();
+
+        assertThat(constraintsRemoved(tempDir, was.getUuid(), constraint)).isTrue();
+
+        final PathNode commit = child(tempDir, "Commit");
+        assertThat(commit.getConstraints()).doesNotContainKey(constraint);
+        assertThat(commit.getConstraints()).hasSize(was.getConstraints().size() - 1);
+        assertThat(commit.isRetired()).isFalse();
+        assertThat(from(tempDir, MutationType.CONSTRAINT_REMOVED))
+                .hasSize(1)
+                .allMatch(m -> constraint.equals(m.getConstraint()));
+    }
+
+    @Test
+    void aReplayFromBeforeAConstraintWasRemovedShowsIt(@TempDir final Path tempDir) {
+        applied(tempDir, List.of(withChildren(0, "Ping", "Commit")));
+        final PathNode was = child(tempDir, "Commit");
+        final String constraint = was.getConstraints().keySet().iterator().next();
+
+        constraintsRemoved(tempDir, was.getUuid(), constraint);
+        final PathNode before = PathwayReplay.rewind(onlyPathway(tempDir).getRoot(),
+                from(tempDir, MutationType.CONSTRAINT_REMOVED));
+
+        assertThat(child(before, "Commit").getConstraints())
+                .usingRecursiveComparison()
+                .comparingOnlyFields("name", "value", "optional")
+                .isEqualTo(was.getConstraints());
+    }
+
+    @Test
+    void aTraceThatCarriesARemovedConstraintLearnsItAgain(@TempDir final Path tempDir) {
+        applied(tempDir, List.of(withChildren(0, "Ping", "Commit")));
+        final PathNode was = child(tempDir, "Commit");
+        final String constraint = was.getConstraints().keySet().iterator().next();
+        constraintsRemoved(tempDir, was.getUuid(), constraint);
+        final long removal = from(tempDir, MutationType.CONSTRAINT_REMOVED).getLast().getSequence();
+
+        applied(tempDir, List.of(withChildren(2, "Ping", "Commit")));
+
+        assertThat(child(tempDir, "Commit").getConstraints()).containsKey(constraint);
+        assertThat(mutations(tempDir))
+                .anyMatch(m -> MutationType.CONSTRAINT_ADDED.equals(m.getType())
+                               && m.getSequence() > removal
+                               && constraint.equals(m.getConstraint()));
+    }
+
+    @Test
+    void constraintsOfARetiredNodeOrNotHeldAreNotRemoved(@TempDir final Path tempDir) {
+        applied(tempDir, List.of(withChildren(0, "Ping", "Commit")));
+        final PathNode was = child(tempDir, "Commit");
+        final String constraint = was.getConstraints().keySet().iterator().next();
+        final int rows = mutations(tempDir).size();
+
+        assertThat(constraintsRemoved(tempDir, was.getUuid(), "no-such-constraint")).isFalse();
+        assertThat(constraintsRemoved(tempDir, "no-such-node", constraint)).isFalse();
+        assertThat(mutations(tempDir)).hasSize(rows);
+
+        removed(tempDir, "Commit");
+        final int afterRemoval = mutations(tempDir).size();
+        assertThat(constraintsRemoved(tempDir, was.getUuid(), constraint)).isFalse();
+        assertThat(mutations(tempDir)).hasSize(afterRemoval);
+    }
+
+    private static boolean constraintsRemoved(final Path dir, final String uuid, final String constraint) {
+        final String name = onlyPathway(dir).getName();
+        return new PathwaysService(null, null, null, null, BYTE_BUFFERS, mutationLog(), serde(), null)
+                .removeConstraintsFromModel(dir, name, name.getBytes(StandardCharsets.UTF_8), uuid,
+                        List.of(constraint));
+    }
+
+    @Test
     void aWindowOfSevenDaysKeepsTheSevenDaysBeforeNow() {
         final Instant midnight = Instant.ofEpochMilli(BASE + (10 * DAY_MS));
 

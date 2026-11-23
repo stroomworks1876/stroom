@@ -797,7 +797,7 @@ class TestLoadingOldTraces {
     }
 
     @Test
-    void theConstraintsARemovalClearedAreNotListed() throws IOException {
+    void theConstraintsANodeRemovalTookAreNotListed() throws IOException {
         load(Instant.now(), 1, 20L, "Commit");
         final String commit = reader().fetchPathwayAsAt(doc, OPERATION, null, null)
                 .orElseThrow().getPathway().getRoot().getChildren().getFirst().getUuid();
@@ -817,7 +817,7 @@ class TestLoadingOldTraces {
         assertThat(listed).contains(MutationType.NODE_REMOVED);
         assertThat(listed)
                 .as("kept in the log for winding back, but the Node Removed row already says it")
-                .doesNotContain(MutationType.CONSTRAINT_CLEARED);
+                .doesNotContain(MutationType.CONSTRAINT_REMOVED);
     }
 
     @Test
