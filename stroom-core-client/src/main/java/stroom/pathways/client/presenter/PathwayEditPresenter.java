@@ -697,8 +697,7 @@ public class PathwayEditPresenter
                 ? "'" + node.getName() + "'"
                 : "'" + node.getName() + "' and the " + under + " node(s) under it";
         ConfirmEvent.fire(this,
-                "Remove " + what + " from the model? Every path through them is dropped. Each node comes "
-                + "back, and learns its constraints again, the next time a trace carries it.",
+                "Remove " + what + " and any paths containing it from the model?",
                 ok -> {
                     if (ok) {
                         removeNode(node);
