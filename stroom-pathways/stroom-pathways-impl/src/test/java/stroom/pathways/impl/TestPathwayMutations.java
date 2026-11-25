@@ -26,6 +26,8 @@ import stroom.pathways.shared.otel.trace.NanoTime;
 import stroom.pathways.shared.otel.trace.Span;
 import stroom.pathways.shared.otel.trace.SpanKind;
 import stroom.pathways.shared.otel.trace.Trace;
+import stroom.pathways.shared.pathway.AnyTypeValue;
+import stroom.pathways.shared.pathway.Constraint;
 import stroom.pathways.shared.pathway.ConstraintValue;
 import stroom.pathways.shared.pathway.MutationType;
 import stroom.pathways.shared.pathway.NamePathKey;
@@ -33,8 +35,10 @@ import stroom.pathways.shared.pathway.NanoTimeRange;
 import stroom.pathways.shared.pathway.NanoTimeValue;
 import stroom.pathways.shared.pathway.PathNode;
 import stroom.pathways.shared.pathway.PathwayMutation;
+import stroom.pathways.shared.pathway.Regex;
 import stroom.pathways.shared.pathway.StringSet;
 import stroom.pathways.shared.pathway.StringValue;
+import stroom.util.shared.Severity;
 
 import org.junit.jupiter.api.Test;
 
@@ -64,6 +68,7 @@ class TestPathwayMutations {
     private static final String PING = "Ping";
     private static final String TRACE_ID = "0a0b0c0d0e0f00010203040506070809";
     private static final long BASE = 1_700_000_000_000_000_000L;
+    private static final String METHOD = "attribute.http.method";
 
     // Just the values a node was given, which is what these are about. A day record also carries
     // what is optional, how busy the node was and the trace behind each bound.
@@ -366,6 +371,85 @@ class TestPathwayMutations {
         assertThatThrownBy(() -> serde.readMutation(written[0]))
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessageContaining("mutations table has to be cleared");
+    }
+
+    @Test
+    void aValueMatchingTheRegexLeavesItAlone() {
+        final List<String> messages = new ArrayList<>();
+        final NodeMutatorImpl mutator = mutator();
+        final PathNode root = mutator.process(trace("GET", PING), key(), withMethodPattern("G.T"),
+                recording(messages), doc());
+
+        assertThat(root.getConstraints().get(METHOD).getValue()).isEqualTo(new Regex("G.T"));
+        assertThat(mutator.getMutations()).isEmpty();
+        assertThat(messages).isEmpty();
+    }
+
+    @Test
+    void aValueMissingTheRegexChangesItToAnyTypeWhereMutationIsAllowed() {
+        final List<String> messages = new ArrayList<>();
+        final PathNode root = mutator().process(trace("POST", PING), key(), withMethodPattern("G.T"),
+                recording(messages), doc());
+
+        assertThat(root.getConstraints().get(METHOD).getValue()).isEqualTo(new AnyTypeValue());
+        assertThat(messages).singleElement().asString()
+                .startsWith("WARNING ")
+                .contains("Changing to any type: ")
+                .endsWith(" POST");
+    }
+
+    @Test
+    void aValueMissingTheRegexKeepsItWhereMutationIsNotAllowed() {
+        final List<String> messages = new ArrayList<>();
+        final PathwaysDoc fixed = doc().copy().allowPathwayMutation(false).build();
+        final PathNode root = mutator().process(trace("POST", PING), key(), withMethodPattern("G.T"),
+                recording(messages), fixed);
+
+        assertThat(root.getConstraints().get(METHOD).getValue()).isEqualTo(new Regex("G.T"));
+        assertThat(messages).singleElement().asString()
+                .startsWith("ERROR ")
+                .contains("Unexpected string: ")
+                .endsWith(" POST");
+    }
+
+    @Test
+    void aRegexHasToMatchTheWholeValue() {
+        final PathNode partial = mutator().process(trace("forget", PING), key(), withMethodPattern("get"),
+                quiet(), doc());
+        assertThat(partial.getConstraints().get(METHOD).getValue())
+                .as("found inside the value is not a match")
+                .isEqualTo(new AnyTypeValue());
+
+        final PathNode whole = mutator().process(trace("forget", PING), key(), withMethodPattern(".*get.*"),
+                quiet(), doc());
+        assertThat(whole.getConstraints().get(METHOD).getValue()).isEqualTo(new Regex(".*get.*"));
+    }
+
+    @Test
+    void anyValueMatchesAcrossLineBreaks() {
+        final List<String> messages = new ArrayList<>();
+        final PathNode root = mutator().process(trace("GET\nPOST", PING), key(), withMethodPattern(".*"),
+                recording(messages), doc());
+
+        assertThat(root.getConstraints().get(METHOD).getValue()).isEqualTo(new Regex(".*"));
+        assertThat(messages).isEmpty();
+    }
+
+    // A pathway learnt from one trace, with its method constraint swapped for the pattern given.
+    private static PathNode withMethodPattern(final String regex) {
+        final PathNode root = mutator().process(trace("GET", PING), key(), null, quiet(), doc());
+        final Map<String, Constraint> constraints = new HashMap<>(root.getConstraints());
+        constraints.put(METHOD, new Constraint(METHOD, new Regex(regex), false));
+        return root.copy().constraints(constraints).build();
+    }
+
+    // Keeps the warnings and errors logged, each as its severity followed by the message.
+    private static MessageReceiver recording(final List<String> messages) {
+        return (severity, message) -> {
+            if (Severity.WARNING.equals(severity) || Severity.ERROR.equals(severity)) {
+                messages.add(severity.name() + " " + message.get());
+            }
+        };
     }
 
     private static NodeMutatorImpl mutator() {

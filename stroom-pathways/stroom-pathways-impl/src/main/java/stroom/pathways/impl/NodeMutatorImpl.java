@@ -65,6 +65,7 @@ import java.util.Set;
 import java.util.TreeSet;
 import java.util.function.Function;
 import java.util.function.Supplier;
+import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
 public class NodeMutatorImpl {
@@ -94,6 +95,8 @@ public class NodeMutatorImpl {
     // because a span's shape is only complete once its children have been, and the walk reaches those
     // grouped by name rather than in the order they ran.
     private final Map<String, PathShape> shapeBySpan = new HashMap<>();
+    // Each regex constraint compiled once per trace, by its pattern text.
+    private final Map<String, Pattern> patterns = new HashMap<>();
     private String rootSpanId;
 
     // Which trace and span the change being recorded came from. Fields because the methods that
@@ -1539,7 +1542,18 @@ public class NodeMutatorImpl {
                 }
             }
             case final Regex stringPattern -> {
-                // TODO : Create some sort of pattern expansion if possible.
+                final Pattern pattern = patterns.computeIfAbsent(stringPattern.getValue(),
+                        regex -> Pattern.compile(regex, Pattern.DOTALL));
+                if (!pattern.matcher(value).matches()) {
+                    if (!pathwaysDoc.isAllowPathwayMutation()) {
+                        messageReceiver.log(Severity.ERROR, () ->
+                                "Unexpected string: " + location.get() + " " + value);
+                    } else {
+                        messageReceiver.log(Severity.WARNING, () ->
+                                "Changing to any type: " + location.get() + " " + value);
+                        return new AnyTypeValue();
+                    }
+                }
             }
             default -> {
                 if (!(current instanceof AnyTypeValue)) {
