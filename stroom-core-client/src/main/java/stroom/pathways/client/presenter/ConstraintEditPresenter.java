@@ -171,7 +171,7 @@ public class ConstraintEditPresenter extends MyPresenterWidget<ConstraintEditVie
             case INTEGER_RANGE -> range(Integer::valueOf, IntegerRange::new);
             case LONG_RANGE -> range(Long::valueOf, LongRange::new);
             case DOUBLE_RANGE -> range(Double::valueOf, DoubleRange::new);
-            case REGEX -> new Regex(view.getPattern());
+            case REGEX -> regex();
             case BOOLEAN -> new BooleanValue(view.getBoolean());
         };
     }
@@ -223,6 +223,14 @@ public class ConstraintEditPresenter extends MyPresenterWidget<ConstraintEditVie
             set.add(parser.apply(item));
         }
         return set;
+    }
+
+    private Regex regex() {
+        final String pattern = getView().getPattern();
+        if (pattern == null || pattern.isEmpty()) {
+            throw new IllegalArgumentException("A pattern cannot be empty");
+        }
+        return new Regex(pattern);
     }
 
     private static <T> T parse(final String text, final Function<String, T> parser) {
