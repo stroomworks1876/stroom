@@ -324,11 +324,10 @@ public class PathwayListPresenter
     private void onEdit() {
         final PathwaySummary selected = selectionModel.getSelected();
         if (selected != null && pathwaysDoc != null) {
-            // The tab fetches the model itself. The copy held here is shared with the drawing beside
-            // this list, and constraints are edited straight into whatever model they were given, so
-            // handing this one over would put unsaved edits on a screen that never asked for them.
+            // The tab fetches the model itself, so it shows what the server holds rather than the copy
+            // held here for the drawing beside this list.
             pathwayTabManager.open(pathwaysDoc, selected.getName(), readOnly, () -> {
-                // The row shows a size and a time that a save has just moved.
+                // The row shows a size and a time that a change to the model has just moved.
                 forget();
                 refresh();
             });

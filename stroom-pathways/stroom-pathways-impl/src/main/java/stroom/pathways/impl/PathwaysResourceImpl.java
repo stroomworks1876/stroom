@@ -22,6 +22,7 @@ import stroom.event.logging.rs.api.AutoLogged;
 import stroom.event.logging.rs.api.AutoLogged.OperationType;
 import stroom.pathways.shared.AddPathway;
 import stroom.pathways.shared.DeletePathway;
+import stroom.pathways.shared.EditConstraint;
 import stroom.pathways.shared.FetchPathwayRequest;
 import stroom.pathways.shared.FindPathwayCriteria;
 import stroom.pathways.shared.FindPathwayMutationCriteria;
@@ -32,7 +33,6 @@ import stroom.pathways.shared.PathwaysDoc;
 import stroom.pathways.shared.PathwaysResource;
 import stroom.pathways.shared.RemoveConstraints;
 import stroom.pathways.shared.RemoveNode;
-import stroom.pathways.shared.UpdatePathway;
 import stroom.util.shared.EntityServiceException;
 
 import jakarta.inject.Inject;
@@ -48,6 +48,9 @@ class PathwaysResourceImpl implements PathwaysResource {
     private static final String REMOVE_CONSTRAINTS_EVENT = "RemovePathwayConstraints";
     private static final String REMOVE_CONSTRAINTS_DESCRIPTION =
             "Removing constraints from a node of learnt pathway";
+    private static final String EDIT_CONSTRAINT_EVENT = "EditPathwayConstraint";
+    private static final String EDIT_CONSTRAINT_DESCRIPTION =
+            "Adding or changing a constraint of a node of learnt pathway";
     private static final String DELETE_PATHWAY_EVENT = "DeletePathway";
     private static final String DELETE_PATHWAY_DESCRIPTION = "Deleting learnt pathway and all its history";
 
@@ -125,12 +128,6 @@ class PathwaysResourceImpl implements PathwaysResource {
         return pathwaysServiceProvider.get().addPathway(addPathway);
     }
 
-    @AutoLogged(OperationType.UNLOGGED)
-    @Override
-    public Boolean updatePathway(final UpdatePathway updatePathway) {
-        return pathwaysServiceProvider.get().updatePathway(updatePathway);
-    }
-
     @AutoLogged(OperationType.MANUALLY_LOGGED)
     @Override
     public Boolean deletePathway(final DeletePathway deletePathway) {
@@ -172,6 +169,21 @@ class PathwaysResourceImpl implements PathwaysResource {
         } catch (final RuntimeException e) {
             documentEventLogProvider.get()
                     .delete(removeConstraints, REMOVE_CONSTRAINTS_EVENT, REMOVE_CONSTRAINTS_DESCRIPTION, e);
+            throw e;
+        }
+    }
+
+    @AutoLogged(OperationType.MANUALLY_LOGGED)
+    @Override
+    public Boolean editConstraint(final EditConstraint editConstraint) {
+        try {
+            final Boolean changed = pathwaysServiceProvider.get().editConstraint(editConstraint);
+            documentEventLogProvider.get().update(editConstraint.getPrevious(), editConstraint,
+                    EDIT_CONSTRAINT_EVENT, EDIT_CONSTRAINT_DESCRIPTION, null);
+            return changed;
+        } catch (final RuntimeException e) {
+            documentEventLogProvider.get().update(editConstraint.getPrevious(), editConstraint,
+                    EDIT_CONSTRAINT_EVENT, EDIT_CONSTRAINT_DESCRIPTION, e);
             throw e;
         }
     }

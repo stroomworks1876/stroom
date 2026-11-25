@@ -26,6 +26,7 @@ import stroom.pathways.shared.otel.trace.NanoDuration;
 import stroom.pathways.shared.otel.trace.Span;
 import stroom.pathways.shared.otel.trace.SpanKind;
 import stroom.pathways.shared.otel.trace.Trace;
+import stroom.pathways.shared.pathway.Constraint;
 import stroom.pathways.shared.pathway.MutationType;
 import stroom.pathways.shared.pathway.PathNode;
 import stroom.pathways.shared.pathway.PathwayMutation;
@@ -306,6 +307,21 @@ class TestReadingArchivedChanges {
                 .containsExactly(constraint);
     }
 
+    @Test
+    void aConstraintEditIsListed() throws IOException {
+        apply(withChildren("a", 10, 5, 7));
+        final PathNode commit = childOf(asAt(null), "Commit");
+        final Constraint before = commit.getConstraints().values().iterator().next();
+
+        shardStore.withShard(doc, shard(), localDir -> service().editConstraintInModel(localDir, doc.getUuid(),
+                OPERATION, keyBytes(), commit.getUuid(), before,
+                before.copy().optional(!before.isOptional()).build()));
+
+        assertThat(listed(MutationType.CONSTRAINT_OPTIONAL_EDITED))
+                .extracting(PathwayMutation::getConstraint)
+                .containsExactly(before.getName());
+    }
+
     private List<PathwayMutation> listed(final MutationType type) {
         return changesListed().getValues().stream()
                 .filter(PathwayMutation.class::isInstance)
@@ -323,12 +339,12 @@ class TestReadingArchivedChanges {
 
     private void deleteConstraint(final String uuid, final String constraint) throws IOException {
         shardStore.withShard(doc, shard(), localDir -> service().removeConstraintsFromModel(
-                localDir, OPERATION, keyBytes(), uuid, List.of(constraint)));
+                localDir, doc.getUuid(), OPERATION, keyBytes(), uuid, List.of(constraint)));
     }
 
     private void removeNode(final String uuid) throws IOException {
         shardStore.withShard(doc, shard(), localDir ->
-                service().removeFromModel(localDir, OPERATION, keyBytes(), uuid));
+                service().removeFromModel(localDir, doc.getUuid(), OPERATION, keyBytes(), uuid));
     }
 
     private static PathwaysService service() {

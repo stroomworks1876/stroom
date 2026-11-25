@@ -22,6 +22,7 @@ import stroom.docref.DocRef;
 import stroom.docstore.api.DocumentNotFoundException;
 import stroom.pathways.shared.AddPathway;
 import stroom.pathways.shared.DeletePathway;
+import stroom.pathways.shared.EditConstraint;
 import stroom.pathways.shared.FetchPathwayRequest;
 import stroom.pathways.shared.FindPathwayCriteria;
 import stroom.pathways.shared.FindPathwayMutationCriteria;
@@ -31,16 +32,21 @@ import stroom.pathways.shared.PathwayResultPage;
 import stroom.pathways.shared.PathwaysDoc;
 import stroom.pathways.shared.RemoveConstraints;
 import stroom.pathways.shared.RemoveNode;
-import stroom.pathways.shared.UpdatePathway;
 import stroom.pathways.shared.otel.trace.NanoTime;
+import stroom.pathways.shared.pathway.AbstractRange;
+import stroom.pathways.shared.pathway.AbstractSet;
+import stroom.pathways.shared.pathway.AbstractValue;
 import stroom.pathways.shared.pathway.Constraint;
+import stroom.pathways.shared.pathway.ConstraintValue;
 import stroom.pathways.shared.pathway.MutationType;
+import stroom.pathways.shared.pathway.NanoTimeRange;
 import stroom.pathways.shared.pathway.PathNode;
 import stroom.pathways.shared.pathway.PathStep;
 import stroom.pathways.shared.pathway.PathUse;
 import stroom.pathways.shared.pathway.Paths;
 import stroom.pathways.shared.pathway.Pathway;
 import stroom.pathways.shared.pathway.PathwayMutation;
+import stroom.pathways.shared.pathway.Regex;
 import stroom.planb.impl.dao.LmdbWriter;
 import stroom.planb.impl.dao.ShardKeyRouter;
 import stroom.planb.impl.dao.trace.NanoTimeUtil;
@@ -51,6 +57,7 @@ import stroom.security.shared.DocumentPermission;
 import stroom.util.logging.LambdaLogger;
 import stroom.util.logging.LambdaLoggerFactory;
 import stroom.util.logging.LogUtil;
+import stroom.util.shared.EntityServiceException;
 import stroom.util.shared.NullSafe;
 import stroom.util.shared.PermissionException;
 
@@ -68,9 +75,12 @@ import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Consumer;
+import java.util.regex.Pattern;
+import java.util.regex.PatternSyntaxException;
 
 @Singleton
 public class PathwaysService {
@@ -143,10 +153,6 @@ public class PathwaysService {
         throw new UnsupportedOperationException("Not implemented");
     }
 
-    public Boolean updatePathway(final UpdatePathway updatePathway) {
-        throw new UnsupportedOperationException("Not implemented");
-    }
-
     /**
      * Forgets one learnt pathway, there and then.
      *
@@ -191,10 +197,11 @@ public class PathwaysService {
         clusterLockService.lock(PathwaysProcessor.lockName(doc.getUuid(), shard), () -> {
             try {
                 for (final String week : shardStore.archivedWeeks(doc, shard)) {
-                    shardStore.withBucket(doc, shard, week, db -> removeFromBucket(db, name, week, pathwayKey));
+                    shardStore.withBucket(doc, shard, week,
+                            db -> removeFromBucket(db, doc.getUuid(), name, week, pathwayKey));
                 }
                 shardStore.withShard(doc, shard,
-                        localDir -> removeFromShard(localDir, name, pathwayKey, removed));
+                        localDir -> removeFromShard(localDir, doc.getUuid(), name, pathwayKey, removed));
             } catch (final IOException e) {
                 throw new UncheckedIOException(e);
             }
@@ -215,6 +222,7 @@ public class PathwaysService {
     // to have changed the shard only where something was actually taken out, so a pathway that was
     // not there does not have the model written back for nothing.
     private boolean removeFromShard(final Path localDir,
+                                    final String docUuid,
                                     final String name,
                                     final byte[] pathwayKey,
                                     final AtomicBoolean removed) {
@@ -226,14 +234,15 @@ public class PathwaysService {
                 writer.commit();
                 removed.set(went[0]);
                 LOGGER.info(() -> LogUtil.message(
-                        "Removed pathway {}: {} model, {} history row(s)",
-                        name, went[0] ? "1" : "0", history));
+                        "Removed pathway {} in document {}: {} model, {} history row(s)",
+                        name, docUuid, went[0] ? "1" : "0", history));
                 return went[0] || history > 0;
             }
         }
     }
 
     private boolean removeFromBucket(final PathwaysDb db,
+                                     final String docUuid,
                                      final String name,
                                      final String week,
                                      final byte[] pathwayKey) {
@@ -242,7 +251,8 @@ public class PathwaysService {
             writer.commit();
             if (history > 0) {
                 LOGGER.info(() -> LogUtil.message(
-                        "Removed pathway {} from the {} bucket: {} history row(s)", name, week, history));
+                        "Removed pathway {} in document {} from the {} bucket: {} history row(s)",
+                        name, docUuid, week, history));
             }
             return history > 0;
         }
@@ -285,7 +295,7 @@ public class PathwaysService {
         clusterLockService.lock(PathwaysProcessor.lockName(doc.getUuid(), shard), () -> {
             try {
                 shardStore.withShard(doc, shard, localDir -> {
-                    removed.set(removeFromModel(localDir, name, pathwayKey, uuid));
+                    removed.set(removeFromModel(localDir, doc.getUuid(), name, pathwayKey, uuid));
                     return removed.get();
                 });
             } catch (final IOException e) {
@@ -298,6 +308,7 @@ public class PathwaysService {
     // Not private so that what it does to a shard can be tested without a cluster lock and a document
     // store standing behind it.
     boolean removeFromModel(final Path localDir,
+                            final String docUuid,
                             final String name,
                             final byte[] pathwayKey,
                             final String uuid) {
@@ -334,8 +345,8 @@ public class PathwaysService {
 
                 final Pathway updated = found[0].copy().root(newRoot).paths(paths).build();
                 save(writer, db, pathwayKey, updated, mutations);
-                LOGGER.info(() -> LogUtil.message("Removed {} node(s) from pathway {} at {}",
-                        gone.size(), name, uuid));
+                LOGGER.info(() -> LogUtil.message("Removed {} node(s) from pathway {} in document {} at node {}",
+                        gone.size(), name, docUuid, uuid));
                 return true;
             }
         }
@@ -386,7 +397,7 @@ public class PathwaysService {
         clusterLockService.lock(PathwaysProcessor.lockName(doc.getUuid(), shard), () -> {
             try {
                 shardStore.withShard(doc, shard, localDir -> {
-                    removed.set(removeConstraintsFromModel(localDir, name, pathwayKey, uuid,
+                    removed.set(removeConstraintsFromModel(localDir, doc.getUuid(), name, pathwayKey, uuid,
                             removeConstraints.getConstraints()));
                     return removed.get();
                 });
@@ -400,6 +411,7 @@ public class PathwaysService {
     // Not private so that what it does to a shard can be tested without a cluster lock and a document
     // store standing behind it.
     boolean removeConstraintsFromModel(final Path localDir,
+                                       final String docUuid,
                                        final String name,
                                        final byte[] pathwayKey,
                                        final String uuid,
@@ -437,11 +449,190 @@ public class PathwaysService {
                 final PathNode changed = target.copy().constraints(kept).lastChangedTime(now).build();
                 final PathNode newRoot = replace(root, uuid, changed);
                 save(writer, db, pathwayKey, found[0].copy().root(newRoot).build(), mutations);
-                LOGGER.info(() -> LogUtil.message("Removed {} constraint(s) from pathway {} at {}",
-                        mutations.size(), name, uuid));
+                LOGGER.info(() -> LogUtil.message(
+                        "Removed {} constraint(s) from pathway {} in document {} at node {}",
+                        mutations.size(), name, docUuid, uuid));
                 return true;
             }
         }
+    }
+
+    /**
+     * Adds one constraint to a node of a learnt pathway, or changes the value or optional flag of one
+     * the node has, with a change row for each thing changed.
+     *
+     * <p>Takes the same shard lock as {@link #removeNode}, after checking the submitted constraint, so a
+     * constraint with no name, a new name or an invalid value is refused without taking the lock.
+     *
+     * @return whether anything changed. False when the constraint asked for is the one the node holds.
+     * @throws EntityServiceException when the edit is refused, with the reason as its message.
+     */
+    public Boolean editConstraint(final EditConstraint editConstraint) {
+        final PathwaysDoc doc = pathwaysStore.readDocument(editConstraint.getDocRef());
+        if (doc == null) {
+            throw new DocumentNotFoundException(editConstraint.getDocRef());
+        }
+        checkEdit(doc);
+        final String name = editConstraint.getName();
+        final String uuid = editConstraint.getNodeUuid();
+        final SharedFileStoreSettings settings = doc.getSharedFileStore();
+        if (settings == null || NullSafe.isBlankString(settings.getSharedPath())) {
+            throw new EntityServiceException("'" + doc.getName() + "' names no shared file store");
+        }
+        if (NullSafe.isBlankString(name) || NullSafe.isBlankString(uuid)) {
+            throw new EntityServiceException("No pathway or node was named");
+        }
+        check(editConstraint.getPrevious(), editConstraint.getConstraint());
+
+        final int shard = ShardKeyRouter.computeShardIndex(name, Math.max(1, settings.getShardCount()));
+        final byte[] pathwayKey = name.getBytes(StandardCharsets.UTF_8);
+        final AtomicBoolean changed = new AtomicBoolean();
+        clusterLockService.lock(PathwaysProcessor.lockName(doc.getUuid(), shard), () -> {
+            try {
+                shardStore.withShard(doc, shard, localDir -> {
+                    changed.set(editConstraintInModel(localDir, doc.getUuid(), name, pathwayKey, uuid,
+                            editConstraint.getPrevious(), editConstraint.getConstraint()));
+                    return changed.get();
+                });
+            } catch (final IOException e) {
+                throw new UncheckedIOException(e);
+            }
+        });
+        return changed.get();
+    }
+
+    // Not private so that what it does to a shard can be tested without a cluster lock and a document
+    // store standing behind it.
+    boolean editConstraintInModel(final Path localDir,
+                                  final String docUuid,
+                                  final String name,
+                                  final byte[] pathwayKey,
+                                  final String uuid,
+                                  final Constraint previous,
+                                  final Constraint constraint) {
+        check(previous, constraint);
+        try (final PathwaysDb db = PathwaysDb.create(localDir, byteBuffers, false)) {
+            try (final LmdbWriter writer = db.createWriter()) {
+                final Pathway[] found = {null};
+                withKey(pathwayKey, key -> found[0] = db.getPathways().get(writer.getWriteTxn(), key,
+                        value -> value == null
+                                ? null
+                                : pathwaySerde.readPathway(value)));
+                final PathNode root = NullSafe.get(found[0], Pathway::getRoot);
+                final PathNode target = root == null
+                        ? null
+                        : find(root, uuid);
+                if (target == null) {
+                    throw new EntityServiceException("The node is no longer in pathway '" + name + "'");
+                }
+                if (target.isRetired()) {
+                    throw new EntityServiceException("'" + target.getName() + "' has been removed or retired");
+                }
+
+                final String constraintName = constraint.getName();
+                final Map<String, Constraint> constraints = new HashMap<>(NullSafe.map(target.getConstraints()));
+                final Constraint held = constraints.get(constraintName);
+                if (previous == null && held != null) {
+                    throw new EntityServiceException("'" + target.getName() + "' already has a constraint named '"
+                                                     + constraintName + "'");
+                }
+                if (previous != null && held == null) {
+                    throw new EntityServiceException("'" + target.getName() + "' no longer has a constraint named '"
+                                                     + constraintName + "'");
+                }
+                if (previous != null && !previous.equals(held)) {
+                    throw new EntityServiceException("Constraint '" + constraintName + "' has changed since it "
+                                                     + "was opened. It is now " + held.getValue()
+                                                     + (held.isOptional() ? ", optional" : ", required"));
+                }
+                if (constraint.equals(held)) {
+                    return false;
+                }
+
+                final NanoTime now = NanoTimeUtil.fromInstant(Instant.now());
+                final List<PathwayMutation> mutations = new ArrayList<>();
+                final ConstraintValue was = NullSafe.get(held, Constraint::getValue);
+                if (!constraint.getValue().equals(was)) {
+                    mutations.add(new PathwayMutation(0L, now, now, -1, null, null, target.getNodePath(),
+                            target.getUuid(), constraintName, MutationType.CONSTRAINT_EDITED,
+                            constraint.isOptional(), was, constraint.getValue()));
+                }
+                if (held != null && held.isOptional() != constraint.isOptional()) {
+                    mutations.add(new PathwayMutation(0L, now, now, -1, null, null, target.getNodePath(),
+                            target.getUuid(), constraintName, MutationType.CONSTRAINT_OPTIONAL_EDITED,
+                            constraint.isOptional(), constraint.getValue(), constraint.getValue()));
+                }
+
+                constraints.put(constraintName, held == null
+                        ? new Constraint(constraintName, constraint.getValue(), constraint.isOptional())
+                        : held.copy().value(constraint.getValue()).optional(constraint.isOptional()).build());
+                final PathNode edited = target.copy().constraints(constraints).lastChangedTime(now).build();
+                final PathNode newRoot = replace(root, uuid, edited);
+                save(writer, db, pathwayKey, found[0].copy().root(newRoot).build(), mutations);
+                LOGGER.info(() -> LogUtil.message("Edited constraint {} of pathway {} in document {} at node {}",
+                        constraintName, name, docUuid, uuid));
+                return true;
+            }
+        }
+    }
+
+    private static void check(final Constraint previous, final Constraint constraint) {
+        if (constraint == null || NullSafe.isBlankString(constraint.getName())) {
+            throw new EntityServiceException("A constraint must have a name");
+        }
+        if (previous != null && !constraint.getName().equals(previous.getName())) {
+            throw new EntityServiceException("A constraint cannot be renamed");
+        }
+        final String problem = problem(constraint.getValue());
+        if (problem != null) {
+            throw new EntityServiceException("Constraint '" + constraint.getName() + "' " + problem);
+        }
+    }
+
+    // What is wrong with a value, or null where it can be stored as it is.
+    private static String problem(final ConstraintValue value) {
+        if (value == null) {
+            return "has no value";
+        }
+        if (value instanceof final AbstractValue<?> single) {
+            if (single.getValue() == null) {
+                return "has no value";
+            }
+            if (value instanceof final Regex regex) {
+                try {
+                    Pattern.compile(regex.getValue());
+                } catch (final PatternSyntaxException e) {
+                    return "is not a valid regular expression: " + e.getDescription();
+                }
+            }
+        } else if (value instanceof final AbstractSet<?> set) {
+            if (NullSafe.isEmptyCollection(set.getSet())) {
+                return "has an empty set";
+            }
+            if (set.getSet().stream().anyMatch(Objects::isNull)) {
+                return "has an empty value in its set";
+            }
+        } else if (value instanceof final NanoTimeRange range) {
+            if (range.getMin() == null && range.getMax() == null) {
+                return "has neither a minimum nor a maximum";
+            }
+            if (range.getMin() != null && range.getMax() != null && range.getMin().isGreaterThan(range.getMax())) {
+                return "has a minimum greater than its maximum";
+            }
+        } else if (value instanceof final AbstractRange<?> range) {
+            if (range.getMin() == null || range.getMax() == null) {
+                return "needs both a minimum and a maximum";
+            }
+            if (greater(range.getMin(), range.getMax())) {
+                return "has a minimum greater than its maximum";
+            }
+        }
+        return null;
+    }
+
+    @SuppressWarnings("unchecked")
+    private static boolean greater(final Object min, final Object max) {
+        return ((Comparable<Object>) min).compareTo(max) > 0;
     }
 
     private static PathNode replace(final PathNode node, final String uuid, final PathNode with) {

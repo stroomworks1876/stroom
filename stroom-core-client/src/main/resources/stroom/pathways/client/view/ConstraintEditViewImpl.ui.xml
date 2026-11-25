@@ -3,6 +3,8 @@
              xmlns:g="urn:import:com.google.gwt.user.client.ui"
              xmlns:form="urn:import:stroom.widget.form.client"
              xmlns:tickbox="urn:import:stroom.widget.tickbox.client.view"
+             xmlns:b="urn:import:stroom.widget.button.client"
+             xmlns:v="urn:import:stroom.pathways.client.view"
              xmlns:l="urn:import:stroom.item.client">
     <g:FlowPanel styleName="max form dock-container-vertical">
         <form:FormGroup identity="constraintName" label="Name">
@@ -12,10 +14,53 @@
             <l:SelectionBox ui:field="type" addStyleNames="w-100"/>
         </form:FormGroup>
         <form:FormGroup identity="constraintValue" label="Value">
-            <g:TextBox ui:field="value" addStyleNames="w-100"/>
+            <g:FlowPanel>
+                <g:FlowPanel ui:field="anyEditor">
+                    <g:Label text="Any value is accepted."/>
+                </g:FlowPanel>
+                <g:FlowPanel ui:field="textEditor">
+                    <g:TextBox ui:field="text" addStyleNames="w-100"/>
+                </g:FlowPanel>
+                <g:FlowPanel ui:field="durationEditor">
+                    <v:DurationBox ui:field="duration"/>
+                </g:FlowPanel>
+                <g:FlowPanel ui:field="setEditor">
+                    <g:FlowPanel ui:field="setItems" styleName="constraint-set-items"/>
+                    <g:FlowPanel styleName="constraint-set-add">
+                        <g:TextArea ui:field="setInput" visibleLines="1"
+                                    addStyleNames="constraint-set-input"/>
+                        <b:Button ui:field="setAdd" text="Add"/>
+                    </g:FlowPanel>
+                </g:FlowPanel>
+                <g:FlowPanel ui:field="rangeEditor" styleName="constraint-range">
+                    <g:Label text="Minimum"/>
+                    <g:TextBox ui:field="min"/>
+                    <g:Label text="Maximum"/>
+                    <g:TextBox ui:field="max"/>
+                </g:FlowPanel>
+                <g:FlowPanel ui:field="durationRangeEditor" styleName="constraint-duration-range">
+                    <g:FlowPanel styleName="constraint-range">
+                        <g:Label text="Minimum"/>
+                        <v:DurationBox ui:field="minDuration"/>
+                        <tickbox:CustomCheckBox ui:field="noMin" identity="constraintNoMinimum"
+                                                label="No minimum"/>
+                    </g:FlowPanel>
+                    <g:FlowPanel styleName="constraint-range">
+                        <g:Label text="Maximum"/>
+                        <v:DurationBox ui:field="maxDuration"/>
+                        <tickbox:CustomCheckBox ui:field="noMax" identity="constraintNoMaximum"
+                                                label="No maximum"/>
+                    </g:FlowPanel>
+                </g:FlowPanel>
+                <g:FlowPanel ui:field="regexEditor">
+                    <g:TextBox ui:field="pattern" addStyleNames="w-100"/>
+                </g:FlowPanel>
+                <g:FlowPanel ui:field="booleanEditor" styleName="constraint-boolean"/>
+                <g:Label ui:field="error" styleName="constraint-edit-error"/>
+            </g:FlowPanel>
         </form:FormGroup>
         <form:FormGroup identity="constraintOptional" label="Optional">
             <tickbox:CustomCheckBox ui:field="optional"/>
         </form:FormGroup>
     </g:FlowPanel>
-</ui:UiBinder> 
+</ui:UiBinder>

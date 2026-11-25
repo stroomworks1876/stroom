@@ -913,10 +913,10 @@ public class PathwayMutationListPresenter extends MyPresenterWidget<PagerView> {
                 row -> ofRow(row, HistoryRow::getTypeDisplayValue),
                 CHANGE_COL);
         addColumn(PathwayMutation.FIELD_OLD_VALUE,
-                row -> ofRow(row, value -> text(value, value.getOldValue())),
+                row -> ofRow(row, value -> text(value, value.getOldValue(), false)),
                 ColumnSizeConstants.MEDIUM_COL);
         addColumn(PathwayMutation.FIELD_NEW_VALUE,
-                row -> ofRow(row, value -> text(value, value.getNewValue())),
+                row -> ofRow(row, value -> text(value, value.getNewValue(), true)),
                 ColumnSizeConstants.MEDIUM_COL);
     }
 
@@ -972,7 +972,7 @@ public class PathwayMutationListPresenter extends MyPresenterWidget<PagerView> {
     // A trace carries one value, so it can only push out one end of a range. Showing the whole range
     // reads as though the end that stayed put had moved as well. Where the constraint held a single
     // value before, that value was itself the end that moved, so it is shown as it stands.
-    private static String text(final HistoryRow row, final ConstraintValue value) {
+    private static String text(final HistoryRow row, final ConstraintValue value, final boolean after) {
         // Only a change says which end of a range it moved, so only a change shows that end on its
         // own. A difference is two days compared and says what the whole bound was either side.
         final PathwayMutation mutation = row instanceof final PathwayMutation change
@@ -981,10 +981,22 @@ public class PathwayMutationListPresenter extends MyPresenterWidget<PagerView> {
         if (mutation == null) {
             return NullSafe.toString(value);
         }
-        return textOfChange(mutation, value);
+        return textOfChange(mutation, value, after);
     }
 
-    private static String textOfChange(final PathwayMutation mutation, final ConstraintValue value) {
+    // A change to the optional flag holds the same value either side, so the flag before or after is
+    // shown beside it.
+    private static String textOfChange(final PathwayMutation mutation,
+                                       final ConstraintValue value,
+                                       final boolean after) {
+        if (MutationType.CONSTRAINT_OPTIONAL_EDITED.equals(mutation.getType())) {
+            final boolean optional = after
+                    ? mutation.isOptional()
+                    : !mutation.isOptional();
+            return NullSafe.toString(value) + (optional
+                    ? ", optional"
+                    : ", required");
+        }
         if (value instanceof AbstractRange) {
             final AbstractRange<?> range = (AbstractRange<?>) value;
             final Object end;

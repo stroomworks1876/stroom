@@ -18,15 +18,13 @@ package stroom.pathways.client.presenter;
 
 import stroom.alert.client.event.AlertEvent;
 import stroom.alert.client.event.ConfirmEvent;
-import stroom.content.client.event.RefreshContentTabEvent;
 import stroom.content.client.presenter.ContentTabPresenter;
-import stroom.core.client.HasSave;
 import stroom.core.client.event.CloseContentEvent;
-import stroom.core.client.event.CloseContentEvent.DirtyMode;
 import stroom.dispatch.client.DefaultErrorHandler;
 import stroom.dispatch.client.RestFactory;
 import stroom.docref.DocRef;
 import stroom.pathways.client.presenter.PathwayEditPresenter.PathwayEditView;
+import stroom.pathways.shared.EditConstraint;
 import stroom.pathways.shared.FetchPathwayRequest;
 import stroom.pathways.shared.FindPathwayMutationCriteria;
 import stroom.pathways.shared.PathwayAsAt;
@@ -34,8 +32,8 @@ import stroom.pathways.shared.PathwaysDoc;
 import stroom.pathways.shared.PathwaysResource;
 import stroom.pathways.shared.RemoveConstraints;
 import stroom.pathways.shared.RemoveNode;
-import stroom.pathways.shared.UpdatePathway;
 import stroom.pathways.shared.otel.trace.NanoTime;
+import stroom.pathways.shared.pathway.Constraint;
 import stroom.pathways.shared.pathway.HistoryRow;
 import stroom.pathways.shared.pathway.PathNode;
 import stroom.pathways.shared.pathway.PathUse;
@@ -45,7 +43,6 @@ import stroom.pathways.shared.pathway.PathwayMutation;
 import stroom.query.api.TimeRange;
 import stroom.query.api.TimeRanges;
 import stroom.query.client.view.TimeRangeSelector;
-import stroom.svg.client.Preset;
 import stroom.svg.client.SvgPresets;
 import stroom.svg.shared.SvgImage;
 import stroom.util.shared.CriteriaFieldSort;
@@ -84,7 +81,7 @@ import java.util.function.Consumer;
  */
 public class PathwayEditPresenter
         extends ContentTabPresenter<PathwayEditView>
-        implements HasSave, CloseContentEvent.Handler {
+        implements CloseContentEvent.Handler {
 
     private static final PathwaysResource PATHWAYS_RESOURCE = GWT.create(PathwaysResource.class);
 
@@ -116,15 +113,12 @@ public class PathwayEditPresenter
     private NanoTime drawnAt;
     private PathUse drawnPath;
     private DocRef docRef;
-    // The name the pathway was opened under, which is what it is saved back against. Held rather than
-    // read off the model, so a tab can be labelled before the model it is waiting for arrives.
+    // The name the pathway was opened under, which is what changes to it are sent against. Held rather
+    // than read off the model, so a tab can be labelled before the model it is waiting for arrives.
     private String name;
-    private boolean dirty;
-    // What the tab was last called. The label carries whether there is anything unsaved, so it has to
-    // be repainted when that changes — and only then.
-    private String lastLabel;
-    // Told when a save lands, so the list this was opened from can show the new size and time.
-    private Runnable savedHandler;
+    // Told when a change to the model lands, so the list this was opened from can show the new size
+    // and time.
+    private Runnable changedHandler;
     // Whether the split between the drawing and the constraints has been set. Once only, so that
     // reading something else and coming back does not undo wherever the reader dragged it to.
     private boolean split;
@@ -166,7 +160,6 @@ public class PathwayEditPresenter
     private final TabData infoTab = new TabDataImpl("Node Info");
     // Whether a node is already waiting to be shown, so a run of selection changes draws once.
     private boolean nodePending;
-    private final ButtonView saveButton;
     private final ButtonView playButton;
     private final ButtonView stopButton;
     private final Timer stepper = new Timer() {
@@ -207,13 +200,8 @@ public class PathwayEditPresenter
         view.getTabBar().addTab(changesTab);
         view.getTabBar().addTab(pathsTab);
 
-        // On the tab's own toolbar rather than on any one panel's, because it is the pathway that is
-        // saved rather than anything on show.
-        saveButton = view.addButton(SvgPresets.SAVE);
-        // At the far end of the same row as Save: what the tab does on the left, what it is showing
-        // on the right.
+        // At the far end of the tab's own toolbar, because it says what the whole tab is showing.
         view.addToolbarWidget(timeRangeSelector);
-        saveButton.setEnabled(false);
 
         // On the Changes toolbar, beside the buttons that open and close it. What they step through
         // is that list, so they sit with it rather than on the drawing they happen to animate.
@@ -226,7 +214,6 @@ public class PathwayEditPresenter
     @Override
     protected void onBind() {
         super.onBind();
-        registerHandler(saveButton.addClickHandler(e -> save()));
         // The end of the range picked is the moment the tab answers for. Asked of the server rather
         // than worked out here: the changes it is counted from are filed by the day their work ran,
         // so a date never promises an unbroken run of them.
@@ -258,12 +245,9 @@ public class PathwayEditPresenter
         // looked at.
         registerHandler(mutationListPresenter.getView().getRefreshButton().addClickHandler(e -> refresh()));
         registerHandler(pathListPresenter.getView().getRefreshButton().addClickHandler(e -> refresh()));
-        // Constraints are written straight into the model the moment the constraint dialog is
-        // accepted, and wait for Save. This is how the tab learns there is something to save.
-        // Removing a node or a constraint is not one of these: it is sent to the server there and
-        // then.
-        registerHandler(constraintListPresenter.addDirtyHandler(e -> setDirty(true)));
+        // Adding, changing and removing a constraint are each sent to the server there and then.
         constraintListPresenter.setRemoveHandler(this::removeConstraints);
+        constraintListPresenter.setEditHandler(this::editConstraint);
         registerHandler(playButton.addClickHandler(e -> play()));
         registerHandler(stopButton.addClickHandler(e -> stop()));
 
@@ -705,7 +689,7 @@ public class PathwayEditPresenter
                 });
     }
 
-    // Whether the drawing is the pathway as it stands, which is what a removal acts on. The server
+    // Whether the drawing is the pathway as it stands, which is what a removal or an edit acts on. The server
     // sends no layout, and folds nothing, only when that is what it sent; a node drawn as it was at an
     // earlier moment may already have been removed since.
     private boolean latest() {
@@ -714,13 +698,16 @@ public class PathwayEditPresenter
 
     // The model and the changes are both asked for again once it lands, because the removal added rows
     // to the one as well as changing the other. Asked for again on a refusal too: the model on show is
-    // out of date, which is the reason the server gives one.
+    // out of date, which is the reason the server gives one. Whatever opened the tab is told only when
+    // the removal lands.
     private void removeNode(final PathNode node) {
         restFactory
                 .create(PATHWAYS_RESOURCE)
                 .method(res -> res.removeNode(new RemoveNode(docRef, name, node.getUuid())))
                 .onSuccess(removed -> {
-                    if (!Boolean.TRUE.equals(removed)) {
+                    if (Boolean.TRUE.equals(removed)) {
+                        modelChanged();
+                    } else {
                         AlertEvent.fireWarn(this, "'" + node.getName() + "' was not removed. It has "
                                                + "already been removed or retired since this was drawn.",
                                 null);
@@ -742,7 +729,9 @@ public class PathwayEditPresenter
                 .method(res -> res.removeConstraints(
                         new RemoveConstraints(docRef, name, node.getUuid(), names)))
                 .onSuccess(removed -> {
-                    if (!Boolean.TRUE.equals(removed)) {
+                    if (Boolean.TRUE.equals(removed)) {
+                        modelChanged();
+                    } else {
                         AlertEvent.fireWarn(this, "The constraints were not removed from '"
                                                   + node.getName() + "'. The node has been removed or "
                                                   + "retired, or the constraints have gone, since this "
@@ -754,6 +743,46 @@ public class PathwayEditPresenter
                 .onFailure(new DefaultErrorHandler(this, null))
                 .taskMonitorFactory(this)
                 .exec();
+    }
+
+    // A refusal passes the server's reason back to the dialog, or a fixed one where the server gave
+    // none, and the model is asked for again either way: one the server refused an edit to is out of
+    // date on screen.
+    private void editConstraint(final Constraint previous,
+                                final Constraint constraint,
+                                final Runnable accepted,
+                                final Consumer<String> refused) {
+        final PathNode node = shownNode();
+        if (node == null) {
+            accepted.run();
+            return;
+        }
+        restFactory
+                .create(PATHWAYS_RESOURCE)
+                .method(res -> res.editConstraint(
+                        new EditConstraint(docRef, name, node.getUuid(), previous, constraint)))
+                .onSuccess(changed -> {
+                    accepted.run();
+                    if (Boolean.TRUE.equals(changed)) {
+                        modelChanged();
+                    }
+                    refresh();
+                })
+                .onFailure(error -> {
+                    final String reason = error.getMessage();
+                    refused.accept(reason == null || reason.trim().isEmpty()
+                            ? "The change could not be made"
+                            : reason);
+                    refresh();
+                })
+                .taskMonitorFactory(this)
+                .exec();
+    }
+
+    private void modelChanged() {
+        if (changedHandler != null) {
+            changedHandler.run();
+        }
     }
 
     private static int count(final PathNode node) {
@@ -958,15 +987,13 @@ public class PathwayEditPresenter
     }
 
     /**
-     * Opens one pathway. The model is fetched here rather than handed over, so a tab holds its own
-     * copy — constraints are edited straight into it, and a shared one would carry those edits into
-     * every other screen showing the same pathway whether or not they were ever saved.
+     * Opens one pathway. The model is fetched here rather than handed over, so the tab shows what the
+     * server holds.
      */
     public void read(final PathwaysDoc pathwaysDoc, final String name, final boolean readOnly) {
         this.readOnly = readOnly;
         this.docRef = pathwaysDoc.asDocRef();
         this.name = name;
-        setDirty(false);
         // The range picks which changes are listed and plotted, not how much of the model is
         // drawn: one ending now takes nothing off it.
         timeRangeSelector.setValue(TimeRanges.TODAY);
@@ -1080,64 +1107,12 @@ public class PathwayEditPresenter
         fetchHistory(docRef, pathway.getName());
     }
 
-    private Pathway write() {
-        // A pathway is named after the operation it was learnt from, which is how it is found again.
-        // Nothing here can rename it, so the name is carried through rather than read back.
-        final NanoTime now = NanoTime.ofMillis(System.currentTimeMillis());
-        return pathway.copy().updateTime(now).build();
-    }
-
     /**
-     * Whether anything has been changed since the pathway was opened or last saved. What the Save
-     * button, the Save menu item and the prompt on closing all read.
+     * Told whenever a change to the model sent from this tab lands, so whatever opened this can show
+     * the pathway's new size and time.
      */
-    @Override
-    public boolean isDirty() {
-        return dirty;
-    }
-
-    @Override
-    public void save() {
-        if (!dirty || pathway == null) {
-            return;
-        }
-        try {
-            restFactory
-                    .create(PATHWAYS_RESOURCE)
-                    .method(res -> res.updatePathway(new UpdatePathway(docRef, name, write())))
-                    .onSuccess(response -> {
-                        setDirty(false);
-                        if (savedHandler != null) {
-                            savedHandler.run();
-                        }
-                    })
-                    .onFailure(new DefaultErrorHandler(this, null))
-                    .taskMonitorFactory(this)
-                    .exec();
-        } catch (final RuntimeException e) {
-            AlertEvent.fireError(this, e.getMessage(), null);
-        }
-    }
-
-    /**
-     * Told whenever a save lands, so whatever opened this can show the pathway's new size and time.
-     */
-    public void setSavedHandler(final Runnable savedHandler) {
-        this.savedHandler = savedHandler;
-    }
-
-    private void setDirty(final boolean dirty) {
-        this.dirty = dirty;
-        saveButton.setEnabled(dirty);
-        // The label says whether there is anything unsaved, so the tab is repainted when that changes
-        // and not on every edit. Nothing is repainted the first time, which is the pathway being read
-        // before its tab exists to carry a label.
-        final String label = getLabel();
-        final String was = lastLabel;
-        lastLabel = label;
-        if (was != null && !was.equals(label)) {
-            RefreshContentTabEvent.fire(this, this);
-        }
+    public void setChangedHandler(final Runnable changedHandler) {
+        this.changedHandler = changedHandler;
     }
 
     /**
@@ -1160,31 +1135,15 @@ public class PathwayEditPresenter
 
     @Override
     public void onCloseRequest(final CloseContentEvent event) {
-        final DirtyMode dirtyMode = event.getDirtyMode();
-        if (!dirty || DirtyMode.FORCE == dirtyMode) {
-            close(event, true);
-        } else if (DirtyMode.CONFIRM_DIRTY == dirtyMode) {
-            ConfirmEvent.fire(this,
-                    "Pathway '" + name + "' has unsaved changes. Are you sure you want to close it?",
-                    ok -> close(event, ok));
-        }
-        // SKIP_DIRTY leaves a pathway with unsaved changes open, which is what it asks for.
-    }
-
-    private void close(final CloseContentEvent event, final boolean ok) {
-        if (ok) {
-            // Nothing to step through once the tab has gone, and a clock left running would keep
-            // moving a selection in a list nobody is looking at.
-            stop();
-        }
-        event.getCallback().closeTab(ok);
+        // Nothing to step through once the tab has gone, and a clock left running would keep moving a
+        // selection in a list nobody is looking at.
+        stop();
+        event.getCallback().closeTab(true);
     }
 
     @Override
     public String getLabel() {
-        return dirty
-                ? "* " + name
-                : name;
+        return name;
     }
 
     @Override
@@ -1200,10 +1159,8 @@ public class PathwayEditPresenter
 
     public interface PathwayEditView extends View {
 
-        ButtonView addButton(Preset preset);
-
         /**
-         * Puts a widget in the toolbar beside the buttons, for the date the tab is showing.
+         * Puts a widget at the right of the toolbar, for the date the tab is showing.
          */
         void addToolbarWidget(Widget widget);
 

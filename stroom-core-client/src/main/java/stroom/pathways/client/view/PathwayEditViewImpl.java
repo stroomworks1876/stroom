@@ -17,9 +17,6 @@
 package stroom.pathways.client.view;
 
 import stroom.pathways.client.presenter.PathwayEditPresenter.PathwayEditView;
-import stroom.svg.client.Preset;
-import stroom.widget.button.client.ButtonPanel;
-import stroom.widget.button.client.ButtonView;
 import stroom.widget.form.client.FormGroup;
 import stroom.widget.tab.client.view.LinkTabBar;
 
@@ -38,10 +35,7 @@ import com.gwtplatform.mvp.client.ViewImpl;
 public class PathwayEditViewImpl extends ViewImpl implements PathwayEditView {
 
     private final Widget widget;
-    private ButtonPanel buttonPanel;
 
-    @UiField
-    FlowPanel toolbarWidgets;
     @UiField
     FlowPanel toolbarRight;
     @UiField
@@ -71,15 +65,6 @@ public class PathwayEditViewImpl extends ViewImpl implements PathwayEditView {
     @Override
     public Widget asWidget() {
         return widget;
-    }
-
-    @Override
-    public ButtonView addButton(final Preset preset) {
-        if (buttonPanel == null) {
-            buttonPanel = new ButtonPanel();
-            toolbarWidgets.add(buttonPanel);
-        }
-        return buttonPanel.addButton(preset);
     }
 
     @Override

@@ -90,6 +90,9 @@ public final class PathwayReplay {
             return change(root, mutation.getNodePath(), node -> withConstraint(node, mutation.getConstraint(),
                     rebuild(null, mutation.getConstraint(), mutation.getOldValue(), mutation.isOptional())));
         }
+        if (MutationType.CONSTRAINT_OPTIONAL_EDITED.equals(type)) {
+            return change(root, mutation.getNodePath(), node -> withFlag(node, mutation, !mutation.isOptional()));
+        }
         if (MutationType.NODE_REVIVED.equals(type)) {
             // Put back as retired. When it was retired is not kept on the change, and the drawing only
             // asks whether it is, so the time this undo stands at says it as well as any other.
@@ -131,6 +134,9 @@ public final class PathwayReplay {
         if (MutationType.CONSTRAINT_REMOVED.equals(type)) {
             return change(root, mutation.getNodePath(),
                     node -> withConstraint(node, mutation.getConstraint(), null));
+        }
+        if (MutationType.CONSTRAINT_OPTIONAL_EDITED.equals(type)) {
+            return change(root, mutation.getNodePath(), node -> withFlag(node, mutation, mutation.isOptional()));
         }
         if (MutationType.NODE_REVIVED.equals(type)) {
             return change(root, mutation.getNodePath(), node -> node.copy().retiredTime(null).build());
@@ -182,6 +188,17 @@ public final class PathwayReplay {
             constraints.put(name, constraint);
         }
         return node.copy().constraints(constraints).build();
+    }
+
+    // The node with one constraint's optional flag set and its value left as the node holds it. Where
+    // the node does not hold the constraint, the value comes from the change.
+    private static PathNode withFlag(final PathNode node, final PathwayMutation mutation, final boolean optional) {
+        final Constraint existing = NullSafe.map(node.getConstraints()).get(mutation.getConstraint());
+        final ConstraintValue value = existing == null
+                ? mutation.getNewValue()
+                : existing.getValue();
+        return withConstraint(node, mutation.getConstraint(),
+                rebuild(existing, mutation.getConstraint(), value, optional));
     }
 
     // How often a constraint has been used, and when it last was, are what the model holds now rather

@@ -805,7 +805,7 @@ class TestLoadingOldTraces {
                 new PathwaysService(null, null, null, null, BYTE_BUFFERS,
                         new MutationLog(BYTE_BUFFERS, new PathwaySerde(BYTE_BUFFER_FACTORY)),
                         new PathwaySerde(BYTE_BUFFER_FACTORY), null)
-                        .removeFromModel(localDir, OPERATION, keyBytes(), commit));
+                        .removeFromModel(localDir, doc.getUuid(), OPERATION, keyBytes(), commit));
 
         final List<MutationType> listed = reader().findMutations(doc,
                         new FindPathwayMutationCriteria(new PageRequest(0, 1000), List.of(), null, OPERATION,

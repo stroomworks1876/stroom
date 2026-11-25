@@ -1317,3 +1317,104 @@
 .pathway-headings .form-group-label-container {
     padding-top: 1px;
 }
+
+/* The constraint dialog's value editors. A duration is a number with its unit beside it. */
+.constraint-duration {
+    display: flex;
+    gap: var(--control__gap--horizontal);
+    align-items: center;
+}
+
+.constraint-duration-number {
+    width: 10em;
+}
+
+.constraint-duration-unit {
+    width: 6em;
+}
+
+/* The minimum and maximum of a range, each labelled, on one line. */
+.constraint-range {
+    display: flex;
+    gap: var(--control__gap--horizontal);
+    align-items: center;
+    margin-bottom: 4px;
+}
+
+/* The Minimum and Maximum labels share one width so the two rows' boxes line up under each other. */
+.constraint-duration-range .constraint-range > .gwt-Label {
+    flex: none;
+    width: 5em;
+}
+
+/* The values of a set as a bordered list, one row per value with its remove button on the same row. */
+.constraint-set-items {
+    max-height: 12em;
+    overflow-y: auto;
+    margin-bottom: 6px;
+    border: 1px solid var(--control__border-color);
+    border-radius: 4px;
+}
+
+.constraint-set-items:empty {
+    display: none;
+}
+
+.constraint-set-item {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 2px 2px 2px 10px;
+    border-bottom: 1px solid rgba(128, 128, 128, 0.25);
+}
+
+.constraint-set-item:last-child {
+    border-bottom: none;
+}
+
+.constraint-set-item:hover {
+    background-color: rgba(128, 128, 128, 0.15);
+}
+
+.constraint-set-value {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.constraint-set-add {
+    display: flex;
+    gap: var(--control__gap--horizontal);
+    align-items: center;
+}
+
+/* One line high like a text box; a text area so that values pasted one per line keep their line breaks. */
+.gwt-TextArea.constraint-set-input {
+    flex-grow: 1;
+    height: 2.1rem;
+    overflow: hidden;
+    white-space: nowrap;
+}
+
+/* The true and false choices of a boolean, side by side with room between them. */
+.constraint-boolean {
+    display: flex;
+    gap: 20px;
+}
+
+.constraint-boolean .gwt-RadioButton {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.constraint-boolean .gwt-RadioButton label {
+    position: relative;
+    top: 2px;
+}
+
+/* What is wrong with the value entered, which keeps the dialog open until it is put right. */
+.constraint-edit-error {
+    color: var(--error);
+    margin-top: 4px;
+}

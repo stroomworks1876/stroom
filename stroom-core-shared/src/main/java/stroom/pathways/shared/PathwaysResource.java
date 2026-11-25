@@ -93,14 +93,6 @@ public interface PathwaysResource extends RestResource, DirectRestService, Fetch
     Boolean addPathway(
             @Parameter(description = "change", required = true) AddPathway addPathway);
 
-    @PUT
-    @Path("/updatePathway")
-    @Operation(
-            summary = "Update pathway",
-            operationId = "updatePathway")
-    Boolean updatePathway(
-            @Parameter(description = "change", required = true) UpdatePathway updatePathway);
-
     @DELETE
     @Path("/deletePathway")
     @Operation(
@@ -124,4 +116,12 @@ public interface PathwaysResource extends RestResource, DirectRestService, Fetch
             operationId = "removePathwayConstraints")
     Boolean removeConstraints(
             @Parameter(description = "change", required = true) RemoveConstraints removeConstraints);
+
+    @POST
+    @Path("/editConstraint")
+    @Operation(
+            summary = "Add a constraint to a node of a learnt pathway, or change one it has",
+            operationId = "editPathwayConstraint")
+    Boolean editConstraint(
+            @Parameter(description = "change", required = true) EditConstraint editConstraint);
 }

@@ -48,20 +48,19 @@ public class PathwayTabManager {
 
     /**
      * Opens one pathway, or brings its tab to the front where it is open already. A pathway open a
-     * second time is not read again: the reader may have edited it, and answering a click on a list
-     * by throwing away their work would be worse than showing them what they already have.
+     * second time is not read again, so whatever the reader had set up on its tab is kept.
      *
-     * @param onSaved told whenever this pathway is saved, so a list showing it can be brought up to
-     *                date. Kept only until the tab is closed.
+     * @param onChanged told whenever a change to this pathway's model sent from its tab lands, so a
+     *                  list showing it can be brought up to date. Kept only until the tab is closed.
      */
     public void open(final PathwaysDoc pathwaysDoc,
                      final String name,
                      final boolean readOnly,
-                     final Runnable onSaved) {
+                     final Runnable onChanged) {
         final String key = key(pathwaysDoc, name);
         final PathwayEditPresenter existing = open.get(key);
         if (existing != null) {
-            existing.setSavedHandler(onSaved);
+            existing.setChangedHandler(onChanged);
             // Opening a tab that is already open selects it rather than adding a second.
             contentManager.open(closeHandler(key), existing, existing, existing, p -> existing.onOpened());
             return;
@@ -69,7 +68,7 @@ public class PathwayTabManager {
 
         final PathwayEditPresenter presenter = presenterProvider.get();
         open.put(key, presenter);
-        presenter.setSavedHandler(onSaved);
+        presenter.setChangedHandler(onChanged);
         presenter.read(pathwaysDoc, name, readOnly);
         // Told once the tab is open, because that is when there is something laid out to measure.
         contentManager.open(closeHandler(key), presenter, presenter, presenter, p -> presenter.onOpened());
@@ -82,8 +81,8 @@ public class PathwayTabManager {
                 event.getCallback().closeTab(true);
                 return;
             }
-            // Asked rather than told, because a pathway with unsaved changes gets to put the question
-            // to the reader before its tab goes.
+            // Asked rather than told, because the tab stops stepping through its changes before it
+            // goes.
             presenter.onCloseRequest(new CloseContentEvent(event.getDirtyMode(), ok -> {
                 if (ok) {
                     open.remove(key);

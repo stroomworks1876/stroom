@@ -18,11 +18,13 @@ package stroom.pathways.client.presenter;
 
 import stroom.pathways.client.presenter.ConstraintEditPresenter.ConstraintEditView;
 import stroom.pathways.shared.otel.trace.NanoTime;
+import stroom.pathways.shared.pathway.AbstractRange;
+import stroom.pathways.shared.pathway.AbstractSet;
 import stroom.pathways.shared.pathway.AnyBoolean;
 import stroom.pathways.shared.pathway.AnyTypeValue;
 import stroom.pathways.shared.pathway.BooleanValue;
 import stroom.pathways.shared.pathway.Constraint;
-import stroom.pathways.shared.pathway.Constraint.Builder;
+import stroom.pathways.shared.pathway.ConstraintValue;
 import stroom.pathways.shared.pathway.ConstraintValueType;
 import stroom.pathways.shared.pathway.DoubleRange;
 import stroom.pathways.shared.pathway.DoubleSet;
@@ -49,424 +51,201 @@ import com.google.web.bindery.event.shared.EventBus;
 import com.gwtplatform.mvp.client.MyPresenterWidget;
 import com.gwtplatform.mvp.client.View;
 
-import java.util.Arrays;
+import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
-import java.util.stream.Collectors;
-import javax.validation.ValidationException;
+import java.util.Set;
+import java.util.function.BiFunction;
+import java.util.function.Function;
 
+/**
+ * The dialog that adds a constraint to a node, or changes the value or optional flag of one it has.
+ * Each type of value has an editor of its own.
+ */
 public class ConstraintEditPresenter extends MyPresenterWidget<ConstraintEditView> {
 
     private Constraint constraint;
-//    private Element selected;
-//    private final Map<String, PathNode> nodeMap = new HashMap<>();
 
     @Inject
     public ConstraintEditPresenter(final EventBus eventBus, final ConstraintEditView view) {
         super(eventBus, view);
     }
 
-    @Override
-    protected void onBind() {
-        super.onBind();
-//        registerHandler(getView().getDetails().addClickHandler(e -> {
-//            final Element target = e.getNativeEvent().getEventTarget().cast();
-//            if (target != null) {
-//                final Element node = ElementUtil.findParent(target, element ->
-//                        NullSafe.isNonBlankString(element.getAttribute("uuid")), 3);
-//                if (node != null) {
-//                    final String uuid = node.getAttribute("uuid");
-////                    AlertEvent.fireInfo(this, uuid, null);
-//
-//                    final PathNode pathNode = nodeMap.get(uuid);
-//                    // Calculate min, max, average time.
-//                    NanoTime min = NanoTime.ofSeconds(Long.MAX_VALUE);
-//                    NanoTime max = NanoTime.ZERO;
-//                    NanoTime sum = NanoTime.ZERO;
-//                    final int count = pathNode.getSpans().size();
-//
-//                    final HtmlBuilder spanDetails = new HtmlBuilder();
-//                    final CommonSpanBuilder commonSpanBuilder = new CommonSpanBuilder();
-//                    for (final Span span : pathNode.getSpans()) {
-//                        commonSpanBuilder.add(span);
-//
-//                        final NanoTime startTime = NanoTime.fromString(span.getStartTimeUnixNano());
-//                        final NanoTime endTime = NanoTime.fromString(span.getEndTimeUnixNano());
-//                        final NanoTime duration = endTime.diff(startTime);
-//
-//                        if (min.isGreaterThan(duration)) {
-//                            min = duration;
-//                        }
-//                        if (max.isLessThan(duration)) {
-//                            max = duration;
-//                        }
-//                        sum = sum.add(duration);
-//                    }
-//
-//
-//                    final Span commonSpan = commonSpanBuilder.build();
-//                    final SafeHtml durations = getDurationsHtml(min, max, sum, count);
-//                    spanDetails.div(div -> {
-//                        div.append(durations);
-//                    });
-//                    spanDetails.div(div -> {
-//                        div.append(getSpanHtml(commonSpan));
-//                    });
-//
-//                    getView().setConstraints(HtmlBuilder.builder().div(d -> d.append(getConstraintsHtml(pathNode)),
-//                            Attribute.className("constraint-constraints")).toSafeHtml());
-//
-//                    getView().setSpans(HtmlBuilder.builder().div(d -> d.append(spanDetails.toSafeHtml()),
-//                            Attribute.className("constraint-spans")).toSafeHtml());
-//
-//                    if (!Objects.equals(selected, node)) {
-//                        if (selected != null) {
-//                            selected.removeClassName("constraint-nodeName--selected");
-//                        }
-//                        selected = node;
-//                        selected.addClassName("constraint-nodeName--selected");
-//                    }
-//                }
-//            }
-//        }));
-    }
-//
-//    private SafeHtml getConstraintsHtml(final PathNode pathNode) {
-//        final HtmlBuilder hb = new HtmlBuilder();
-//
-//        final Map<String, Constraint> constraints = pathNode.getConstraints();
-//        if (constraints != null) {
-//            if (constraints.getDuration() != null) {
-//                append(hb, "Duration", constraints.getDuration().toString());
-//            }
-//            if (constraints.getFlags() != null) {
-//                append(hb, "Flag", constraints.getFlags().toString());
-//            }
-//            if (constraints.getKind() != null) {
-//                append(hb, "Kind", constraints.getKind().toString());
-//            }
-//            append(hb, "Attributes", "");
-//
-//            final Map<String, ConstraintValue> requiredAttributes = NullSafe.map(constraints.getRequiredAttributes());
-//            final Map<String, ConstraintValue> optionalAttributes = NullSafe.map(constraints.getOptionalAttributes());
-//            final Set<String> keys = new HashSet<>(requiredAttributes.keySet());
-//            keys.addAll(optionalAttributes.keySet());
-//            final List<String> sortedKeys = keys.stream().sorted().collect(Collectors.toList());
-//            for (final String key : sortedKeys) {
-//                final ConstraintValue required = requiredAttributes.get(key);
-//                if (required != null) {
-//                    hb.div(div ->
-//                            append(div, key, required.toString()), Attribute.className("constraint-attributes"));
-//                }
-//                final ConstraintValue optional = optionalAttributes.get(key);
-//                if (optional != null) {
-//                    hb.div(div ->
-//                            append(div, key, optional.toString()),
-//                            Attribute.className("constraint-attributes-optional"));
-//                }
-//            }
-//        }
-//        return hb.toSafeHtml();
-//    }
-//
-//    private SafeHtml getSpanHtml(final Span span) {
-//        final HtmlBuilder hb = new HtmlBuilder();
-//        if (span.getTraceId() != null) {
-//            append(hb, "Trace Id", span.getTraceId());
-//        }
-//        if (span.getSpanId() != null) {
-//            append(hb, "Span Id", span.getSpanId());
-//        }
-//        if (span.getTraceState() != null) {
-//            append(hb, "Trace State", span.getTraceState());
-//        }
-//        if (span.getParentSpanId() != null) {
-//            append(hb, "Parent Span Id", span.getParentSpanId());
-//        }
-//        if (span.getFlags() != -1) {
-//            append(hb, "Flags", String.valueOf(span.getFlags()));
-//        }
-//        if (span.getName() != null) {
-//            append(hb, "Name", span.getName());
-//        }
-//        if (span.getKind() != null) {
-//            append(hb, "Kind", String.valueOf(span.getKind()));
-//        }
-////        if (span.getstartTimeUnixNano() != null) {
-////
-////        if (span.getendTimeUnixNano() != null) {
-//
-//        if (!NullSafe.isEmptyCollection(span.getAttributes())) {
-//            append(hb, "Attributes", "");
-//            hb.div(div -> {
-//                for (final KeyValue keyValue : span.getAttributes()) {
-//                    append(div, keyValue.getKey(), keyValue.getValue().toString());
-//                }
-//            }, Attribute.className("constraint-attributes"));
-//        }
-//        if (span.getDroppedAttributesCount() != -1) {
-//            append(hb, "Dropped Attributes Count", String.valueOf(span.getDroppedAttributesCount()));
-//        }
-////        if (span.getevents() != null) {
-//
-//        if (span.getDroppedEventsCount() != -1) {
-//            append(hb, "Dropped Events Count", String.valueOf(span.getDroppedEventsCount()));
-//        }
-////        if (span.getlinks() != null) {
-//
-//        if (span.getDroppedLinksCount() != -1) {
-//            append(hb, "Dropped Links Count", String.valueOf(span.getDroppedLinksCount()));
-//        }
-//        if (span.getStatus() != null) {
-//            append(hb, "Status", "");
-//            hb.div(div -> {
-//                if (span.getStatus().getCode() != null) {
-//                    append(div, "Code", span.getStatus().getCode().toString());
-//                }
-//                if (span.getStatus().getMessage() != null) {
-//                    append(div, "Message", span.getStatus().getMessage());
-//                }
-//            }, Attribute.className("constraint-attributes"));
-//        }
-//
-//        return hb.toSafeHtml();
-//    }
-//
-//    private void append(final HtmlBuilder hb, final String key, final String value) {
-//        hb.div(div -> {
-//            div.div(k -> k.append(key + ":"), Attribute.className("constraint-attributeKey"));
-//            div.div(v -> v.append(value), Attribute.className("constraint-attributeValue"));
-//        }, Attribute.className("constraint-attribute"));
-//    }
-//
-//    private SafeHtml getDurationsHtml(final NanoTime min,
-//                                      final NanoTime max,
-//                                      final NanoTime sum,
-//                                      final int count) {
-//        final HtmlBuilder hb = new HtmlBuilder();
-//        append(hb, "Calls", Integer.toString(count));
-//        append(hb, "Min Duration", min.toString());
-//        append(hb, "Max Duration", max.toString());
-//        append(hb, "Average Duration",
-//                new NanoTime(sum.getSeconds() / count, sum.getNanos() / count).toString());
-//        return hb.toSafeHtml();
-//    }
-
-    // The editor works in whole nanoseconds, which is how a duration is typed in; NanoTime holds
-    // seconds and nanoseconds apart.
-    private static long nanos(final NanoTime nanoTime) {
-        return nanoTime.getNanos() + (nanoTime.getSeconds() * 1000000000);
-    }
-
+    /**
+     * @param constraint the constraint to change, or null to add one. The name can only be typed when
+     *                   adding.
+     */
     public void read(final Constraint constraint) {
         this.constraint = constraint;
-        getView().setName(constraint.getName());
-        getView().setType(constraint.getValue().valueType());
+        final ConstraintEditView view = getView();
+        view.clear();
+        view.setName(constraint == null
+                ? ""
+                : constraint.getName());
+        view.setNameEditable(constraint == null);
+        view.setOptional(constraint != null && constraint.isOptional());
 
-        switch (constraint.getValue().valueType()) {
-            case ANY -> {
-                getView().setValue("");
+        final ConstraintValue value = constraint == null
+                ? null
+                : constraint.getValue();
+        if (value == null) {
+            view.setType(ConstraintValueType.STRING);
+            return;
+        }
+        final ConstraintValueType type = value.valueType();
+        switch (type) {
+            case DURATION_VALUE -> view.setDuration(((NanoTimeValue) value).getValue().toEpochNanos());
+            case DURATION_RANGE, DURATION_AT_LEAST, DURATION_AT_MOST -> {
+                final NanoTimeRange range = (NanoTimeRange) value;
+                view.setDurationRange(nanos(range.getMin()), nanos(range.getMax()));
             }
-            case DURATION_VALUE -> {
-                final NanoTime nanoTime = ((NanoTimeValue) constraint.getValue()).getValue();
-                getView().setValue(String.valueOf(nanoTime.getNanos() + (nanoTime.getSeconds() * 1000000000)));
+            case STRING -> view.setText(((StringValue) value).getValue());
+            case INTEGER, LONG, DOUBLE -> view.setText(value.toString());
+            case STRING_SET, INTEGER_SET, LONG_SET, DOUBLE_SET -> {
+                final List<String> items = new ArrayList<>();
+                ((AbstractSet<?>) value).getSet().forEach(item -> items.add(String.valueOf(item)));
+                items.sort(String::compareTo);
+                view.setSet(items);
             }
-            case DURATION_RANGE -> {
-                final NanoTimeRange nanoTimeRange = ((NanoTimeRange) constraint.getValue());
-                getView().setValue(nanos(nanoTimeRange.getMin()) + "," + nanos(nanoTimeRange.getMax()));
+            case INTEGER_RANGE, LONG_RANGE, DOUBLE_RANGE -> {
+                final AbstractRange<?> range = (AbstractRange<?>) value;
+                view.setRange(String.valueOf(range.getMin()), String.valueOf(range.getMax()));
             }
-            case DURATION_AT_LEAST -> {
-                getView().setValue(String.valueOf(nanos(((NanoTimeRange) constraint.getValue()).getMin())));
-            }
-            case DURATION_AT_MOST -> {
-                getView().setValue(String.valueOf(nanos(((NanoTimeRange) constraint.getValue()).getMax())));
-            }
-            case STRING -> {
-                getView().setValue(constraint.getValue().toString());
-            }
-            case STRING_SET -> {
-                final StringSet stringValue = (StringSet) constraint.getValue();
-                getView().setValue(stringValue.getSet().stream().collect(Collectors.joining(",")));
-            }
-            case REGEX -> {
-                getView().setValue(constraint.getValue().toString());
-            }
-            case BOOLEAN -> {
-                getView().setValue(constraint.getValue().toString());
-            }
-            case ANY_BOOLEAN -> {
-                getView().setValue("");
-            }
-            case INTEGER -> {
-                getView().setValue(constraint.getValue().toString());
-            }
-            case INTEGER_SET -> {
-                final IntegerSet set = (IntegerSet) constraint.getValue();
-                getView().setValue(set.getSet().stream().map(String::valueOf)
-                        .collect(Collectors.joining(",")));
-            }
-            case INTEGER_RANGE -> {
-                final IntegerRange range = (IntegerRange) constraint.getValue();
-                getView().setValue(range.getMin() + "," + range.getMax());
-
-                getView().setValue(constraint.getValue().toString());
-            }
-            case LONG -> {
-                getView().setValue(constraint.getValue().toString());
-            }
-            case LONG_SET -> {
-                final LongSet set = (LongSet) constraint.getValue();
-                getView().setValue(set.getSet().stream().map(String::valueOf)
-                        .collect(Collectors.joining(",")));
-            }
-            case LONG_RANGE -> {
-                final LongRange range = (LongRange) constraint.getValue();
-                getView().setValue(range.getMin() + "," + range.getMax());
-
-                getView().setValue(constraint.getValue().toString());
-            }
-            case DOUBLE -> {
-                getView().setValue(constraint.getValue().toString());
-            }
-            case DOUBLE_SET -> {
-                final DoubleSet set = (DoubleSet) constraint.getValue();
-                getView().setValue(set.getSet().stream().map(String::valueOf)
-                        .collect(Collectors.joining(",")));
-            }
-            case DOUBLE_RANGE -> {
-                final DoubleRange range = (DoubleRange) constraint.getValue();
-                getView().setValue(range.getMin() + "," + range.getMax());
+            case REGEX -> view.setPattern(((Regex) value).getValue());
+            case BOOLEAN -> view.setBoolean(Boolean.TRUE.equals(((BooleanValue) value).getValue()));
+            default -> {
+                // Any and Any Boolean have nothing to show.
             }
         }
-
-        getView().setOptional(constraint.isOptional());
-
-//        this.selected = null;
-
-//        getView().setDetails(SafeHtmlUtils.EMPTY_SAFE_HTML);
-//        getView().setConstraints(SafeHtmlUtils.EMPTY_SAFE_HTML);
-//        getView().setSpans(SafeHtmlUtils.EMPTY_SAFE_HTML);
-//
-//        getView().setName(constraint.getName());
-//        getView().setDetails(new ConstraintTree().build(constraint));
-//
-//        addNode(constraint.getRoot());
+        view.setType(type == ConstraintValueType.DURATION_AT_LEAST || type == ConstraintValueType.DURATION_AT_MOST
+                ? ConstraintValueType.DURATION_RANGE
+                : type);
     }
 
-//    private void addNode(final PathNode node) {
-//        nodeMap.put(node.getUuid(), node);
-//        node.getTargets().forEach(target -> {
-//            target.getNodes().forEach(this::addNode);
-//        });
-//    }
+    private static Long nanos(final NanoTime nanoTime) {
+        return nanoTime == null
+                ? null
+                : nanoTime.toEpochNanos();
+    }
 
+    /**
+     * @return the constraint as entered, or null where something entered is not valid, which the
+     * dialog then says beside the value.
+     */
     public Constraint write() {
-        String name = getView().getName();
-        name = name.trim();
-
+        final String name = getView().getName().trim();
         if (name.isEmpty()) {
-            throw new ValidationException("A constraint must have a name");
+            getView().setError("A constraint must have a name");
+            return null;
         }
-
-        final Builder builder = constraint.copy();
-        builder.name(name);
-
-        final String value = getView().getValue();
-        final ConstraintValueType type = getView().getType();
-        switch (type) {
-            case ANY -> {
-                builder.value(new AnyTypeValue());
-            }
-            case DURATION_VALUE -> {
-                final long l = Long.parseLong(value);
-                builder.value(new NanoTimeValue(NanoTime.ofNanos(l)));
-            }
-            case DURATION_RANGE -> {
-                final List<Long> list = Arrays
-                        .stream(value.split(","))
-                        .map(Long::parseLong)
-                        .collect(Collectors.toList());
-                builder.value(new NanoTimeRange(NanoTime.ofNanos(list.get(0)), NanoTime.ofNanos(list.get(1))));
-            }
-            case DURATION_AT_LEAST -> {
-                builder.value(new NanoTimeRange(NanoTime.ofNanos(Long.parseLong(value)), null));
-            }
-            case DURATION_AT_MOST -> {
-                builder.value(new NanoTimeRange(null, NanoTime.ofNanos(Long.parseLong(value))));
-            }
-            case STRING -> {
-                builder.value(new StringValue(value));
-            }
-            case STRING_SET -> {
-                builder.value(new StringSet(Arrays
-                        .stream(value.split(","))
-                        .collect(Collectors.toSet())));
-            }
-            case REGEX -> {
-                builder.value(new Regex(value));
-            }
-            case BOOLEAN -> {
-                builder.value(new BooleanValue(Boolean.parseBoolean(value)));
-            }
-            case ANY_BOOLEAN -> {
-                builder.value(new AnyBoolean());
-            }
-            case INTEGER -> {
-                builder.value(new IntegerValue(Integer.parseInt(value)));
-            }
-            case INTEGER_SET -> {
-                builder.value(new IntegerSet(Arrays
-                        .stream(value.split(","))
-                        .map(Integer::parseInt)
-                        .collect(Collectors.toSet())));
-            }
-            case INTEGER_RANGE -> {
-                final List<Integer> list = Arrays
-                        .stream(value.split(","))
-                        .map(Integer::parseInt)
-                        .collect(Collectors.toList());
-                builder.value(new IntegerRange(list.get(0), list.get(1)));
-            }
-            case LONG -> {
-                builder.value(new LongValue(Long.parseLong(value)));
-            }
-            case LONG_SET -> {
-                builder.value(new LongSet(Arrays
-                        .stream(value.split(","))
-                        .map(Long::parseLong)
-                        .collect(Collectors.toSet())));
-            }
-            case LONG_RANGE -> {
-                final List<Long> list = Arrays
-                        .stream(value.split(","))
-                        .map(Long::parseLong)
-                        .collect(Collectors.toList());
-                builder.value(new LongRange(list.get(0), list.get(1)));
-            }
-            case DOUBLE -> {
-                builder.value(new DoubleValue(Double.parseDouble(value)));
-            }
-            case DOUBLE_SET -> {
-                builder.value(new DoubleSet(Arrays
-                        .stream(value.split(","))
-                        .map(Double::parseDouble)
-                        .collect(Collectors.toSet())));
-            }
-            case DOUBLE_RANGE -> {
-                final List<Double> list = Arrays
-                        .stream(value.split(","))
-                        .map(Double::parseDouble)
-                        .collect(Collectors.toList());
-                builder.value(new DoubleRange(list.get(0), list.get(1)));
-            }
+        final ConstraintValue value;
+        try {
+            value = value(getView().getType());
+        } catch (final IllegalArgumentException e) {
+            getView().setError(e.getMessage());
+            return null;
         }
+        getView().setError(null);
 
-        builder.optional(getView().isOptional());
+        final Constraint.Builder builder = constraint == null
+                ? Constraint.builder()
+                : constraint.copy();
+        return builder.name(name).value(value).optional(getView().isOptional()).build();
+    }
 
-        return builder.build();
+    private ConstraintValue value(final ConstraintValueType type) {
+        final ConstraintEditView view = getView();
+        return switch (type) {
+            case ANY -> new AnyTypeValue();
+            case ANY_BOOLEAN -> new AnyBoolean();
+            case STRING -> new StringValue(view.getText());
+            case INTEGER -> new IntegerValue(parse(view.getText(), Integer::valueOf));
+            case LONG -> new LongValue(parse(view.getText(), Long::valueOf));
+            case DOUBLE -> new DoubleValue(parse(view.getText(), Double::valueOf));
+            case DURATION_VALUE -> new NanoTimeValue(NanoTime.ofNanos(duration(view.getDuration())));
+            case DURATION_RANGE, DURATION_AT_LEAST, DURATION_AT_MOST -> durationRange();
+            case STRING_SET -> new StringSet(set(Function.identity()));
+            case INTEGER_SET -> new IntegerSet(set(item -> parse(item, Integer::valueOf)));
+            case LONG_SET -> new LongSet(set(item -> parse(item, Long::valueOf)));
+            case DOUBLE_SET -> new DoubleSet(set(item -> parse(item, Double::valueOf)));
+            case INTEGER_RANGE -> range(Integer::valueOf, IntegerRange::new);
+            case LONG_RANGE -> range(Long::valueOf, LongRange::new);
+            case DOUBLE_RANGE -> range(Double::valueOf, DoubleRange::new);
+            case REGEX -> new Regex(view.getPattern());
+            case BOOLEAN -> new BooleanValue(view.getBoolean());
+        };
+    }
+
+    private NanoTimeRange durationRange() {
+        final ConstraintEditView view = getView();
+        if (view.isNoMin() && view.isNoMax()) {
+            throw new IllegalArgumentException("A duration range needs a minimum or a maximum");
+        }
+        final Long min = view.isNoMin()
+                ? null
+                : duration(view.getMinDuration());
+        final Long max = view.isNoMax()
+                ? null
+                : duration(view.getMaxDuration());
+        if (min != null && max != null) {
+            checked(min, max);
+        }
+        return new NanoTimeRange(min == null
+                ? null
+                : NanoTime.ofNanos(min),
+                max == null
+                        ? null
+                        : NanoTime.ofNanos(max));
+    }
+
+    private <T extends Comparable<T>> ConstraintValue range(final Function<String, T> parser,
+                                                            final BiFunction<T, T, ConstraintValue> maker) {
+        final T min = parse(getView().getMin(), parser);
+        final T max = parse(getView().getMax(), parser);
+        checked(min, max);
+        return maker.apply(min, max);
+    }
+
+    private static long duration(final Long nanos) {
+        if (nanos == null) {
+            throw new IllegalArgumentException("A duration must be a number of zero or more");
+        }
+        return nanos;
+    }
+
+    private <T> Set<T> set(final Function<String, T> parser) {
+        final List<String> items = getView().getSet();
+        if (items.isEmpty()) {
+            throw new IllegalArgumentException("A set needs at least one value");
+        }
+        final Set<T> set = new HashSet<>();
+        for (final String item : items) {
+            set.add(parser.apply(item));
+        }
+        return set;
+    }
+
+    private static <T> T parse(final String text, final Function<String, T> parser) {
+        final String trimmed = text == null
+                ? ""
+                : text.trim();
+        try {
+            return parser.apply(trimmed);
+        } catch (final NumberFormatException e) {
+            throw new IllegalArgumentException(trimmed.isEmpty()
+                    ? "A number is needed"
+                    : "'" + trimmed + "' is not a number of this type");
+        }
+    }
+
+    private static <T extends Comparable<T>> void checked(final T min, final T max) {
+        if (min.compareTo(max) > 0) {
+            throw new IllegalArgumentException("The minimum is greater than the maximum");
+        }
     }
 
     public void show(final String caption, final HidePopupRequestEvent.Handler handler) {
-        final PopupSize popupSize = PopupSize.resizable(800, 400);
+        final PopupSize popupSize = PopupSize.resizableX(600);
         ShowPopupEvent.builder(this)
                 .popupType(PopupType.OK_CANCEL_DIALOG)
                 .popupSize(popupSize)
@@ -478,20 +257,77 @@ public class ConstraintEditPresenter extends MyPresenterWidget<ConstraintEditVie
 
     public interface ConstraintEditView extends View, Focus {
 
+        /**
+         * Empties every value editor and the message beside them.
+         */
+        void clear();
+
         String getName();
 
         void setName(String name);
 
+        void setNameEditable(boolean editable);
+
         ConstraintValueType getType();
 
+        /**
+         * Picks the type, and with it the editor shown for the value.
+         */
         void setType(ConstraintValueType type);
-
-        String getValue();
-
-        void setValue(String value);
 
         boolean isOptional();
 
         void setOptional(boolean optional);
+
+        /**
+         * The text of a single string or number.
+         */
+        String getText();
+
+        void setText(String text);
+
+        /**
+         * A single duration in nanoseconds, or null where none has been entered.
+         */
+        Long getDuration();
+
+        void setDuration(Long nanos);
+
+        List<String> getSet();
+
+        void setSet(List<String> items);
+
+        String getMin();
+
+        String getMax();
+
+        void setRange(String min, String max);
+
+        Long getMinDuration();
+
+        Long getMaxDuration();
+
+        boolean isNoMin();
+
+        boolean isNoMax();
+
+        /**
+         * @param min null to tick "No minimum".
+         * @param max null to tick "No maximum".
+         */
+        void setDurationRange(Long min, Long max);
+
+        String getPattern();
+
+        void setPattern(String pattern);
+
+        boolean getBoolean();
+
+        void setBoolean(boolean value);
+
+        /**
+         * Says what is wrong with what was entered, or clears the message where null.
+         */
+        void setError(String message);
     }
 }

@@ -94,7 +94,17 @@ public enum MutationType implements HasDisplayValue, HasPrimitiveValue {
      * A node a user removed from the model. Handled exactly as {@link #NODE_RETIRED}; it is a separate
      * type only so the history says a user did it rather than traces no longer carrying the node.
      */
-    NODE_REMOVED("Node Removed", 19);
+    NODE_REMOVED("Node Removed", 19),
+    /**
+     * A constraint whose value a user set, or that a user added. Holds the value before (null when
+     * added) and after, and the optional flag the constraint has after the edit.
+     */
+    CONSTRAINT_EDITED("Constraint Edited", 20),
+    /**
+     * A constraint whose optional flag a user changed. Holds the new flag, and the constraint's value
+     * after the edit as both the old and the new value.
+     */
+    CONSTRAINT_OPTIONAL_EDITED("Optional Edited", 21);
 
     public static final PrimitiveValueConverter<MutationType> PRIMITIVE_VALUE_CONVERTER =
             PrimitiveValueConverter.create(MutationType.class, MutationType.values());

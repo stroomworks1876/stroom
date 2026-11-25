@@ -16,17 +16,12 @@
 
 package stroom.pathways.client.presenter;
 
-import stroom.alert.client.event.AlertEvent;
 import stroom.alert.client.event.ConfirmEvent;
 import stroom.cell.tickbox.client.TickBoxCell;
 import stroom.cell.tickbox.shared.TickBoxState;
 import stroom.data.grid.client.MyDataGrid;
 import stroom.data.grid.client.PagerView;
 import stroom.dispatch.client.RestFactory;
-import stroom.document.client.event.DirtyEvent;
-import stroom.document.client.event.DirtyEvent.DirtyHandler;
-import stroom.document.client.event.HasDirtyHandlers;
-import stroom.pathways.shared.otel.trace.NanoTime;
 import stroom.pathways.shared.pathway.Constraint;
 import stroom.pathways.shared.pathway.PathNode;
 import stroom.svg.client.SvgPresets;
@@ -39,7 +34,6 @@ import stroom.widget.util.client.MultiSelectionModelImpl;
 import com.google.gwt.user.cellview.client.Column;
 import com.google.inject.Inject;
 import com.google.web.bindery.event.shared.EventBus;
-import com.google.web.bindery.event.shared.HandlerRegistration;
 import com.gwtplatform.mvp.client.MyPresenterWidget;
 
 import java.util.ArrayList;
@@ -53,8 +47,7 @@ import java.util.function.Function;
 import java.util.stream.Collectors;
 
 public class ConstraintListPresenter
-        extends MyPresenterWidget<PagerView>
-        implements HasDirtyHandlers {
+        extends MyPresenterWidget<PagerView> {
 
 //    private static final ConstraintsResource PATHWAYS_RESOURCE = GWT.create(ConstraintsResource.class);
 
@@ -73,8 +66,10 @@ public class ConstraintListPresenter
 
     //    private String filter;
     private boolean readOnly = true;
-    private boolean removable;
+    private boolean editable;
     private Consumer<List<String>> removeHandler;
+    private EditHandler editHandler;
+    private boolean sending;
 
     @Inject
     public ConstraintListPresenter(final EventBus eventBus,
@@ -118,7 +113,7 @@ public class ConstraintListPresenter
         registerHandler(newButton.addClickHandler(event -> {
             if (!readOnly) {
                 if (MouseUtil.isPrimary(event)) {
-                    onAdd();
+                    edit(null, "New Constraint");
                 }
             }
         }));
@@ -139,7 +134,7 @@ public class ConstraintListPresenter
         registerHandler(selectionModel.addSelectionHandler(event -> {
             if (!readOnly) {
                 enableButtons();
-                if (event.getSelectionType().isDoubleSelect()) {
+                if (editable && event.getSelectionType().isDoubleSelect()) {
                     onEdit();
                 }
             }
@@ -154,20 +149,23 @@ public class ConstraintListPresenter
 //    }
 
     private void enableButtons() {
-        newButton.setEnabled(!readOnly);
-        editButton.setEnabled(!readOnly && selectionModel.getSelected() != null);
-        removeButton.setEnabled(!readOnly && removable && !selectionModel.getSelectedItems().isEmpty());
+        final boolean enabled = !readOnly && editable;
+        newButton.setEnabled(enabled && pathNode != null);
+        editButton.setEnabled(enabled && selectionModel.getSelected() != null);
+        removeButton.setEnabled(enabled && !selectionModel.getSelectedItems().isEmpty());
 
         if (readOnly) {
             newButton.setTitle("New constraint disabled as read only");
             editButton.setTitle("Edit constraint disabled as read only");
             removeButton.setTitle("Remove constraint disabled as read only");
-        } else {
+        } else if (editable) {
             newButton.setTitle("New Constraint");
             editButton.setTitle("Edit Constraint");
-            removeButton.setTitle(removable
-                    ? "Remove Constraint"
-                    : "Remove constraint only works on the model as it stands now");
+            removeButton.setTitle("Remove Constraint");
+        } else {
+            newButton.setTitle("New constraint only works on the model as it stands now");
+            editButton.setTitle("Edit constraint only works on the model as it stands now");
+            removeButton.setTitle("Remove constraint only works on the model as it stands now");
         }
     }
 
@@ -238,46 +236,47 @@ public class ConstraintListPresenter
                 100);
     }
 
-    private void onAdd() {
-        final NanoTime now = NanoTime.ofMillis(System.currentTimeMillis());
-        constraintEditPresenter.read(new Constraint("New", null, false));
-        constraintEditPresenter.show("New Constraint", e -> {
-            try {
-                if (e.isOk()) {
-                    final Constraint constraint = constraintEditPresenter.write();
-                    pathNode.getConstraints().remove(constraint.getName());
-                    pathNode.getConstraints().put(constraint.getName(), constraint);
-                    refresh();
-                    DirtyEvent.fire(this, true);
-                }
-            } catch (final RuntimeException ex) {
-                AlertEvent.fireErrorFromException(this, "Error", ex, null);
-            } finally {
-                e.hide();
-            }
-        });
+    private void onEdit() {
+        final Constraint selected = selectionModel.getSelected();
+        if (selected != null) {
+            edit(selected, "Edit Constraint");
+        }
     }
 
-    private void onEdit() {
-        final Constraint existingConstraint = selectionModel.getSelected();
-        if (existingConstraint != null) {
-            constraintEditPresenter.read(existingConstraint);
-            constraintEditPresenter.show("Edit Constraint", e -> {
-                try {
-                    if (e.isOk()) {
-                        final Constraint constraint = constraintEditPresenter.write();
-                        pathNode.getConstraints().remove(constraint.getName());
-                        pathNode.getConstraints().put(constraint.getName(), constraint);
-                        refresh();
-                        DirtyEvent.fire(this, true);
-                    }
-                } catch (final RuntimeException ex) {
-                    AlertEvent.fireErrorFromException(this, "Error", ex, null);
-                } finally {
-                    e.hide();
-                }
+    // The dialog stays open while what was entered is not valid, and while the server has not yet
+    // accepted it. A refusal shows the server's reason in the dialog. Nothing is sent where the
+    // constraint comes back as it went in. While a change is with the server, OK and Cancel are
+    // ignored, so the dialog can neither close nor send it twice.
+    private void edit(final Constraint previous, final String caption) {
+        sending = false;
+        constraintEditPresenter.read(previous);
+        constraintEditPresenter.show(caption, e -> {
+            if (sending) {
+                return;
+            }
+            if (!e.isOk()) {
+                e.hide();
+                return;
+            }
+            final Constraint constraint = constraintEditPresenter.write();
+            if (constraint == null) {
+                e.reset();
+                return;
+            }
+            if (constraint.equals(previous) || editHandler == null) {
+                e.hide();
+                return;
+            }
+            sending = true;
+            editHandler.edit(previous, constraint, () -> {
+                sending = false;
+                e.hide();
+            }, reason -> {
+                sending = false;
+                constraintEditPresenter.getView().setError(reason);
+                e.reset();
             });
-        }
+        });
     }
 
     private void onRemove() {
@@ -296,35 +295,28 @@ public class ConstraintListPresenter
         }
     }
 
-    /**
-     * Told whenever a constraint is added, changed or removed. The edits are written straight into the
-     * node this was given, so whoever holds that node has to hear about them to know there is
-     * something to save. Registered against this presenter as the source, so one pathway hears only
-     * its own.
-     */
-    @Override
-    public HandlerRegistration addDirtyHandler(final DirtyHandler handler) {
-        return addHandlerToSource(DirtyEvent.getType(), handler);
-    }
-
     public void setRemoveHandler(final Consumer<List<String>> removeHandler) {
         this.removeHandler = removeHandler;
     }
 
+    public void setEditHandler(final EditHandler editHandler) {
+        this.editHandler = editHandler;
+    }
+
     /**
-     * @param removable whether removing constraints is allowed, which is only so while the node shown
-     *                  is the model as it stands now.
+     * @param editable whether adding, changing and removing constraints is allowed, which is only so
+     *                 while the node shown is the model as it stands now.
      * @param changed the constraints the change being looked at moved, which are marked so the reader
      *                can see which of a node's constraints that change was about. Empty where no
      *                change is being looked at.
      */
     public void setData(final PathNode pathNode,
                         final boolean readOnly,
-                        final boolean removable,
+                        final boolean editable,
                         final Set<String> changed) {
         this.pathNode = pathNode;
         this.readOnly = readOnly;
-        this.removable = removable;
+        this.editable = editable;
         this.changed = NullSafe.set(changed);
         selectionModel.clear(false);
         refresh();
@@ -411,4 +403,21 @@ public class ConstraintListPresenter
 //            dataProvider.refresh();
 //        }
 //    }
+
+    /**
+     * Told when a constraint is added or changed in the dialog. The dialog stays open until one of the
+     * two outcomes is called.
+     */
+    public interface EditHandler {
+
+        /**
+         * @param previous   the constraint as the dialog first showed it, null when adding.
+         * @param constraint the constraint the dialog ended with.
+         * @param accepted   to call when the server accepts the change, or when there is no node to
+         *                   send it for; closes the dialog.
+         * @param refused    to call with the reason when the server refuses the change; shows the reason
+         *                   in the dialog and leaves it open.
+         */
+        void edit(Constraint previous, Constraint constraint, Runnable accepted, Consumer<String> refused);
+    }
 }

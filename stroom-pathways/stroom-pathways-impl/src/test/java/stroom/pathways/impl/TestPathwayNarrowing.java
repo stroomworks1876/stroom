@@ -26,7 +26,9 @@ import stroom.pathways.shared.otel.trace.NanoDuration;
 import stroom.pathways.shared.otel.trace.Span;
 import stroom.pathways.shared.otel.trace.SpanKind;
 import stroom.pathways.shared.otel.trace.Trace;
+import stroom.pathways.shared.pathway.Constraint;
 import stroom.pathways.shared.pathway.ConstraintValue;
+import stroom.pathways.shared.pathway.IntegerRange;
 import stroom.pathways.shared.pathway.IntegerSet;
 import stroom.pathways.shared.pathway.MutationType;
 import stroom.pathways.shared.pathway.NanoTimeRange;
@@ -36,8 +38,12 @@ import stroom.pathways.shared.pathway.Pathway;
 import stroom.pathways.shared.pathway.PathwayMutation;
 import stroom.pathways.shared.pathway.PathwayReplay;
 import stroom.pathways.shared.pathway.PathwayUsage;
+import stroom.pathways.shared.pathway.Regex;
+import stroom.pathways.shared.pathway.StringSet;
+import stroom.pathways.shared.pathway.StringValue;
 import stroom.planb.impl.dao.LmdbWriter;
 import stroom.planb.impl.dao.trace.PathwaysDb;
+import stroom.util.shared.EntityServiceException;
 import stroom.util.shared.time.SimpleDuration;
 import stroom.util.shared.time.TimeUnit;
 
@@ -49,6 +55,7 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Comparator;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
@@ -444,7 +451,7 @@ class TestPathwayNarrowing {
     private static boolean removeFromModel(final Path dir, final String uuid) {
         final String name = onlyPathway(dir).getName();
         return new PathwaysService(null, null, null, null, BYTE_BUFFERS, mutationLog(), serde(), null)
-                .removeFromModel(dir, name, name.getBytes(StandardCharsets.UTF_8), uuid);
+                .removeFromModel(dir, null, name, name.getBytes(StandardCharsets.UTF_8), uuid);
     }
 
     @Test
@@ -517,8 +524,173 @@ class TestPathwayNarrowing {
     private static boolean constraintsRemoved(final Path dir, final String uuid, final String constraint) {
         final String name = onlyPathway(dir).getName();
         return new PathwaysService(null, null, null, null, BYTE_BUFFERS, mutationLog(), serde(), null)
-                .removeConstraintsFromModel(dir, name, name.getBytes(StandardCharsets.UTF_8), uuid,
+                .removeConstraintsFromModel(dir, null, name, name.getBytes(StandardCharsets.UTF_8), uuid,
                         List.of(constraint));
+    }
+
+    @Test
+    void editingAConstraintKeepsItsUseCounts(@TempDir final Path tempDir) {
+        applied(tempDir, List.of(withChildren(0, "Ping", "Commit")));
+        final PathNode was = child(tempDir, "Commit");
+        final Constraint before = firstConstraint(was);
+        assertThat(before.getTimesUsed()).isPositive();
+
+        assertThat(edited(tempDir, was.getUuid(), before,
+                before.copy().value(new IntegerRange(1, 5)).build())).isTrue();
+
+        final Constraint after = child(tempDir, "Commit").getConstraints().get(before.getName());
+        assertThat(after.getValue()).isEqualTo(new IntegerRange(1, 5));
+        assertThat(after.isOptional()).isEqualTo(before.isOptional());
+        assertThat(after.getTimesUsed()).isEqualTo(before.getTimesUsed());
+        assertThat(after.getLastUsedTime()).isEqualTo(before.getLastUsedTime());
+        assertThat(from(tempDir, MutationType.CONSTRAINT_EDITED))
+                .singleElement()
+                .satisfies(m -> {
+                    assertThat(m.getOldValue()).isEqualTo(before.getValue());
+                    assertThat(m.getNewValue()).isEqualTo(new IntegerRange(1, 5));
+                });
+    }
+
+    @Test
+    void editingValueAndFlagWritesTwoRowsThatAReplayTakesOff(@TempDir final Path tempDir) {
+        applied(tempDir, List.of(withChildren(0, "Ping", "Commit")));
+        final PathNode was = child(tempDir, "Commit");
+        final Constraint before = firstConstraint(was);
+        final Constraint wanted = before.copy()
+                .value(new IntegerRange(1, 5))
+                .optional(!before.isOptional())
+                .build();
+
+        edited(tempDir, was.getUuid(), before, wanted);
+
+        final List<PathwayMutation> rows = from(tempDir, MutationType.CONSTRAINT_EDITED);
+        assertThat(rows)
+                .extracting(PathwayMutation::getType)
+                .as("newest first, so the flag row was written after the value row")
+                .containsExactly(MutationType.CONSTRAINT_OPTIONAL_EDITED, MutationType.CONSTRAINT_EDITED);
+
+        final PathNode now = onlyPathway(tempDir).getRoot();
+        final PathNode rewound = PathwayReplay.rewind(now, rows);
+        final Constraint undone = child(rewound, "Commit").getConstraints().get(before.getName());
+        assertThat(undone.getValue()).isEqualTo(before.getValue());
+        assertThat(undone.isOptional()).isEqualTo(before.isOptional());
+
+        PathNode replayed = rewound;
+        for (final PathwayMutation row : rows.reversed()) {
+            replayed = PathwayReplay.apply(replayed, row);
+        }
+        assertThat(child(replayed, "Commit").getConstraints().get(before.getName()))
+                .isEqualTo(wanted);
+    }
+
+    @Test
+    void addingAConstraintWritesOneRowThatAReplayTakesOff(@TempDir final Path tempDir) {
+        applied(tempDir, List.of(withChildren(0, "Ping", "Commit")));
+        final PathNode was = child(tempDir, "Commit");
+
+        assertThat(edited(tempDir, was.getUuid(), null,
+                new Constraint("added", new StringValue("x"), true))).isTrue();
+
+        final Constraint added = child(tempDir, "Commit").getConstraints().get("added");
+        assertThat(added.getValue()).isEqualTo(new StringValue("x"));
+        assertThat(added.isOptional()).isTrue();
+        assertThat(added.getTimesUsed()).isZero();
+        assertThat(added.getLastUsedTime()).isNull();
+
+        final List<PathwayMutation> rows = from(tempDir, MutationType.CONSTRAINT_EDITED);
+        assertThat(rows).singleElement().satisfies(m -> {
+            assertThat(m.getOldValue()).isNull();
+            assertThat(m.isOptional()).isTrue();
+        });
+        final PathNode rewound = PathwayReplay.rewind(onlyPathway(tempDir).getRoot(), rows);
+        assertThat(child(rewound, "Commit").getConstraints()).doesNotContainKey("added");
+    }
+
+    @Test
+    void anEditThatChangesNothingWritesNothing(@TempDir final Path tempDir) {
+        applied(tempDir, List.of(withChildren(0, "Ping", "Commit")));
+        final PathNode was = child(tempDir, "Commit");
+        final Constraint before = firstConstraint(was);
+        final int rows = mutations(tempDir).size();
+
+        assertThat(edited(tempDir, was.getUuid(), before, before)).isFalse();
+        assertThat(mutations(tempDir)).hasSize(rows);
+    }
+
+    @Test
+    void anEditIsRefusedWhereTheModelHasMovedOn(@TempDir final Path tempDir) {
+        applied(tempDir, List.of(withChildren(0, "Ping", "Commit")));
+        final PathNode was = child(tempDir, "Commit");
+        final Constraint before = firstConstraint(was);
+        final int rows = mutations(tempDir).size();
+
+        assertThatThrownBy(() -> edited(tempDir, was.getUuid(),
+                before.copy().optional(!before.isOptional()).build(),
+                before.copy().value(new IntegerRange(1, 5)).build()))
+                .isInstanceOf(EntityServiceException.class)
+                .hasMessageContaining("has changed since it was opened");
+        assertThatThrownBy(() -> edited(tempDir, was.getUuid(),
+                new Constraint("gone", new StringValue("x"), false),
+                new Constraint("gone", new StringValue("y"), false)))
+                .isInstanceOf(EntityServiceException.class)
+                .hasMessageContaining("no longer has");
+        assertThatThrownBy(() -> edited(tempDir, was.getUuid(), null, before))
+                .isInstanceOf(EntityServiceException.class)
+                .hasMessageContaining("already has");
+        assertThat(mutations(tempDir)).hasSize(rows);
+    }
+
+    @Test
+    void anEditIsRefusedOnANodeRemovedOrNotThere(@TempDir final Path tempDir) {
+        applied(tempDir, List.of(withChildren(0, "Ping", "Commit")));
+        final PathNode was = child(tempDir, "Commit");
+        final Constraint added = new Constraint("added", new StringValue("x"), false);
+
+        assertThatThrownBy(() -> edited(tempDir, "no-such-node", null, added))
+                .isInstanceOf(EntityServiceException.class);
+
+        removed(tempDir, "Commit");
+        final int rows = mutations(tempDir).size();
+        assertThatThrownBy(() -> edited(tempDir, was.getUuid(), null, added))
+                .isInstanceOf(EntityServiceException.class)
+                .hasMessageContaining("removed or retired");
+        assertThat(mutations(tempDir)).hasSize(rows);
+    }
+
+    @Test
+    void anInvalidValueIsRefused(@TempDir final Path tempDir) {
+        applied(tempDir, List.of(withChildren(0, "Ping", "Commit")));
+        final String uuid = child(tempDir, "Commit").getUuid();
+        final int rows = mutations(tempDir).size();
+
+        for (final ConstraintValue value : Arrays.asList(
+                new IntegerRange(5, 1),
+                new Regex("("),
+                new StringSet(Set.of()),
+                new NanoTimeRange(null, null),
+                new NanoTimeRange(millis(5), millis(1)),
+                null)) {
+            assertThatThrownBy(() -> edited(tempDir, uuid, null, new Constraint("added", value, false)))
+                    .as(String.valueOf(value))
+                    .isInstanceOf(EntityServiceException.class);
+        }
+        assertThatThrownBy(() -> edited(tempDir, uuid, null, new Constraint(" ", new StringValue("x"), false)))
+                .isInstanceOf(EntityServiceException.class);
+        assertThat(mutations(tempDir)).hasSize(rows);
+    }
+
+    private static Constraint firstConstraint(final PathNode node) {
+        return node.getConstraints().values().iterator().next();
+    }
+
+    private static boolean edited(final Path dir,
+                                  final String uuid,
+                                  final Constraint previous,
+                                  final Constraint constraint) {
+        final String name = onlyPathway(dir).getName();
+        return new PathwaysService(null, null, null, null, BYTE_BUFFERS, mutationLog(), serde(), null)
+                .editConstraintInModel(dir, null, name, name.getBytes(StandardCharsets.UTF_8), uuid, previous,
+                        constraint);
     }
 
     @Test
