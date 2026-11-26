@@ -198,6 +198,8 @@ public class PathwayMutationListPresenter extends MyPresenterWidget<PagerView> {
     private Runnable plotChangeHandler;
     // What right clicking a row's node offers, by the node's path.
     private Function<List<String>, List<Item>> nodeMenu = path -> List.of();
+    // What right clicking a change's constraint offers, by the change.
+    private Function<PathwayMutation, List<Item>> constraintMenu = mutation -> List.of();
     // True while setData is replacing the rows, which brings its own plot with it.
     private boolean replacing;
     // What the reader had set up, to be carried onto the rows replacing the ones on screen. All
@@ -658,6 +660,13 @@ public class PathwayMutationListPresenter extends MyPresenterWidget<PagerView> {
     }
 
     /**
+     * What right clicking a change's constraint offers, given the change.
+     */
+    public void setConstraintMenu(final Function<PathwayMutation, List<Item>> constraintMenu) {
+        this.constraintMenu = constraintMenu;
+    }
+
+    /**
      * The plot on its own, counted over the same rows for whichever node the table is narrowed to.
      *
      * <p>Apart from {@link #setData}, because the rows have not changed: replacing them would shut
@@ -727,6 +736,33 @@ public class PathwayMutationListPresenter extends MyPresenterWidget<PagerView> {
             }
         };
         dataGrid.addResizableColumn(column, PathwayMutation.FIELD_PATH, 400);
+    }
+
+    // The constraint the change was made to. Right clicking offers something only on a change; a
+    // day comparison shows its constraint but offers nothing, and a trace or day row shows neither.
+    private void addConstraintColumn() {
+        final Column<MutationRow, HistoryRow> column = new Column<MutationRow, HistoryRow>(
+                new HasContextMenusCell<HistoryRow>((context, row) ->
+                        row instanceof final PathwayMutation mutation
+                                ? constraintMenu.apply(mutation)
+                                : List.of()) {
+                    @Override
+                    public void render(final Context context,
+                                       final HistoryRow row,
+                                       final SafeHtmlBuilder sb) {
+                        if (row != null && row.getConstraint() != null) {
+                            sb.append(SafeHtmlUtils.fromString(row.getConstraint()));
+                        }
+                    }
+                }) {
+            @Override
+            public HistoryRow getValue(final MutationRow row) {
+                return row.isParent()
+                        ? null
+                        : row.getRow();
+            }
+        };
+        dataGrid.addResizableColumn(column, PathwayMutation.FIELD_CONSTRAINT, ColumnSizeConstants.MEDIUM_COL);
     }
 
     // When the trace actually ran. Not the time beside it in the table: that is when the model learnt
@@ -906,9 +942,7 @@ public class PathwayMutationListPresenter extends MyPresenterWidget<PagerView> {
                 SPAN_ID_COL);
 
         addNodeColumn();
-        addColumn(PathwayMutation.FIELD_CONSTRAINT,
-                row -> ofRow(row, HistoryRow::getConstraint),
-                ColumnSizeConstants.MEDIUM_COL);
+        addConstraintColumn();
         addColumn(PathwayMutation.FIELD_TYPE,
                 row -> ofRow(row, HistoryRow::getTypeDisplayValue),
                 CHANGE_COL);

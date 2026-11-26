@@ -34,6 +34,7 @@ import stroom.pathways.shared.RemoveConstraints;
 import stroom.pathways.shared.RemoveNode;
 import stroom.pathways.shared.otel.trace.NanoTime;
 import stroom.pathways.shared.pathway.Constraint;
+import stroom.pathways.shared.pathway.ConstraintValue;
 import stroom.pathways.shared.pathway.HistoryRow;
 import stroom.pathways.shared.pathway.PathNode;
 import stroom.pathways.shared.pathway.PathUse;
@@ -261,6 +262,7 @@ public class PathwayEditPresenter
         // counted from the rows in hand would understate a pathway with a long history.
         mutationListPresenter.setPlotChangeHandler(this::fetchPlot);
         mutationListPresenter.setNodeMenu(this::changeNodeItems);
+        mutationListPresenter.setConstraintMenu(this::changeConstraintItems);
 
         registerHandler(pathwayTreePresenter.getSelectionModel()
                 .addSelectionChangeHandler(e -> {
@@ -689,6 +691,44 @@ public class PathwayEditPresenter
                 });
     }
 
+    // Checked against the model as it stands now, which is also what the current constraint is taken
+    // from, so the server can refuse if a trace changes it before OK is pressed. Only the value is
+    // rolled back; the optional flag stays as it is now, or as the change recorded it where the
+    // constraint has since been removed.
+    private void confirmRollback(final PathwayMutation mutation, final PathwayAsAt current) {
+        final PathNode root = NullSafe.get(current, PathwayAsAt::getPathway, Pathway::getRoot);
+        final PathNode node = root == null
+                ? null
+                : find(root, mutation.getNodeUuid());
+        final String constraintName = mutation.getConstraint();
+        if (node == null || node.isRetired()) {
+            AlertEvent.fireWarn(this, "The constraint '" + constraintName + "' cannot be rolled back because the "
+                                      + "node '" + NullSafe.last(mutation.getNodePath())
+                                      + "' has been removed or retired.",
+                    null);
+            return;
+        }
+        final ConstraintValue value = mutation.getNewValue();
+        final Constraint previous = NullSafe.get(node.getConstraints(), map -> map.get(constraintName));
+        if (previous != null && Objects.equals(previous.getValue(), value)) {
+            AlertEvent.fireWarn(this, "The constraint '" + constraintName + "' on '" + node.getName() + "' is already "
+                                      + value + ".",
+                    null);
+            return;
+        }
+        final Constraint constraint = new Constraint(constraintName, value, previous != null
+                ? previous.isOptional()
+                : mutation.isOptional());
+        ConfirmEvent.fire(this,
+                "Are you sure you want to rollback the constraint '" + constraintName + "' on node '"
+                + node.getName() + "' to " + value + "?",
+                ok -> {
+                    if (ok) {
+                        rollback(node, previous, constraint);
+                    }
+                });
+    }
+
     // Whether the drawing is the pathway as it stands, which is what a removal or an edit acts on. The server
     // sends no layout, and folds nothing, only when that is what it sent; a node drawn as it was at an
     // earlier moment may already have been removed since.
@@ -715,6 +755,36 @@ public class PathwayEditPresenter
                     refresh();
                 })
                 .onFailure(new DefaultErrorHandler(this, null))
+                .taskMonitorFactory(this)
+                .exec();
+    }
+
+    // The model and the changes are asked for again whatever the answer, because a rollback adds a
+    // change row and a refusal means the model on show is out of date.
+    private void rollback(final PathNode node, final Constraint previous, final Constraint constraint) {
+        restFactory
+                .create(PATHWAYS_RESOURCE)
+                .method(res -> res.editConstraint(
+                        new EditConstraint(docRef, name, node.getUuid(), previous, constraint)))
+                .onSuccess(changed -> {
+                    if (Boolean.TRUE.equals(changed)) {
+                        modelChanged();
+                    } else {
+                        AlertEvent.fireWarn(this, "The constraint '" + constraint.getName() + "' on '"
+                                                  + node.getName() + "' is already " + constraint.getValue()
+                                                  + ".",
+                                null);
+                    }
+                    refresh();
+                })
+                .onFailure(error -> {
+                    final String reason = error.getMessage();
+                    AlertEvent.fireError(this, reason == null || reason.trim().isEmpty()
+                            ? "The change could not be made"
+                            : reason,
+                            null);
+                    refresh();
+                })
                 .taskMonitorFactory(this)
                 .exec();
     }
@@ -791,6 +861,19 @@ public class PathwayEditPresenter
             count += count(child);
         }
         return count;
+    }
+
+    private static PathNode find(final PathNode node, final String uuid) {
+        if (Objects.equals(uuid, node.getUuid())) {
+            return node;
+        }
+        for (final PathNode child : NullSafe.list(node.getChildren())) {
+            final PathNode found = find(child, uuid);
+            if (found != null) {
+                return found;
+            }
+        }
+        return null;
     }
 
     private void showPlayButtons() {
@@ -876,6 +959,20 @@ public class PathwayEditPresenter
                 .text("Locate node")
                 .command(() -> pathwayTreePresenter.showNode(node))
                 .enabled(node != null)
+                .build());
+    }
+
+    // Offered on a change's constraint: set it back to the value that change left it with. Offered
+    // whatever moment the drawing shows, because the rollback is made to the model as it stands now.
+    private List<Item> changeConstraintItems(final PathwayMutation mutation) {
+        if (readOnly || mutation.getConstraint() == null || mutation.getNewValue() == null) {
+            return List.of();
+        }
+        return List.of(new IconMenuItem.Builder()
+                .icon(SvgImage.UNDO)
+                .text("Rollback constraint")
+                .command(() -> fetch(new FetchPathwayRequest(docRef, name),
+                        current -> confirmRollback(mutation, current)))
                 .build());
     }
 

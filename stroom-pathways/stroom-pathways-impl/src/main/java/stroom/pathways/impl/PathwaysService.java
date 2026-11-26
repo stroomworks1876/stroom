@@ -526,19 +526,20 @@ public class PathwaysService {
                     throw new EntityServiceException("The node is no longer in pathway '" + name + "'");
                 }
                 if (target.isRetired()) {
-                    throw new EntityServiceException("'" + target.getName() + "' has been removed or retired");
+                    throw new EntityServiceException("The node '" + target.getName()
+                                                     + "' has been removed or retired");
                 }
 
                 final String constraintName = constraint.getName();
                 final Map<String, Constraint> constraints = new HashMap<>(NullSafe.map(target.getConstraints()));
                 final Constraint held = constraints.get(constraintName);
                 if (previous == null && held != null) {
-                    throw new EntityServiceException("'" + target.getName() + "' already has a constraint named '"
-                                                     + constraintName + "'");
+                    throw new EntityServiceException("The node '" + target.getName()
+                                                     + "' already has a constraint named '" + constraintName + "'");
                 }
                 if (previous != null && held == null) {
-                    throw new EntityServiceException("'" + target.getName() + "' no longer has a constraint named '"
-                                                     + constraintName + "'");
+                    throw new EntityServiceException("The node '" + target.getName()
+                                                     + "' no longer has a constraint named '" + constraintName + "'");
                 }
                 if (previous != null && !previous.equals(held)) {
                     throw new EntityServiceException("Constraint '" + constraintName + "' has changed since it "
