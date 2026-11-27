@@ -694,7 +694,7 @@ public class NodeMutatorImpl {
         // falls — a trace carrying it is a trace carrying it, whenever it ran. Its old constraints are
         // taken off so it learns from this trace as a new node would.
         if (pathNode.isRetired()) {
-            record(pathNode, MutationType.NODE_REVIVED);
+            record(pathNode, MutationType.NODE_RESTORED);
             NullSafe.map(pathNode.getConstraints()).forEach((name, constraint) ->
                     record(pathNode, MutationType.CONSTRAINT_REMOVED, name, constraint.isOptional(),
                             constraint.getValue(), null));

@@ -782,11 +782,11 @@ public class PathwayEditPresenter
                 "Are you sure you want to rollback node '" + node.getName() + "' to how it stood at this "
                 + "change?"
                 + (node.isRetired()
-                        ? " It will be revived."
+                        ? " It will be restored."
                         : "")
                 + (above.isEmpty()
                         ? ""
-                        : " It will also revive '" + String.join("', '", above) + "'."),
+                        : " It will also restore '" + String.join("', '", above) + "'."),
                 ok -> {
                     if (ok) {
                         rollbackNode(node, previous, target);

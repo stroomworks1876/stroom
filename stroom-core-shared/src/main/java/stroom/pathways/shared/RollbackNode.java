@@ -28,7 +28,7 @@ import java.util.Map;
 import java.util.Objects;
 
 /**
- * Asks for every constraint of one node of a learnt pathway to be set to the ones given, reviving the
+ * Asks for every constraint of one node of a learnt pathway to be set to the ones given, restoring the
  * node where it is retired.
  */
 @JsonInclude(Include.NON_NULL)

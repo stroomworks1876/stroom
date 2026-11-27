@@ -93,7 +93,7 @@ public final class PathwayReplay {
         if (MutationType.CONSTRAINT_OPTIONAL_EDITED.equals(type)) {
             return change(root, mutation.getNodePath(), node -> withFlag(node, mutation, !mutation.isOptional()));
         }
-        if (MutationType.NODE_REVIVED.equals(type)) {
+        if (MutationType.NODE_RESTORED.equals(type)) {
             // Put back as retired. When it was retired is not kept on the change, and the drawing only
             // asks whether it is, so the time this undo stands at says it as well as any other.
             return change(root, mutation.getNodePath(),
@@ -138,7 +138,7 @@ public final class PathwayReplay {
         if (MutationType.CONSTRAINT_OPTIONAL_EDITED.equals(type)) {
             return change(root, mutation.getNodePath(), node -> withFlag(node, mutation, mutation.isOptional()));
         }
-        if (MutationType.NODE_REVIVED.equals(type)) {
+        if (MutationType.NODE_RESTORED.equals(type)) {
             return change(root, mutation.getNodePath(), node -> node.copy().retiredTime(null).build());
         }
         if (MutationType.PATH_DROPPED.equals(type)) {

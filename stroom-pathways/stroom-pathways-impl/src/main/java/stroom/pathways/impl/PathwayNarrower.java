@@ -299,7 +299,7 @@ public class PathwayNarrower {
                                         + mutation.getConstraint() + " " + mutation.getNewValue()
                                         + " (was " + mutation.getOldValue() + ")";
             case NODE_RETIRED -> "Retiring node: " + where;
-            case NODE_REVIVED -> "Reviving node: " + where;
+            case NODE_RESTORED -> "Restoring node: " + where;
             case PATH_DROPPED -> "Dropping path: " + where;
             default -> mutation.getType().getDisplayValue() + ": " + where;
         };
@@ -590,7 +590,7 @@ public class PathwayNarrower {
     // that is a parent nothing reached either, which says nothing about this node one way or the
     // other.
     //
-    // Revives a retired node only where the window saw it run on a later day than the one it was
+    // Restores a retired node only where the window saw it run on a later day than the one it was
     // retired on. Running before then is what the node did before it was retired or removed, and is
     // no reason to bring it back.
     private static NanoTime retirement(final PathNode node,
@@ -611,7 +611,7 @@ public class PathwayNarrower {
             return time;
         }
         if (ranAtAll && node.isRetired() && lastRan != null && lastRan > dayOf(node.getRetiredTime())) {
-            mutations.add(change(node, time, MutationType.NODE_REVIVED));
+            mutations.add(change(node, time, MutationType.NODE_RESTORED));
             return null;
         }
         return node.getRetiredTime();

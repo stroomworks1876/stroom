@@ -300,7 +300,7 @@ class TestPathwayNarrowing {
                 .isFalse();
         assertThat(mutations(tempDir))
                 .as("and the trace that brought it back is the change that says so")
-                .anyMatch(m -> MutationType.NODE_REVIVED.equals(m.getType()) && m.getTraceId() != null);
+                .anyMatch(m -> MutationType.NODE_RESTORED.equals(m.getType()) && m.getTraceId() != null);
     }
 
     @Test
@@ -334,7 +334,7 @@ class TestPathwayNarrowing {
         assertThat(child(tempDir, "Commit").getUuid())
                 .as("the same node as before, so what it was and how it was used are still its own")
                 .isEqualTo(uuid);
-        assertThat(mutations(tempDir)).anyMatch(m -> MutationType.NODE_REVIVED.equals(m.getType()));
+        assertThat(mutations(tempDir)).anyMatch(m -> MutationType.NODE_RESTORED.equals(m.getType()));
     }
 
     @Test
@@ -436,23 +436,23 @@ class TestPathwayNarrowing {
     }
 
     @Test
-    void aTraceThatRevivesARemovedNodeRelearnsItFromThatTrace(@TempDir final Path tempDir) {
+    void aTraceThatRestoresARemovedNodeRelearnsItFromThatTrace(@TempDir final Path tempDir) {
         applied(tempDir, List.of(commitCarrying(0, "old")));
         removed(tempDir, "Commit");
 
-        relearntFromTheReviver(tempDir);
+        relearntFromTheRestorer(tempDir);
     }
 
     @Test
-    void aTraceThatRevivesARetiredNodeRelearnsItFromThatTrace(@TempDir final Path tempDir) {
+    void aTraceThatRestoresARetiredNodeRelearnsItFromThatTrace(@TempDir final Path tempDir) {
         applied(tempDir, List.of(commitCarrying(0, "old"), withChildren(1, "Ping")));
         narrow(tempDir, day(1));
         assertThat(child(tempDir, "Commit").isRetired()).isTrue();
 
-        relearntFromTheReviver(tempDir);
+        relearntFromTheRestorer(tempDir);
     }
 
-    private static void relearntFromTheReviver(final Path dir) {
+    private static void relearntFromTheRestorer(final Path dir) {
         final PathNode was = child(dir, "Commit");
         final long last = lastSequence(dir);
 
@@ -470,7 +470,7 @@ class TestPathwayNarrowing {
         final List<PathwayMutation> rows = since(dir, last).stream()
                 .filter(m -> "Commit".equals(m.getNodePath().getLast()))
                 .toList();
-        assertThat(rows.getFirst().getType()).isEqualTo(MutationType.NODE_REVIVED);
+        assertThat(rows.getFirst().getType()).isEqualTo(MutationType.NODE_RESTORED);
         assertThat(rows.subList(1, 1 + was.getConstraints().size()))
                 .as("then one row taking off each constraint it held")
                 .allSatisfy(m -> {
@@ -841,7 +841,7 @@ class TestPathwayNarrowing {
     }
 
     @Test
-    void rollingBackToARemovalRevivesTheNodeWithTheConstraintsItHeld(@TempDir final Path tempDir) {
+    void rollingBackToARemovalRestoresTheNodeWithTheConstraintsItHeld(@TempDir final Path tempDir) {
         applied(tempDir, List.of(withChildren(0, "Ping", "Commit")));
         final PathNode was = child(tempDir, "Commit");
         removed(tempDir, "Commit");
@@ -851,17 +851,17 @@ class TestPathwayNarrowing {
 
         assertThat(rolledBack(tempDir, atRemoval, atRemoval.getConstraints())).isTrue();
 
-        final PathNode revived = child(tempDir, "Commit");
-        assertThat(revived.isRetired()).isFalse();
-        assertThat(revived.getConstraints()).isEqualTo(was.getConstraints());
+        final PathNode restored = child(tempDir, "Commit");
+        assertThat(restored.isRetired()).isFalse();
+        assertThat(restored.getConstraints()).isEqualTo(was.getConstraints());
         assertThat(since(tempDir, last))
-                .as("the constraints it held are the ones wanted, so the revival is the only change")
+                .as("the constraints it held are the ones wanted, so the restoration is the only change")
                 .extracting(PathwayMutation::getType)
-                .containsExactly(MutationType.NODE_REVIVED);
+                .containsExactly(MutationType.NODE_RESTORED);
     }
 
     @Test
-    void rollingBackANodeRevivesTheRetiredNodesAboveIt(@TempDir final Path tempDir) {
+    void rollingBackANodeRestoresTheRetiredNodesAboveIt(@TempDir final Path tempDir) {
         applied(tempDir, List.of(nested(0, "Commit", "Batch")));
         final Map<String, Constraint> commitHeld = child(tempDir, "Commit").getConstraints();
         removed(tempDir, "Commit");
@@ -874,13 +874,13 @@ class TestPathwayNarrowing {
         final PathNode commit = child(tempDir, "Commit");
         assertThat(commit.isRetired()).isFalse();
         assertThat(commit.getConstraints())
-                .as("revived as it stands")
+                .as("restored as it stands")
                 .isEqualTo(commitHeld);
         assertThat(child(commit, "Batch").isRetired()).isFalse();
         assertThat(since(tempDir, last))
                 .as("root first, so a replay retires the node before the one above it")
                 .extracting(m -> m.getType() + " " + m.getNodePath().getLast())
-                .containsExactly("NODE_REVIVED Commit", "NODE_REVIVED Batch");
+                .containsExactly("NODE_RESTORED Commit", "NODE_RESTORED Batch");
 
         final PathNode rewound = child(PathwayReplay.rewind(onlyPathway(tempDir).getRoot(),
                 since(tempDir, last)), "Commit");

@@ -128,7 +128,7 @@ public interface PathwaysResource extends RestResource, DirectRestService, Fetch
     @POST
     @Path("/rollbackNode")
     @Operation(
-            summary = "Set the constraints of a node of a learnt pathway, reviving it if retired",
+            summary = "Set the constraints of a node of a learnt pathway, restoring it if retired",
             operationId = "rollbackPathwayNode")
     Boolean rollbackNode(
             @Parameter(description = "change", required = true) RollbackNode rollbackNode);

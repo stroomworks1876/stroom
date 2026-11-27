@@ -478,7 +478,7 @@ class TestPathwayMutations {
         assertThat(mutator.getMutations())
                 .filteredOn(m -> List.of(OPERATION, PING).equals(m.getNodePath()))
                 .extracting(PathwayMutation::getType)
-                .contains(MutationType.NODE_REVIVED, MutationType.CONSTRAINT_ADDED);
+                .contains(MutationType.NODE_RESTORED, MutationType.CONSTRAINT_ADDED);
     }
 
     @Test

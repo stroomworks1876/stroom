@@ -277,7 +277,7 @@ public class PathwaysService {
      * Removes one node of a learnt pathway, and everything under it, until a trace carries it again.
      *
      * <p>Each node is retired, with a change row for each, and keeps its constraints. The next trace to
-     * carry a node revives it and learns its constraints again from what that trace shows. Every path
+     * carry a node restores it and learns its constraints again from what that trace shows. Every path
      * that runs through a removed node is dropped.
      *
      * <p>Takes the same shard lock as {@link #deletePathway}. Only the live shard is changed: the
@@ -541,7 +541,7 @@ public class PathwaysService {
 
     /**
      * Sets every constraint of one node of a learnt pathway to the ones given, removing any the node
-     * holds that are not given, and revives the node and every retired node above it, which keep their
+     * holds that are not given, and restores the node and every retired node above it, which keep their
      * constraints. Nodes under it are left as they are, and paths dropped when it was removed are not
      * put back.
      *
@@ -552,7 +552,7 @@ public class PathwaysService {
      * node already holds the constraints given.
      * @throws EntityServiceException when the rollback is refused, with the reason as its message.
      */
-    public Boolean rollbackNode(final RollbackNode rollbackNode) {
+    public Boolean  rollbackNode(final RollbackNode rollbackNode) {
         final PathwaysDoc doc = editable(rollbackNode.getDocRef());
         final String name = rollbackNode.getName();
         final String uuid = rollbackNode.getNodeUuid();
@@ -576,8 +576,8 @@ public class PathwaysService {
     }
 
     // Not private so that what it does to a shard can be tested without a cluster lock and a document
-    // store standing behind it. The revival rows of the nodes above come first, root first, then the
-    // node's own revival row and then its constraint rows, so a replay taking them off newest first puts
+    // store standing behind it. The restoration rows of the nodes above come first, root first, then the
+    // node's own restoration row and then its constraint rows, so a replay taking them off newest first puts
     // the constraints back before retiring the node and then the nodes above it again.
     boolean rollbackNodeInModel(final Path localDir,
                                 final String docUuid,
@@ -613,7 +613,7 @@ public class PathwaysService {
                 final List<PathwayMutation> mutations = new ArrayList<>();
                 final PathNode.Builder builder = node.copy();
                 if (node.isRetired()) {
-                    mutations.add(revival(node, now));
+                    mutations.add(restoration(node, now));
                     builder.retiredTime(null);
                 }
                 NullSafe.map(node.getConstraints()).forEach((constraintName, held) -> {
@@ -625,7 +625,7 @@ public class PathwaysService {
                 wanted.values().forEach(constraint -> put(node, constraints, constraint, now, mutations));
 
                 final PathNode rolledBack = builder.constraints(constraints).lastChangedTime(now).build();
-                final PathNode newRoot = revived(root, uuid, rolledBack, now, mutations);
+                final PathNode newRoot = restored(root, uuid, rolledBack, now, mutations);
                 if (mutations.isEmpty()) {
                     return false;
                 }
@@ -742,24 +742,24 @@ public class PathwaysService {
         return node.copy().children(children).build();
     }
 
-    // Revival rows go in front so a replay, newest first, restores the node before retiring those above.
-    private static PathNode revived(final PathNode node,
-                                    final String uuid,
-                                    final PathNode with,
-                                    final NanoTime now,
-                                    final List<PathwayMutation> mutations) {
+    // Restoration rows go in front so a replay, newest first, restores the node before retiring those above.
+    private static PathNode restored(final PathNode node,
+                                     final String uuid,
+                                     final PathNode with,
+                                     final NanoTime now,
+                                     final List<PathwayMutation> mutations) {
         if (uuid.equals(node.getUuid())) {
             return with;
         }
         final List<PathNode> children = new ArrayList<>(NullSafe.list(node.getChildren()));
         for (int i = 0; i < children.size(); i++) {
             final PathNode child = children.get(i);
-            final PathNode built = revived(child, uuid, with, now, mutations);
+            final PathNode built = restored(child, uuid, with, now, mutations);
             if (built != child) {
                 children.set(i, built);
                 final PathNode.Builder builder = node.copy().children(children);
                 if (node.isRetired()) {
-                    mutations.addFirst(revival(node, now));
+                    mutations.addFirst(restoration(node, now));
                     builder.retiredTime(null).lastChangedTime(now);
                 }
                 return builder.build();
@@ -768,9 +768,9 @@ public class PathwaysService {
         return node;
     }
 
-    private static PathwayMutation revival(final PathNode node, final NanoTime now) {
+    private static PathwayMutation restoration(final PathNode node, final NanoTime now) {
         return new PathwayMutation(0L, now, now, -1, null, null, node.getNodePath(), node.getUuid(), null,
-                MutationType.NODE_REVIVED, false, null, null);
+                MutationType.NODE_RESTORED, false, null, null);
     }
 
     private static PathwayMutation removal(final PathNode node, final Constraint held, final NanoTime now) {
