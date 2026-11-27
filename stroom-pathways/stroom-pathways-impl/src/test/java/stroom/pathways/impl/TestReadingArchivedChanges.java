@@ -288,7 +288,7 @@ class TestReadingArchivedChanges {
     }
 
     @Test
-    void aNodeRemovalIsListedWithoutTheConstraintsItRemoved() throws IOException {
+    void aNodeRemovalIsListedAndWritesNoConstraintRows() throws IOException {
         apply(withChildren("a", 10, 5, 7));
         final PathNode commit = childOf(asAt(null), "Commit");
         final String constraint = commit.getConstraints().keySet().iterator().next();
@@ -296,13 +296,13 @@ class TestReadingArchivedChanges {
 
         removeNode(childOf(asAt(null), "Fetch").getUuid());
 
-        assertThat(liveChanges())
-                .as("the removal did write removed rows for the node's constraints")
-                .filteredOn(m -> MutationType.CONSTRAINT_REMOVED.equals(m.getType()))
-                .hasSizeGreaterThan(1);
         assertThat(listed(MutationType.NODE_REMOVED)).hasSize(1);
+        assertThat(liveChanges())
+                .as("the removed node keeps its constraints, so only the one deleted on its own has a row")
+                .filteredOn(m -> MutationType.CONSTRAINT_REMOVED.equals(m.getType()))
+                .extracting(PathwayMutation::getConstraint)
+                .containsExactly(constraint);
         assertThat(listed(MutationType.CONSTRAINT_REMOVED))
-                .as("only the constraint deleted on its own, not the ones the removal removed")
                 .extracting(PathwayMutation::getConstraint)
                 .containsExactly(constraint);
     }

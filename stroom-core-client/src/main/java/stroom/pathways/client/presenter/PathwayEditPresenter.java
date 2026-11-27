@@ -32,9 +32,9 @@ import stroom.pathways.shared.PathwaysDoc;
 import stroom.pathways.shared.PathwaysResource;
 import stroom.pathways.shared.RemoveConstraints;
 import stroom.pathways.shared.RemoveNode;
+import stroom.pathways.shared.RollbackNode;
 import stroom.pathways.shared.otel.trace.NanoTime;
 import stroom.pathways.shared.pathway.Constraint;
-import stroom.pathways.shared.pathway.ConstraintValue;
 import stroom.pathways.shared.pathway.HistoryRow;
 import stroom.pathways.shared.pathway.PathNode;
 import stroom.pathways.shared.pathway.PathUse;
@@ -71,8 +71,12 @@ import com.gwtplatform.mvp.client.View;
 
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
+import java.util.function.BiConsumer;
 import java.util.function.Consumer;
 
 /**
@@ -692,39 +696,100 @@ public class PathwayEditPresenter
     }
 
     // Checked against the model as it stands now, which is also what the current constraint is taken
-    // from, so the server can refuse if a trace changes it before OK is pressed. Only the value is
-    // rolled back; the optional flag stays as it is now, or as the change recorded it where the
-    // constraint has since been removed.
-    private void confirmRollback(final PathwayMutation mutation, final PathwayAsAt current) {
-        final PathNode root = NullSafe.get(current, PathwayAsAt::getPathway, Pathway::getRoot);
-        final PathNode node = root == null
-                ? null
-                : find(root, mutation.getNodeUuid());
+    // from, so the server can refuse if a trace changes it before OK is pressed. The value and the
+    // optional flag rolled back to are the ones the constraint had on the node at the end of the trace
+    // or user action the change belongs to.
+    private void confirmRollback(final PathwayMutation mutation,
+                                 final PathwayAsAt current,
+                                 final PathwayAsAt then) {
+        final PathNode node = nodeIn(current, mutation.getNodeUuid());
+        final String nodeName = NullSafe.last(mutation.getNodePath());
         final String constraintName = mutation.getConstraint();
         if (node == null || node.isRetired()) {
             AlertEvent.fireWarn(this, "The constraint '" + constraintName + "' cannot be rolled back because the "
-                                      + "node '" + NullSafe.last(mutation.getNodePath())
-                                      + "' has been removed or retired.",
+                                      + "node '" + nodeName + "' has been removed or retired.",
                     null);
             return;
         }
-        final ConstraintValue value = mutation.getNewValue();
+        final Constraint constraint = NullSafe.get(nodeIn(then, mutation.getNodeUuid()),
+                PathNode::getConstraints, map -> map.get(constraintName));
+        if (constraint == null) {
+            AlertEvent.fireWarn(this, "The constraint '" + constraintName + "' was not on node '" + nodeName
+                                      + "' at this change.",
+                    null);
+            return;
+        }
         final Constraint previous = NullSafe.get(node.getConstraints(), map -> map.get(constraintName));
-        if (previous != null && Objects.equals(previous.getValue(), value)) {
+        if (constraint.equals(previous)) {
             AlertEvent.fireWarn(this, "The constraint '" + constraintName + "' on '" + node.getName() + "' is already "
-                                      + value + ".",
+                                      + describe(constraint) + ".",
                     null);
             return;
         }
-        final Constraint constraint = new Constraint(constraintName, value, previous != null
-                ? previous.isOptional()
-                : mutation.isOptional());
         ConfirmEvent.fire(this,
                 "Are you sure you want to rollback the constraint '" + constraintName + "' on node '"
-                + node.getName() + "' to " + value + "?",
+                + node.getName() + "' to " + describe(constraint) + "?",
                 ok -> {
                     if (ok) {
                         rollback(node, previous, constraint);
+                    }
+                });
+    }
+
+    private static String describe(final Constraint constraint) {
+        return constraint.getValue() + (constraint.isOptional()
+                ? ", optional"
+                : ", required");
+    }
+
+    // Checked against the model as it stands now, which is also what the node's current constraints
+    // and retired state are taken from, so the server can refuse if a trace changes either before OK is
+    // pressed. The target is every constraint the node held at the end of the trace or user action the
+    // change belongs to.
+    private void confirmNodeRollback(final PathwayMutation mutation,
+                                     final PathwayAsAt current,
+                                     final PathwayAsAt then) {
+        final String nodeName = NullSafe.last(mutation.getNodePath());
+        final PathNode node = nodeIn(current, mutation.getNodeUuid());
+        if (node == null) {
+            AlertEvent.fireWarn(this, "The node '" + nodeName + "' cannot be rolled back because it is no "
+                                      + "longer in the pathway.",
+                    null);
+            return;
+        }
+        final PathNode was = nodeIn(then, mutation.getNodeUuid());
+        if (was == null) {
+            AlertEvent.fireWarn(this, "The node '" + nodeName + "' was not in the pathway at this change.",
+                    null);
+            return;
+        }
+        final List<String> above = new ArrayList<>();
+        leadsTo(NullSafe.get(current, PathwayAsAt::getPathway, Pathway::getRoot), node.getUuid(), above);
+        final Map<String, Constraint> previous = NullSafe.map(node.getConstraints());
+        final Map<String, Constraint> target = NullSafe.map(was.getConstraints());
+        if (!node.isRetired() && above.isEmpty() && previous.equals(target)) {
+            AlertEvent.fireWarn(this, "The node '" + node.getName() + "' already stands as it did at this "
+                                      + "change.",
+                    null);
+            return;
+        }
+        final Set<String> names = new HashSet<>(previous.keySet());
+        names.addAll(target.keySet());
+        final long changes = names.stream()
+                .filter(constraintName -> !Objects.equals(previous.get(constraintName), target.get(constraintName)))
+                .count();
+        ConfirmEvent.fire(this,
+                "Are you sure you want to rollback node '" + node.getName() + "' to how it stood at this "
+                + "change?"
+                + (node.isRetired()
+                        ? " It will be revived."
+                        : "")
+                + (above.isEmpty()
+                        ? ""
+                        : " It will also revive '" + String.join("', '", above) + "'."),
+                ok -> {
+                    if (ok) {
+                        rollbackNode(node, previous, target);
                     }
                 });
     }
@@ -771,18 +836,41 @@ public class PathwayEditPresenter
                         modelChanged();
                     } else {
                         AlertEvent.fireWarn(this, "The constraint '" + constraint.getName() + "' on '"
-                                                  + node.getName() + "' is already " + constraint.getValue()
+                                                  + node.getName() + "' is already " + describe(constraint)
                                                   + ".",
                                 null);
                     }
                     refresh();
                 })
                 .onFailure(error -> {
-                    final String reason = error.getMessage();
-                    AlertEvent.fireError(this, reason == null || reason.trim().isEmpty()
-                            ? "The change could not be made"
-                            : reason,
-                            null);
+                    AlertEvent.fireError(this, reason(error.getMessage()), null);
+                    refresh();
+                })
+                .taskMonitorFactory(this)
+                .exec();
+    }
+
+    // The model and the changes are asked for again whatever the answer, because a rollback adds
+    // change rows and a refusal means the model on show is out of date.
+    private void rollbackNode(final PathNode node,
+                              final Map<String, Constraint> previous,
+                              final Map<String, Constraint> target) {
+        restFactory
+                .create(PATHWAYS_RESOURCE)
+                .method(res -> res.rollbackNode(
+                        new RollbackNode(docRef, name, node.getUuid(), previous, node.isRetired(), target)))
+                .onSuccess(changed -> {
+                    if (Boolean.TRUE.equals(changed)) {
+                        modelChanged();
+                    } else {
+                        AlertEvent.fireWarn(this, "The node '" + node.getName() + "' already stands as it did "
+                                                  + "at this change.",
+                                null);
+                    }
+                    refresh();
+                })
+                .onFailure(error -> {
+                    AlertEvent.fireError(this, reason(error.getMessage()), null);
                     refresh();
                 })
                 .taskMonitorFactory(this)
@@ -839,14 +927,18 @@ public class PathwayEditPresenter
                     refresh();
                 })
                 .onFailure(error -> {
-                    final String reason = error.getMessage();
-                    refused.accept(reason == null || reason.trim().isEmpty()
-                            ? "The change could not be made"
-                            : reason);
+                    refused.accept(reason(error.getMessage()));
                     refresh();
                 })
                 .taskMonitorFactory(this)
                 .exec();
+    }
+
+    // The server's reason for refusing a change, or a fixed one where it gave none.
+    private static String reason(final String message) {
+        return message == null || message.trim().isEmpty()
+                ? "The change could not be made"
+                : message;
     }
 
     private void modelChanged() {
@@ -861,6 +953,31 @@ public class PathwayEditPresenter
             count += count(child);
         }
         return count;
+    }
+
+    private static PathNode nodeIn(final PathwayAsAt asAt, final String uuid) {
+        final PathNode root = NullSafe.get(asAt, PathwayAsAt::getPathway, Pathway::getRoot);
+        return root == null
+                ? null
+                : find(root, uuid);
+    }
+
+    private static boolean leadsTo(final PathNode node, final String uuid, final List<String> retired) {
+        if (node == null) {
+            return false;
+        }
+        if (Objects.equals(uuid, node.getUuid())) {
+            return true;
+        }
+        for (final PathNode child : NullSafe.list(node.getChildren())) {
+            if (leadsTo(child, uuid, retired)) {
+                if (node.isRetired()) {
+                    retired.add(0, node.getName());
+                }
+                return true;
+            }
+        }
+        return false;
     }
 
     private static PathNode find(final PathNode node, final String uuid) {
@@ -952,18 +1069,31 @@ public class PathwayEditPresenter
 
     // Offered on a change's node: the same node on the drawing. Greyed out where the drawing does not
     // show it - wound back to before the change that added it, or with the node retired or removed.
-    private List<Item> changeNodeItems(final List<String> path) {
-        final PathNode node = pathwayTreePresenter.findNode(path);
-        return List.of(new IconMenuItem.Builder()
+    // On a change, and where the pathway can be edited, also setting the node back to how it stood at
+    // the end of the trace or user action the change belongs to, whatever moment the drawing shows,
+    // because the rollback is made to the model as it stands now.
+    private List<Item> changeNodeItems(final HistoryRow row) {
+        final PathNode node = pathwayTreePresenter.findNode(row.getNodePath());
+        final Item locate = new IconMenuItem.Builder()
                 .icon(SvgImage.LOCATE)
                 .text("Locate node")
                 .command(() -> pathwayTreePresenter.showNode(node))
                 .enabled(node != null)
-                .build());
+                .build();
+        if (!readOnly && row instanceof final PathwayMutation mutation && mutation.getNodeUuid() != null) {
+            return List.of(locate, new IconMenuItem.Builder()
+                    .icon(SvgImage.UNDO)
+                    .text("Rollback node")
+                    .command(() -> fetchRollback(mutation,
+                            (current, then) -> confirmNodeRollback(mutation, current, then)))
+                    .build());
+        }
+        return List.of(locate);
     }
 
-    // Offered on a change's constraint: set it back to the value that change left it with. Offered
-    // whatever moment the drawing shows, because the rollback is made to the model as it stands now.
+    // Offered on a change's constraint: set it back to the value and optional flag it had at the end of
+    // the trace or user action the change belongs to. Offered whatever moment the drawing shows,
+    // because the rollback is made to the model as it stands now.
     private List<Item> changeConstraintItems(final PathwayMutation mutation) {
         if (readOnly || mutation.getConstraint() == null || mutation.getNewValue() == null) {
             return List.of();
@@ -971,9 +1101,39 @@ public class PathwayEditPresenter
         return List.of(new IconMenuItem.Builder()
                 .icon(SvgImage.UNDO)
                 .text("Rollback constraint")
-                .command(() -> fetch(new FetchPathwayRequest(docRef, name),
-                        current -> confirmRollback(mutation, current)))
+                .command(() -> fetchRollback(mutation,
+                        (current, then) -> confirmRollback(mutation, current, then)))
                 .build());
+    }
+
+    private void fetchRollback(final PathwayMutation mutation,
+                               final BiConsumer<PathwayAsAt, PathwayAsAt> consumer) {
+        final PathwayMutation end = endOf(mutation);
+        fetch(new FetchPathwayRequest(docRef, name),
+                current -> fetch(FetchPathwayRequest.atChange(docRef, name, upTo(end.getTime()),
+                                end.getSequence()),
+                        then -> consumer.accept(current, then)));
+    }
+
+    private PathwayMutation endOf(final PathwayMutation mutation) {
+        final int at = history.indexOf(mutation);
+        if (at < 0) {
+            return mutation;
+        }
+        final String group = PathwayMutation.groupOf(mutation);
+        PathwayMutation end = mutation;
+        for (final int step : new int[]{-1, 1}) {
+            int i = at + step;
+            while (i >= 0 && i < history.size()
+                   && history.get(i) instanceof final PathwayMutation row
+                   && group.equals(PathwayMutation.groupOf(row))) {
+                if (row.getSequence() > end.getSequence()) {
+                    end = row;
+                }
+                i += step;
+            }
+        }
+        return end;
     }
 
     private List<Item> pathFilterItems() {
@@ -1118,10 +1278,14 @@ public class PathwayEditPresenter
         // out of the shard. A day has only the moment, and is folded rather than wound back. A change
         // with no moment on it is still asked for by number, the way it was before either carried a
         // moment at all.
-        final TimeRange at = time == null
+        fetch(FetchPathwayRequest.atChange(docRef, name, upTo(time), sequence), this::showPosition);
+    }
+
+    // A range ending at the given moment, or null where there is no moment.
+    private static TimeRange upTo(final NanoTime time) {
+        return time == null
                 ? null
                 : new TimeRange(null, null, ClientDateUtil.toISOString(time.toEpochMillis()));
-        fetch(FetchPathwayRequest.atChange(docRef, name, at, sequence), this::showPosition);
     }
 
     private void fetch(final FetchPathwayRequest request, final Consumer<PathwayAsAt> onSuccess) {

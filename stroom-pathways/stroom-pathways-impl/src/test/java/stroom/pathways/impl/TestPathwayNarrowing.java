@@ -338,15 +338,17 @@ class TestPathwayNarrowing {
     }
 
     @Test
-    void removingANodeRetiresItWipesItsConstraintsAndDropsItsPaths(@TempDir final Path tempDir) {
+    void removingANodeRetiresItKeepsItsConstraintsAndDropsItsPaths(@TempDir final Path tempDir) {
         applied(tempDir, List.of(withChildren(0, "Ping", "Commit"), withChildren(1, "Ping")));
         final int pathsBefore = onlyPathway(tempDir).getPaths().getPaths().size();
+        final PathNode was = child(tempDir, "Commit");
 
         assertThat(removed(tempDir, "Commit")).isTrue();
 
         final PathNode commit = child(tempDir, "Commit");
         assertThat(commit.isRetired()).isTrue();
-        assertThat(commit.getConstraints()).isEmpty();
+        assertThat(commit.getConstraints()).isEqualTo(was.getConstraints());
+        assertThat(mutations(tempDir)).noneMatch(m -> MutationType.CONSTRAINT_REMOVED.equals(m.getType()));
         assertThat(child(tempDir, "Ping").isRetired())
                 .as("only the node asked for, and what is under it")
                 .isFalse();
@@ -415,13 +417,14 @@ class TestPathwayNarrowing {
     void aTraceThatMissesARemovedNodeTeachesItNothing(@TempDir final Path tempDir) {
         applied(tempDir, List.of(withChildren(0, "Ping", "Commit")));
         removed(tempDir, "Commit");
+        final Map<String, Constraint> held = child(tempDir, "Commit").getConstraints();
         final long removal = mutations(tempDir).stream().mapToLong(PathwayMutation::getSequence).max().orElseThrow();
 
         applied(tempDir, List.of(withChildren(1, "Ping")));
 
         assertThat(child(tempDir, "Commit").getConstraints())
                 .as("not told it can be absent while it is removed")
-                .isEmpty();
+                .isEqualTo(held);
         assertThat(mutations(tempDir))
                 .noneMatch(m -> m.getSequence() > removal && "Commit".equals(m.getNodePath().getLast()));
 
@@ -430,6 +433,60 @@ class TestPathwayNarrowing {
         assertThat(occurrences(tempDir, "Commit"))
                 .as("learnt from the trace that brought it back alone")
                 .isNotEqualTo(new IntegerSet(Set.of(0, 1)));
+    }
+
+    @Test
+    void aTraceThatRevivesARemovedNodeRelearnsItFromThatTrace(@TempDir final Path tempDir) {
+        applied(tempDir, List.of(commitCarrying(0, "old")));
+        removed(tempDir, "Commit");
+
+        relearntFromTheReviver(tempDir);
+    }
+
+    @Test
+    void aTraceThatRevivesARetiredNodeRelearnsItFromThatTrace(@TempDir final Path tempDir) {
+        applied(tempDir, List.of(commitCarrying(0, "old"), withChildren(1, "Ping")));
+        narrow(tempDir, day(1));
+        assertThat(child(tempDir, "Commit").isRetired()).isTrue();
+
+        relearntFromTheReviver(tempDir);
+    }
+
+    private static void relearntFromTheReviver(final Path dir) {
+        final PathNode was = child(dir, "Commit");
+        final long last = lastSequence(dir);
+
+        applied(dir, List.of(commitCarrying(2, "new")));
+
+        final PathNode commit = child(dir, "Commit");
+        assertThat(commit.isRetired()).isFalse();
+        assertThat(commit.getConstraints())
+                .as("nothing carried over from before it went")
+                .doesNotContainKey("attribute.old");
+        assertThat(commit.getConstraints().get("attribute.new").isOptional())
+                .as("required, as a node seen for the first time makes what it carries")
+                .isFalse();
+
+        final List<PathwayMutation> rows = since(dir, last).stream()
+                .filter(m -> "Commit".equals(m.getNodePath().getLast()))
+                .toList();
+        assertThat(rows.getFirst().getType()).isEqualTo(MutationType.NODE_REVIVED);
+        assertThat(rows.subList(1, 1 + was.getConstraints().size()))
+                .as("then one row taking off each constraint it held")
+                .allSatisfy(m -> {
+                    assertThat(m.getType()).isEqualTo(MutationType.CONSTRAINT_REMOVED);
+                    final Constraint held = was.getConstraints().get(m.getConstraint());
+                    assertThat(m.getOldValue()).isEqualTo(held.getValue());
+                    assertThat(m.isOptional()).isEqualTo(held.isOptional());
+                });
+
+        final PathNode rewound = child(PathwayReplay.rewind(onlyPathway(dir).getRoot(), since(dir, last)),
+                "Commit");
+        assertThat(rewound.isRetired()).isTrue();
+        assertThat(rewound.getConstraints())
+                .usingRecursiveComparison()
+                .comparingOnlyFields("name", "value", "optional")
+                .isEqualTo(was.getConstraints());
     }
 
     @Test
@@ -691,6 +748,210 @@ class TestPathwayNarrowing {
         return new PathwaysService(null, null, null, null, BYTE_BUFFERS, mutationLog(), serde(), null)
                 .editConstraintInModel(dir, null, name, name.getBytes(StandardCharsets.UTF_8), uuid, previous,
                         constraint);
+    }
+
+    @Test
+    void rollingBackANodeRestoresAChangedValueAndFlag(@TempDir final Path tempDir) {
+        applied(tempDir, List.of(withChildren(0, "Ping", "Commit")));
+        final PathNode was = child(tempDir, "Commit");
+        final Constraint before = firstConstraint(was);
+        edited(tempDir, was.getUuid(), before,
+                before.copy().value(new IntegerRange(1, 5)).optional(!before.isOptional()).build());
+        final PathNode now = child(tempDir, "Commit");
+
+        assertThat(rolledBack(tempDir, now, was.getConstraints())).isTrue();
+
+        final Constraint after = child(tempDir, "Commit").getConstraints().get(before.getName());
+        assertThat(after.getValue()).isEqualTo(before.getValue());
+        assertThat(after.isOptional()).isEqualTo(before.isOptional());
+        assertThat(after.getTimesUsed()).isEqualTo(now.getConstraints().get(before.getName()).getTimesUsed());
+        assertThat(child(tempDir, "Commit").getConstraints()).isEqualTo(was.getConstraints());
+    }
+
+    @Test
+    void rollingBackANodeAddsBackARemovedConstraint(@TempDir final Path tempDir) {
+        applied(tempDir, List.of(withChildren(0, "Ping", "Commit")));
+        final PathNode was = child(tempDir, "Commit");
+        final String constraint = firstConstraint(was).getName();
+        constraintsRemoved(tempDir, was.getUuid(), constraint);
+
+        assertThat(rolledBack(tempDir, child(tempDir, "Commit"), was.getConstraints())).isTrue();
+
+        assertThat(child(tempDir, "Commit").getConstraints()).isEqualTo(was.getConstraints());
+    }
+
+    @Test
+    void rollingBackANodeRemovesAConstraintAddedSince(@TempDir final Path tempDir) {
+        applied(tempDir, List.of(withChildren(0, "Ping", "Commit")));
+        final PathNode was = child(tempDir, "Commit");
+        edited(tempDir, was.getUuid(), null, new Constraint("added", new StringValue("x"), true));
+        final long last = lastSequence(tempDir);
+
+        assertThat(rolledBack(tempDir, child(tempDir, "Commit"), was.getConstraints())).isTrue();
+
+        assertThat(child(tempDir, "Commit").getConstraints()).isEqualTo(was.getConstraints());
+        assertThat(mutations(tempDir))
+                .filteredOn(m -> m.getSequence() > last)
+                .singleElement()
+                .satisfies(m -> {
+                    assertThat(m.getType()).isEqualTo(MutationType.CONSTRAINT_REMOVED);
+                    assertThat(m.getConstraint()).isEqualTo("added");
+                    assertThat(m.getOldValue()).isEqualTo(new StringValue("x"));
+                    assertThat(m.isOptional()).isTrue();
+                });
+    }
+
+    @Test
+    void rollingBackANodeIsRefusedWhereTheModelHasMovedOn(@TempDir final Path tempDir) {
+        applied(tempDir, List.of(withChildren(0, "Ping", "Commit")));
+        final PathNode was = child(tempDir, "Commit");
+        final Constraint before = firstConstraint(was);
+        edited(tempDir, was.getUuid(), before, before.copy().value(new IntegerRange(1, 5)).build());
+        final int rows = mutations(tempDir).size();
+        final Map<String, Constraint> target = new HashMap<>(was.getConstraints());
+        target.remove(before.getName());
+
+        assertThatThrownBy(() -> rolledBack(tempDir, was, target))
+                .isInstanceOf(EntityServiceException.class)
+                .hasMessageContaining("has changed since");
+        final PathNode now = child(tempDir, "Commit");
+        assertThatThrownBy(() -> rollbackNodeInModel(tempDir, now.getUuid(), now.getConstraints(), true, target))
+                .as("the client saw it retired, but it is live")
+                .isInstanceOf(EntityServiceException.class)
+                .hasMessageContaining("has changed since");
+        assertThatThrownBy(() -> rollbackNodeInModel(tempDir, "no-such-node", Map.of(), false, target))
+                .isInstanceOf(EntityServiceException.class)
+                .hasMessageContaining("no longer in pathway");
+        assertThat(mutations(tempDir)).hasSize(rows);
+    }
+
+    @Test
+    void rollingBackANodeIsRefusedWhereAConstraintIsFiledUnderAnotherName(@TempDir final Path tempDir) {
+        applied(tempDir, List.of(withChildren(0, "Ping", "Commit")));
+        final PathNode was = child(tempDir, "Commit");
+        final int rows = mutations(tempDir).size();
+        final Map<String, Constraint> target = new HashMap<>(was.getConstraints());
+        target.put("other", new Constraint("added", new StringValue("x"), false));
+
+        assertThatThrownBy(() -> rolledBack(tempDir, was, target))
+                .isInstanceOf(EntityServiceException.class)
+                .hasMessageContaining("under the name 'other'");
+        assertThat(child(tempDir, "Commit").getConstraints()).isEqualTo(was.getConstraints());
+        assertThat(mutations(tempDir)).hasSize(rows);
+    }
+
+    @Test
+    void rollingBackToARemovalRevivesTheNodeWithTheConstraintsItHeld(@TempDir final Path tempDir) {
+        applied(tempDir, List.of(withChildren(0, "Ping", "Commit")));
+        final PathNode was = child(tempDir, "Commit");
+        removed(tempDir, "Commit");
+        final PathNode atRemoval = child(tempDir, "Commit");
+        assertThat(atRemoval.isRetired()).isTrue();
+        final long last = lastSequence(tempDir);
+
+        assertThat(rolledBack(tempDir, atRemoval, atRemoval.getConstraints())).isTrue();
+
+        final PathNode revived = child(tempDir, "Commit");
+        assertThat(revived.isRetired()).isFalse();
+        assertThat(revived.getConstraints()).isEqualTo(was.getConstraints());
+        assertThat(since(tempDir, last))
+                .as("the constraints it held are the ones wanted, so the revival is the only change")
+                .extracting(PathwayMutation::getType)
+                .containsExactly(MutationType.NODE_REVIVED);
+    }
+
+    @Test
+    void rollingBackANodeRevivesTheRetiredNodesAboveIt(@TempDir final Path tempDir) {
+        applied(tempDir, List.of(nested(0, "Commit", "Batch")));
+        final Map<String, Constraint> commitHeld = child(tempDir, "Commit").getConstraints();
+        removed(tempDir, "Commit");
+        final PathNode batch = child(child(tempDir, "Commit"), "Batch");
+        assertThat(batch.isRetired()).isTrue();
+        final long last = lastSequence(tempDir);
+
+        assertThat(rolledBack(tempDir, batch, batch.getConstraints())).isTrue();
+
+        final PathNode commit = child(tempDir, "Commit");
+        assertThat(commit.isRetired()).isFalse();
+        assertThat(commit.getConstraints())
+                .as("revived as it stands")
+                .isEqualTo(commitHeld);
+        assertThat(child(commit, "Batch").isRetired()).isFalse();
+        assertThat(since(tempDir, last))
+                .as("root first, so a replay retires the node before the one above it")
+                .extracting(m -> m.getType() + " " + m.getNodePath().getLast())
+                .containsExactly("NODE_REVIVED Commit", "NODE_REVIVED Batch");
+
+        final PathNode rewound = child(PathwayReplay.rewind(onlyPathway(tempDir).getRoot(),
+                since(tempDir, last)), "Commit");
+        assertThat(rewound.isRetired()).isTrue();
+        assertThat(child(rewound, "Batch").isRetired()).isTrue();
+    }
+
+    @Test
+    void rollingBackALiveNodeThatAlreadyMatchesWritesNothing(@TempDir final Path tempDir) {
+        applied(tempDir, List.of(withChildren(0, "Ping", "Commit")));
+        final PathNode was = child(tempDir, "Commit");
+        final int rows = mutations(tempDir).size();
+
+        assertThat(rolledBack(tempDir, was, was.getConstraints())).isFalse();
+        assertThat(mutations(tempDir)).hasSize(rows);
+    }
+
+    @Test
+    void aReplayTakesANodeRollbackOffExactly(@TempDir final Path tempDir) {
+        applied(tempDir, List.of(withChildren(0, "Ping", "Commit")));
+        final PathNode was = child(tempDir, "Commit");
+        final Constraint before = firstConstraint(was);
+        edited(tempDir, was.getUuid(), before,
+                before.copy().value(new IntegerRange(1, 5)).optional(!before.isOptional()).build());
+        edited(tempDir, was.getUuid(), null, new Constraint("added", new StringValue("x"), true));
+        final PathNode live = child(tempDir, "Commit");
+        final long liveLast = lastSequence(tempDir);
+
+        rolledBack(tempDir, live, was.getConstraints());
+        final PathNode liveRewound = child(PathwayReplay.rewind(onlyPathway(tempDir).getRoot(),
+                since(tempDir, liveLast)), "Commit");
+        assertThat(liveRewound.isRetired()).isFalse();
+        assertThat(liveRewound.getConstraints()).isEqualTo(live.getConstraints());
+
+        removed(tempDir, "Commit");
+        final PathNode gone = child(tempDir, "Commit");
+        final long goneLast = lastSequence(tempDir);
+
+        rolledBack(tempDir, gone, live.getConstraints());
+        final PathNode goneRewound = child(PathwayReplay.rewind(onlyPathway(tempDir).getRoot(),
+                since(tempDir, goneLast)), "Commit");
+        assertThat(goneRewound.isRetired())
+                .as("retired again, as it was before the rollback")
+                .isTrue();
+        assertThat(goneRewound.getConstraints()).isEqualTo(gone.getConstraints());
+    }
+
+    private static long lastSequence(final Path dir) {
+        return mutations(dir).stream().mapToLong(PathwayMutation::getSequence).max().orElseThrow();
+    }
+
+    private static List<PathwayMutation> since(final Path dir, final long sequence) {
+        return mutations(dir).stream()
+                .filter(m -> m.getSequence() > sequence)
+                .sorted(Comparator.comparingLong(PathwayMutation::getSequence))
+                .toList();
+    }
+
+    private static boolean rolledBack(final Path dir, final PathNode node, final Map<String, Constraint> target) {
+        return rollbackNodeInModel(dir, node.getUuid(), node.getConstraints(), node.isRetired(), target);
+    }
+
+    private static boolean rollbackNodeInModel(final Path dir,
+                                               final String uuid,
+                                               final Map<String, Constraint> previous,
+                                               final boolean retired,
+                                               final Map<String, Constraint> target) {
+        final String name = onlyPathway(dir).getName();
+        return new PathwaysService(null, null, null, null, BYTE_BUFFERS, mutationLog(), serde(), null)
+                .rollbackNodeInModel(dir, null, name, name.getBytes(StandardCharsets.UTF_8), uuid, previous,
+                        retired, target);
     }
 
     @Test
@@ -1274,17 +1535,8 @@ class TestPathwayNarrowing {
     @Test
     void aNodeThatRanButTaughtNothingIsStillInTheDay(@TempDir final Path tempDir) {
         // A day record is where the nodes of a derived model come from, so one that ran has to be in
-        // it whether or not it gave the model anything. With constraint creation off nothing on a new
-        // node is learnt from, which is the simplest way to reach that state; an attribute the model
-        // does not learn from reaches it too.
-        final PathwaysDoc noLearning = PathwaysDoc.builder()
-                .uuid(UUID.randomUUID().toString())
-                .name("Test Pathways")
-                .allowPathwayCreation(true)
-                .allowPathwayMutation(true)
-                .allowConstraintCreation(false)
-                .allowConstraintMutation(true)
-                .build();
+        // it whether or not it gave the model anything.
+        final PathwaysDoc noLearning = doc().copy().ignoredAttributes(List.of("*")).build();
         applied(tempDir, List.of(withChildren(0, "Ping")), noLearning);
 
         final DayRecord record = onlyDayRecord(tempDir);
@@ -1444,6 +1696,21 @@ class TestPathwayNarrowing {
         byParent.put("", List.of(root));
         byParent.put("r" + dayIndex, children);
         return new Trace(nextId(dayIndex), byParent);
+    }
+
+    private static Trace commitCarrying(final int dayIndex, final String attribute) {
+        final Trace plain = withChildren(dayIndex, "Ping", "Commit");
+        final List<Span> children = new ArrayList<>(plain.children(plain.root()));
+        children.set(1, children.get(1).copy()
+                .attributes(List.of(KeyValue.builder()
+                        .key(attribute)
+                        .value(new AnyValue("x", null, null, null, null, null, null))
+                        .build()))
+                .build());
+        final Map<String, List<Span>> byParent = new HashMap<>();
+        byParent.put("", List.of(plain.root()));
+        byParent.put(plain.root().getSpanId(), children);
+        return new Trace(plain.getTraceId(), byParent);
     }
 
     // A root on the given day running one child, which runs one of its own.

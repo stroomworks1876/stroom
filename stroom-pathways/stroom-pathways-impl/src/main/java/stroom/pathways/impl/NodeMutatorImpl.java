@@ -129,6 +129,9 @@ public class NodeMutatorImpl {
     // moved. Left empty where this trace is bringing the pathway into being: it taught the model
     // everything it knows, and counting that would leave every node reading as changed at least once.
     private final Set<List<String>> changedNodes = new LinkedHashSet<>();
+    private final Set<List<String>> arrivedNodes = new HashSet<>();
+    // A field because the builders that refuse a first value are handed the value, not the node.
+    private boolean arriving;
     private boolean creating;
     private String traceId;
     private String spanId;
@@ -241,6 +244,7 @@ public class NodeMutatorImpl {
 
     // A change to the node rather than to one of its constraints, so there is no flag to carry.
     private void record(final PathNode node, final MutationType type) {
+        arrivedNodes.add(node.getNodePath());
         record(node, type, null, false, null, null);
     }
 
@@ -687,9 +691,13 @@ public class NodeMutatorImpl {
         // what has not happened, but one span folded into it is the whole answer to its being back.
         // Waiting would leave the model calling a node retired through every hour the changes beside
         // it show traces running through it, and would hang the answer on where the trace's own time
-        // falls — a trace carrying it is a trace carrying it, whenever it ran.
+        // falls — a trace carrying it is a trace carrying it, whenever it ran. Its old constraints are
+        // taken off so it learns from this trace as a new node would.
         if (pathNode.isRetired()) {
             record(pathNode, MutationType.NODE_REVIVED);
+            NullSafe.map(pathNode.getConstraints()).forEach((name, constraint) ->
+                    record(pathNode, MutationType.CONSTRAINT_REMOVED, name, constraint.isOptional(),
+                            constraint.getValue(), null));
             pathNodeBuilder.retiredTime(null);
         }
 //        // Add additional span info if wanted.
@@ -705,13 +713,13 @@ public class NodeMutatorImpl {
         // TODO : Expand min/max/average execution times.
         final Map<String, Constraint> constraints;
         final boolean optional;
-        if (pathNode.getConstraints() != null) {
+        if (pathNode.getConstraints() != null && !pathNode.isRetired()) {
             constraints = pathNode.getConstraints();
-            // We already have some constraints so make any new constraints optional.
+            // A node that already holds constraints and is not being brought back learns new ones as optional.
             optional = true;
         } else {
             constraints = new HashMap<>();
-            // These are new constraints so all initial ones will be set to be required.
+            // A new node, or one being brought back, learns its constraints as required.
             optional = false;
         }
 
@@ -798,6 +806,7 @@ public class NodeMutatorImpl {
             return;
         }
 
+        arriving = arrivedNodes.contains(pathNode.getNodePath());
         final Supplier<String> location = () -> pathNode.getNodePath() + " " + name;
         final Constraint constraint = constraints.get(name);
         // What this constraint is, not what a new one on this node would be. The flag passed in says
@@ -816,7 +825,7 @@ public class NodeMutatorImpl {
                         "Null value for: " + location.get());
             }
         } else {
-            if (constraint == null && !pathwaysDoc.isAllowConstraintCreation()) {
+            if (!mayCreate(constraint, pathwaysDoc)) {
                 messageReceiver.log(Severity.ERROR, () ->
                         "Constraint not found: " + location.get() + " " + value);
 
@@ -908,17 +917,20 @@ public class NodeMutatorImpl {
         if (value instanceof AnyValue || value == null) {
             return false;
         }
-        if (!pathwaysDoc.isAllowPathwayMutation()) {
-            return false;
-        }
-        if (constraint == null && !pathwaysDoc.isAllowConstraintCreation()) {
-            return false;
-        }
         // A constraint with one end left open is noted like any other. Only the end being learnt is
         // ever brought in, so noting a value here cannot close the other one: naming an end asks for
         // it never to be asserted, not for the rest of the constraint to stop being held to what it
         // has been given lately.
-        return true;
+        return mayCreate(constraint, pathwaysDoc)
+               && mayLearn(getConstraintValue(constraint), pathwaysDoc);
+    }
+
+    private boolean mayCreate(final Constraint constraint, final PathwaysDoc pathwaysDoc) {
+        return constraint != null || arriving || pathwaysDoc.isAllowConstraintCreation();
+    }
+
+    private boolean mayLearn(final ConstraintValue current, final PathwaysDoc pathwaysDoc) {
+        return (current == null && arriving) || pathwaysDoc.isAllowPathwayMutation();
     }
 
     // What this trace gave each constraint, kept beside the model change it caused so the day it
@@ -1153,7 +1165,7 @@ public class NodeMutatorImpl {
         if (result.equals(current)) {
             return current;
         }
-        if (!pathwaysDoc.isAllowPathwayMutation()) {
+        if (!mayLearn(current, pathwaysDoc)) {
             messageReceiver.log(Severity.ERROR, () ->
                     "Time exceeds constraint: " + location.get() + " " + value);
             return current;
@@ -1187,7 +1199,7 @@ public class NodeMutatorImpl {
         }
 
         if (current == null) {
-            if (!pathwaysDoc.isAllowPathwayMutation()) {
+            if (!mayLearn(current, pathwaysDoc)) {
                 messageReceiver.log(Severity.ERROR, () ->
                         "Unexpected time: " + location.get() + " " + value);
             } else {
@@ -1269,7 +1281,7 @@ public class NodeMutatorImpl {
                                                 final PathwaysDoc pathwaysDoc) {
         switch (current) {
             case null -> {
-                if (!pathwaysDoc.isAllowPathwayMutation()) {
+                if (!mayLearn(current, pathwaysDoc)) {
                     messageReceiver.log(Severity.ERROR, () ->
                             "Unexpected integer: " + location.get() + " " + value);
                 } else {
@@ -1360,7 +1372,7 @@ public class NodeMutatorImpl {
                                                 final PathwaysDoc pathwaysDoc) {
         switch (current) {
             case null -> {
-                if (!pathwaysDoc.isAllowPathwayMutation()) {
+                if (!mayLearn(current, pathwaysDoc)) {
                     messageReceiver.log(Severity.ERROR, () ->
                             "Unexpected long: " + location.get() + " " + value);
                 } else {
@@ -1451,7 +1463,7 @@ public class NodeMutatorImpl {
                                                     final PathwaysDoc pathwaysDoc) {
         switch (current) {
             case null -> {
-                if (!pathwaysDoc.isAllowPathwayMutation()) {
+                if (!mayLearn(current, pathwaysDoc)) {
                     messageReceiver.log(Severity.ERROR, () ->
                             "Unexpected boolean: " + location.get() + " " + value);
                 } else {
@@ -1499,7 +1511,7 @@ public class NodeMutatorImpl {
                                                    final PathwaysDoc pathwaysDoc) {
         switch (current) {
             case null -> {
-                if (!pathwaysDoc.isAllowPathwayMutation()) {
+                if (!mayLearn(current, pathwaysDoc)) {
                     messageReceiver.log(Severity.ERROR, () ->
                             "Unexpected string: " + location.get() + " " + value);
                 } else {

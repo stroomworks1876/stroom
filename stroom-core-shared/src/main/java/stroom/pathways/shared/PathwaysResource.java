@@ -124,4 +124,12 @@ public interface PathwaysResource extends RestResource, DirectRestService, Fetch
             operationId = "editPathwayConstraint")
     Boolean editConstraint(
             @Parameter(description = "change", required = true) EditConstraint editConstraint);
+
+    @POST
+    @Path("/rollbackNode")
+    @Operation(
+            summary = "Set the constraints of a node of a learnt pathway, reviving it if retired",
+            operationId = "rollbackPathwayNode")
+    Boolean rollbackNode(
+            @Parameter(description = "change", required = true) RollbackNode rollbackNode);
 }

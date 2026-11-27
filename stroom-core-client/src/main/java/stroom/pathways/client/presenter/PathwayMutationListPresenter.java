@@ -196,8 +196,8 @@ public class PathwayMutationListPresenter extends MyPresenterWidget<PagerView> {
     private List<HistoryBar> bars = List.of();
     // Told when the filter goes on or comes off, so the plot can be counted again to match.
     private Runnable plotChangeHandler;
-    // What right clicking a row's node offers, by the node's path.
-    private Function<List<String>, List<Item>> nodeMenu = path -> List.of();
+    // What right clicking a row's node offers, by the row.
+    private Function<HistoryRow, List<Item>> nodeMenu = row -> List.of();
     // What right clicking a change's constraint offers, by the change.
     private Function<PathwayMutation, List<Item>> constraintMenu = mutation -> List.of();
     // True while setData is replacing the rows, which brings its own plot with it.
@@ -652,10 +652,10 @@ public class PathwayMutationListPresenter extends MyPresenterWidget<PagerView> {
     }
 
     /**
-     * What right clicking a change's node offers, given the node's path. Supplied from outside because
-     * what it offers acts on the drawing, which this table knows nothing of.
+     * What right clicking a change's node offers, given the row. Supplied from outside because what it
+     * offers acts on the drawing and the model, which this table knows nothing of.
      */
-    public void setNodeMenu(final Function<List<String>, List<Item>> nodeMenu) {
+    public void setNodeMenu(final Function<HistoryRow, List<Item>> nodeMenu) {
         this.nodeMenu = nodeMenu;
     }
 
@@ -712,27 +712,27 @@ public class PathwayMutationListPresenter extends MyPresenterWidget<PagerView> {
     }
 
     // The node the change was made to. Right clicking it offers whatever the view around this one
-    // offers for a node; a trace row names no node, so it offers nothing.
+    // offers for the row; a trace row names no node, so it offers nothing.
     private void addNodeColumn() {
-        final Column<MutationRow, List<String>> column = new Column<MutationRow, List<String>>(
-                new HasContextMenusCell<List<String>>((context, path) ->
-                        NullSafe.isEmptyCollection(path)
+        final Column<MutationRow, HistoryRow> column = new Column<MutationRow, HistoryRow>(
+                new HasContextMenusCell<HistoryRow>((context, row) ->
+                        row == null || NullSafe.isEmptyCollection(row.getNodePath())
                                 ? List.of()
-                                : nodeMenu.apply(path)) {
+                                : nodeMenu.apply(row)) {
                     @Override
                     public void render(final Context context,
-                                       final List<String> path,
+                                       final HistoryRow row,
                                        final SafeHtmlBuilder sb) {
-                        if (path != null) {
-                            sb.append(SafeHtmlUtils.fromString(String.join(" / ", path)));
+                        if (row != null && row.getNodePath() != null) {
+                            sb.append(SafeHtmlUtils.fromString(String.join(" / ", row.getNodePath())));
                         }
                     }
                 }) {
             @Override
-            public List<String> getValue(final MutationRow row) {
+            public HistoryRow getValue(final MutationRow row) {
                 return row.isParent()
                         ? null
-                        : row.getRow().getNodePath();
+                        : row.getRow();
             }
         };
         dataGrid.addResizableColumn(column, PathwayMutation.FIELD_PATH, 400);

@@ -23,6 +23,7 @@ import stroom.pathways.shared.EditConstraint;
 import stroom.pathways.shared.PathwaysDoc;
 import stroom.pathways.shared.RemoveConstraints;
 import stroom.pathways.shared.RemoveNode;
+import stroom.pathways.shared.RollbackNode;
 import stroom.pathways.shared.pathway.Constraint;
 import stroom.pathways.shared.pathway.Regex;
 import stroom.pathways.shared.pathway.StringValue;
@@ -38,6 +39,7 @@ import org.mockito.Mock;
 import org.mockito.MockitoAnnotations;
 
 import java.util.List;
+import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -112,6 +114,16 @@ class TestPathwaysServicePermissions {
     void editConstraintRefusedWithoutEdit() {
         assertThatThrownBy(() -> service.editConstraint(new EditConstraint(docRef, PATHWAY, "node-uuid", null,
                 new Constraint("added", new StringValue("x"), false))))
+                .isInstanceOf(PermissionException.class);
+
+        verify(securityContext).hasDocumentPermission(docRef, DocumentPermission.EDIT);
+        verifyNoInteractions(clusterLockService, shardStore);
+    }
+
+    @Test
+    void rollbackNodeRefusedWithoutEdit() {
+        assertThatThrownBy(() -> service.rollbackNode(new RollbackNode(docRef, PATHWAY, "node-uuid", Map.of(),
+                false, Map.of("added", new Constraint("added", new StringValue("x"), false)))))
                 .isInstanceOf(PermissionException.class);
 
         verify(securityContext).hasDocumentPermission(docRef, DocumentPermission.EDIT);

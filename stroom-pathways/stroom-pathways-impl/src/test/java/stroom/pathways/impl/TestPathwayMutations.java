@@ -435,6 +435,104 @@ class TestPathwayMutations {
         assertThat(messages).isEmpty();
     }
 
+    @Test
+    void aNewNodeTakesItsFirstValuesWhereConstraintCreationIsOff() {
+        final PathNode root = mutator().process(trace("GET", PING), key(), null, quiet(), doc());
+        final PathwaysDoc noCreation = doc().copy().allowConstraintCreation(false).build();
+
+        final PathNode grown = mutator().process(trace("GET", PING, "Commit"), key(), root, quiet(),
+                noCreation);
+
+        final Map<String, Constraint> commit = child(grown, "Commit").getConstraints();
+        assertThat(commit).containsKeys("duration", "sinceParentStart", "kind", "occurrences");
+        assertThat(commit.values())
+                .as("all of them required, as on any new node")
+                .noneMatch(Constraint::isOptional);
+    }
+
+    @Test
+    void aKnownNodeGetsNoNewConstraintWhereConstraintCreationIsOff() {
+        final PathNode root = mutator().process(trace(null, PING), key(), null, quiet(), doc());
+        final PathwaysDoc noCreation = doc().copy().allowConstraintCreation(false).build();
+        final List<String> messages = new ArrayList<>();
+
+        final PathNode after = mutator().process(trace("GET", PING), key(), root, recording(messages),
+                noCreation);
+
+        assertThat(after.getConstraints()).doesNotContainKey(METHOD);
+        assertThat(messages).singleElement().asString()
+                .startsWith("ERROR ")
+                .contains("Constraint not found: ");
+    }
+
+    @Test
+    void aNodeBroughtBackRelearnsWhereConstraintCreationIsOff() {
+        final PathwaysDoc noCreation = doc().copy().allowConstraintCreation(false).build();
+
+        final NodeMutatorImpl mutator = mutator();
+        final PathNode root = mutator.process(childAt(0, 3), key(), withPingRetired(), quiet(), noCreation);
+
+        assertThat(sinceParentStart(root))
+                .as("learnt afresh from this trace rather than widened from what it held")
+                .isEqualTo(new NanoTimeValue(millis(3)));
+        assertThat(mutator.getMutations())
+                .filteredOn(m -> List.of(OPERATION, PING).equals(m.getNodePath()))
+                .extracting(PathwayMutation::getType)
+                .contains(MutationType.NODE_REVIVED, MutationType.CONSTRAINT_ADDED);
+    }
+
+    @Test
+    void aNewPathwayTakesItsFirstValuesWhereMutationIsOff() {
+        final PathwaysDoc fixed = doc().copy().allowPathwayMutation(false).build();
+
+        final NodeMutatorImpl mutator = mutator();
+        final PathNode root = mutator.process(trace("GET"), key(), null, quiet(), fixed);
+
+        assertThat(root.getConstraints()).containsKeys("duration", "kind", METHOD);
+        assertThat(valuesOf(mutator.getObservations().nodes().get(List.of(OPERATION))))
+                .as("and the day notes what it learnt")
+                .containsEntry(METHOD, new StringValue("GET"));
+    }
+
+    @Test
+    void aNodeBroughtBackRelearnsWhereMutationIsOff() {
+        final PathwaysDoc fixed = doc().copy().allowPathwayMutation(false).build();
+
+        final PathNode root = mutator().process(childAt(0, 3), key(), withPingRetired(), quiet(), fixed);
+
+        assertThat(sinceParentStart(root)).isEqualTo(new NanoTimeValue(millis(3)));
+    }
+
+    @Test
+    void aKnownConstraintIsNotWidenedWhereMutationIsOff() {
+        final PathNode root = mutator().process(trace("GET", PING), key(), null, quiet(), doc());
+        final PathwaysDoc fixed = doc().copy().allowPathwayMutation(false).build();
+        final List<String> messages = new ArrayList<>();
+
+        final PathNode after = mutator().process(trace("POST", PING), key(), root, recording(messages),
+                fixed);
+
+        assertThat(after.getConstraints().get(METHOD).getValue()).isEqualTo(new StringValue("GET"));
+        assertThat(messages).singleElement().asString()
+                .startsWith("ERROR ")
+                .contains("Unexpected string ");
+    }
+
+    private static PathNode withPingRetired() {
+        final PathNode root = mutator().process(trace("GET", PING), key(), null, quiet(), doc());
+        final List<PathNode> children = root.getChildren().stream()
+                .map(child -> child.copy().retiredTime(millis(1)).build())
+                .toList();
+        return root.copy().children(children).build();
+    }
+
+    private static PathNode child(final PathNode root, final String name) {
+        return root.getChildren().stream()
+                .filter(node -> name.equals(node.getName()))
+                .findFirst()
+                .orElseThrow();
+    }
+
     // A pathway learnt from one trace, with its method constraint swapped for the pattern given.
     private static PathNode withMethodPattern(final String regex) {
         final PathNode root = mutator().process(trace("GET", PING), key(), null, quiet(), doc());

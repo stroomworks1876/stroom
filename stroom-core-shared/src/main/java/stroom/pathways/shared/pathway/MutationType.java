@@ -81,13 +81,13 @@ public enum MutationType implements HasDisplayValue, HasPrimitiveValue {
     NODE_RETIRED("Node Retired", 16),
     /**
      * A node that had stopped being part of the work is part of it again. The same node as before, so
-     * what it was and how it was used are still its own.
+     * how it was used is still its own; a trace reviving it relearns its constraints from that trace.
      */
     NODE_REVIVED("Node Revived", 17),
     /**
-     * A constraint a user removed, either on its own or along with its node. The next trace that carries
-     * it learns it again from scratch. Holds the value and the optional flag it had, so a replay can put
-     * both back.
+     * A constraint taken off a node, either by a user or by a trace reviving a retired or removed node,
+     * which clears the node's constraints so it learns them again from that trace. Holds the value and
+     * the optional flag it had, so a replay can put both back.
      */
     CONSTRAINT_REMOVED("Constraint Removed", 18),
     /**

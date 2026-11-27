@@ -797,7 +797,7 @@ class TestLoadingOldTraces {
     }
 
     @Test
-    void theConstraintsANodeRemovalTookAreNotListed() throws IOException {
+    void aNodeRemovalIsListedWithNoConstraintRows() throws IOException {
         load(Instant.now(), 1, 20L, "Commit");
         final String commit = reader().fetchPathwayAsAt(doc, OPERATION, null, null)
                 .orElseThrow().getPathway().getRoot().getChildren().getFirst().getUuid();
@@ -816,7 +816,7 @@ class TestLoadingOldTraces {
 
         assertThat(listed).contains(MutationType.NODE_REMOVED);
         assertThat(listed)
-                .as("kept in the log for winding back, but the Node Removed row already says it")
+                .as("the removed node keeps its constraints, so the removal writes no rows for them")
                 .doesNotContain(MutationType.CONSTRAINT_REMOVED);
     }
 
@@ -834,9 +834,11 @@ class TestLoadingOldTraces {
                 .findFirst()
                 .orElseThrow();
 
-        final List<HistoryBar> all = changeBars(null);
-        final List<HistoryBar> one = changeBars(node);
-        final List<HistoryBar> none = changeBars("not a node of this pathway");
+        // One end for all three, because an open end is read from the clock on each request.
+        final TimeRange upToNow = new TimeRange(null, null, null, Instant.now().toString());
+        final List<HistoryBar> all = changeBars(upToNow, null);
+        final List<HistoryBar> one = changeBars(upToNow, node);
+        final List<HistoryBar> none = changeBars(upToNow, "not a node of this pathway");
 
         assertThat(one)
                 .as("the slices stay where they are, so turning the filter on changes the heights "
@@ -856,10 +858,10 @@ class TestLoadingOldTraces {
 
     // The change side of the plot only. The day side is never narrowed, because the table does not
     // narrow it either.
-    private List<HistoryBar> changeBars(final String plotNode) throws IOException {
+    private List<HistoryBar> changeBars(final TimeRange range, final String plotNode) throws IOException {
         return reader().findMutations(doc,
                         new FindPathwayMutationCriteria(new PageRequest(0, 0), List.of(), null,
-                                OPERATION, null, plotNode))
+                                OPERATION, range, plotNode))
                 .getBars().stream()
                 .filter(bar -> !bar.isWholeDay())
                 .toList();
